@@ -96,7 +96,7 @@ shows a product, it came from a capture. (See the non-goals in `README.md`.)
 1. `load_spec` parses and validates the spec → a `Spec`; the story is loaded and the
    timeframe resolved (`override > spec > story`).
 2. `make_context` builds a `Context` (paths, tool wrappers) and creates output dirs.
-3. The provider module is imported; its `register()` runs if present.
+3. The provider module is imported; its `secrets()` are declared and its `register()` runs if present.
 4. Stages execute in order (`pipeline.md`), each writing into `OUT/_build/*`.
 5. `verify` evaluates the guards and writes `verify.json`.
 6. The process exits `0` only if verification passes.
@@ -110,6 +110,7 @@ OUT/
   <project.output>        the final mp4
   narration.srt           the final captions (retimed to the real audio)
   _build/data/*.json      provider datasets (so panels can re-render alone)
+  _build/data/_snapshot.json  what request produced those datasets, and their hashes
   _build/panels/*.svg     rendered panel SVGs
   _build/stills/*.png     every still as PNG
   _build/wavs/scene-NN.wav per-scene audio

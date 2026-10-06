@@ -12,7 +12,7 @@ Run as `vidkit …` (installed console script) or `python -m vidkit …`.
 | `vidkit init DIR` | scaffold a new runnable story |
 | `vidkit doctor [SPEC]` | check the environment (and a spec if given) |
 | `vidkit plan SPEC` | print the scene plan, timings, and guards — no rendering |
-| `vidkit build SPEC [--out DIR] [--only STAGES]` | run the pipeline |
+| `vidkit build SPEC [--out DIR] [--only STAGES] [--from STAGE] [--refresh]` | run the pipeline |
 | `vidkit tts SPEC [--out DIR]` | (re)synthesize narration only |
 | `vidkit capture SPEC [--out DIR]` | (re)capture screen recordings only |
 | `vidkit verify SPEC [--out DIR]` | re-run the acceptance checks |
@@ -55,7 +55,7 @@ sized from the narration's own word count. **Existing files are never overwritte
 |---|---|
 | `0` | success; verification passed (or was not run) |
 | `1` | hard error: bad spec, tool failure, provider failure, capture failure |
-| `2` | the build ran but a **verification check failed** (or `doctor` found a missing required tool) |
+| `2` | the build ran but a **verification check failed** (or `doctor` found a missing required tool or secret) |
 | `2` | `doctor` found a missing **required** tool |
 
 CI should treat non-zero as failure.
@@ -98,12 +98,23 @@ vidkit build SPEC.yaml --out ./video
 vidkit build SPEC.yaml --only panels
 vidkit build SPEC.yaml --only data,panels
 vidkit build SPEC.yaml --only clips,concat,render
+vidkit build SPEC.yaml --from render
+vidkit build SPEC.yaml --only panels,clips,render --refresh
 ```
 
 - `--out DIR` — where outputs go (default: the spec's folder). `_build/`, `_capture/`, the
   mp4, and `narration.srt` are written under it.
 - `--only` — comma-separated subset of stages: `data, panels, stills, capture, narration,
   clips, concat, render, verify`. An unknown stage name is a hard error.
+- `--from STAGE` — that stage and every later one. Equivalent to `--only` with the suffix,
+  and easier to read when you are resuming. `--only` and `--from` are mutually exclusive.
+- `--refresh` — fetch provider data again instead of reusing `_build/data`. It re-adds the
+  `data` stage to whatever `--only`/`--from` selected, so any snapshot is replaced.
+
+Skipping `data` does **not** mean the datasets are trusted blindly: the `_build/data/_snapshot.json`
+record must match the current provider and window, or the build refuses rather than
+re-rendering yesterday's numbers under today's title. See
+[the provider guide](../authoring/provider-guide.md#datasets-snapshots-and-staleness).
 
 On success it prints a small JSON summary (`output`, `srt`, `clips`, `report`) so a caller can
 locate the artifacts.

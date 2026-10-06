@@ -23,7 +23,7 @@ returns JSON.
 |---|---|---|
 | `vidkit_doctor` | `spec?` | environment tool status + spec sanity |
 | `vidkit_plan` | `spec?` | scenes, shots, guards, estimated runtime (no render) |
-| `vidkit_build` | `spec?`, `out?`, `only?` | output path, captions, clip count, verification report |
+| `vidkit_build` | `spec?`, `out?`, `only?`, `from_stage?`, `refresh?` | output path, captions, clip count, verification report |
 | `vidkit_tts` | `spec?`, `out?` | per-scene narration audio + measured timings |
 | `vidkit_capture` | `spec?`, `out?` | the captured PNGs (real UI, with assertions) |
 | `vidkit_verify` | `spec?`, `out?` | re-run the acceptance checks on the last render |
@@ -33,7 +33,11 @@ returns JSON.
 | `vidkit_docs_index` | — | the machine-readable module route table (`docs/modules.yaml`) |
 
 `only` accepts stage names: `data, panels, stills, capture, narration, clips, concat, render,
-verify`.
+verify`. `from_stage` runs that stage *and everything after it* — `only` and `from_stage`
+together are refused. `refresh: true` re-adds the `data` stage, so the source is asked again
+instead of reusing the on-disk snapshot; without it a `data`-skipping build re-renders from
+the snapshot and **refuses** when the snapshot answers a different provider or window (R-B3,
+see [the provider guide](../authoring/provider-guide.md#datasets-snapshots-and-staleness)).
 
 ## Resources
 

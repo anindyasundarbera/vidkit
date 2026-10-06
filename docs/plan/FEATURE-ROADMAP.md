@@ -57,6 +57,7 @@ A phase that violates one of these is not done, however many checkboxes it ticks
 ```
 M0  Extract & baseline          ← DONE             make it safe to work on
 M1  Story & timeframe contract  ← DONE, P0         make it aimable
+M2  Provider & data hardening    ← DONE, P1         make the data trustworthy
 M2  Provider & data hardening         P1           make providers trustworthy
 M3  Capture v2                        P0           make real UI recordable
 M4  Presentation v2                   P0/P1        make output look right
@@ -130,18 +131,40 @@ five small ones.
 
 ---
 
-## 5. M2 — Provider & data hardening  *(P1)*
+## 5. M2 — Provider & data hardening  *(P1)* — **DONE**
 
 **Purpose.** Make the provider seam trustworthy enough to hand to an agent.
 
 **Requirements.** R-B3 (dataset snapshots), R-B4 (secret contract), R-B5 (deterministic
 fallback), R-B1 (plugin loading — already done).
 
-**Delivers.** Snapshotting guaranteed and documented, so `--only panels,clips,render`
-re-renders from disk with no network. A documented env/secret contract with a read-only
-guarantee. A fallback pattern for model-dependent scenes that cannot hang a build.
+**Delivers.**
+
+1. **Snapshot with a request key.** `_build/data/_snapshot.json` records *what produced*
+   the datasets — provider, a hash of the provider's source, the resolved window — beside a
+   hash of each dataset. Any stage about to reuse on-disk datasets compares its own request
+   against that record and refuses with a sentence naming what changed. The key is narrow on
+   purpose: a chart title must not force a refetch.
+2. **Secret contract.** Needs are declared by the spec's `provider:` block *and* the
+   provider's `secrets()`, resolved from the environment only, and masked in everything the
+   engine prints — including a provider's own exception text, longest value first. `doctor`
+   prints a masked inventory and fails on a missing required variable.
+3. **Read-only by contract.** `provider.write_back: true` is refused at load time.
+4. **Declared degradation.** `SourceUnavailable` + `fallback()`/`fallback_for()` turn an
+   outage into a recorded `facts.degraded` entry instead of a hang or an invented number;
+   `guard.require_live_data` makes any degradation a verify failure.
+5. **Resumable stages.** `--from STAGE` selects a suffix; `--refresh` re-adds the `data`
+   stage so the source is asked again.
+6. **Provider guide.** The seam documented as a contract: interface, secrets, degradation,
+   snapshot/staleness rule, design rules.
 
 **Exit.** `vidkit build --only panels,clips,render` works from persisted data, offline.
+**Met** — and strengthened: it now *refuses* to work from a snapshot that answers a different
+question. Evidence: `docs/plan/HISTORY.md`.
+
+**Risks.** The temptation is to snapshot the *outputs* of every stage; resist it. Stages
+after `data` are cheap and deterministic, and a snapshot of a render is just a stale file.
+Snapshot the one thing that is not reproducible — what the source said.
 
 ---
 

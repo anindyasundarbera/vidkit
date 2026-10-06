@@ -108,3 +108,4 @@ guard:
     - "measured"
   require_live_mode: false    # no captures in this example
   require_audio: false        # a declared silent cut, not an accidental one
+  require_live_data: false    # the provider only synthesizes local demo series

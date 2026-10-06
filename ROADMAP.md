@@ -174,8 +174,8 @@ authoritative "what is done now" record is
 
 | Item | State today |
 |---|---|
-| Package | `vidkit/` — **19 modules** (`spec, context, timeframe, scaffold, provider, capture, narration, panels, svg, tts, ffmpeg, assembler, verify, reports, cli, mcp_server, errors, __init__, __main__`) |
-| Tests | `tests/test_core.py`, `tests/test_mcp.py`, `tests/test_timeframe.py` — **84 passing** (0.7 s) |
+| Package | `vidkit/` — **21 modules** (…, `secrets`, `snapshot`) |
+| Tests | `tests/test_core.py`, `tests/test_mcp.py`, `tests/test_timeframe.py`, `tests/test_providers.py` — **124 passing** (0.7 s) |
 | Examples | `examples/hello-world/` only — **host-free**; 8 scenes, 8 panel kinds, no browser/network/TTS needed |
 | `docs/` | **21 docs in 7 modules** under `docs/`, routed by `docs/README.md` + `docs/modules.yaml` |
 | MCP server | **present** — `vidkit/mcp_server.py`; 10 tools + 3 resources |
@@ -324,12 +324,16 @@ The functional gap that blocked the whole premise is closed.
 
 ### M2 — Provider & data hardening *(P1)* — ~2–3 days
 
-- [ ] Dataset snapshotting documented/guaranteed; re-render panels without re-fetching (R-B3).
-- [ ] Env/secret contract; never print secrets; read-only guarantee documented (R-B4).
-- [ ] Deterministic fallback pattern for model-dependent scenes (R-B5).
-- [ ] Provider guide (R-H5 partial).
+- [x] Dataset snapshotting documented/guaranteed; re-render panels without re-fetching (R-B3).
+- [x] Env/secret contract; never print secrets; read-only guarantee documented (R-B4).
+- [x] Deterministic fallback pattern for model-dependent scenes (R-B5).
+- [x] Provider guide (R-H5 partial).
 
 **Exit:** `vidkit build --only panels,clips,render` works from persisted data with no network.
+**Met** — and hardened: re-rendering from a snapshot taken for a *different* provider or window
+is now refused with a sentence naming what changed, `--refresh` forces a refetch, `--from STAGE`
+resumes a suffix, and `guard.require_live_data` turns a declared degradation into a verify
+failure. Tests 84 → **124** in ~0.7 s.
 
 ### M3 — Capture v2 *(P0)* — ~3–5 days
 

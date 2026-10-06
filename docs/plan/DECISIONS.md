@@ -416,6 +416,99 @@ if it is *impossible*, fix the spec; if it is *inconsistent*, fix the narration.
 
 ---
 
+## D20 — Secrets are declared, resolved from the environment, and masked everywhere
+
+**Status:** DECIDED 2026-10-06 (M2).
+
+**Context:** An agent that can run arbitrary provider code will eventually be handed a token.
+The engine must be able to *name* what a build needs without ever revealing it.
+
+**Decision:** Secrets are declared, never inferred; read from the process environment only;
+masked in every string the engine emits.
+
+- A need is declared in two places that are merged, not either/or: the spec's
+  `provider.secrets` (so `doctor` and `plan` work without importing provider code) and the
+  module's `secrets()` (so a provider can declare a need it only discovers at runtime).
+- `resolve()` treats an **empty string as unset** — an exported-but-empty variable is the most
+  common CI misconfiguration and must not look like a working build.
+- `Secrets.redact()` masks by **longest value first**, so a short token that happens to be a
+  prefix of a longer one cannot leak the tail, and it is applied to *provider exception text*
+  as well as engine messages.
+- `get()` never raises; `[...]` and `require_secret()` do, naming the variable but not its
+  value. `describe()` prints `NAME  set (43 chars)` or `NAME  NOT SET — required`.
+- `spec.provider.write_back` is refused at load: the engine never writes to a source system.
+
+**Alternatives rejected:** inference from `os.environ` (a provider could then read anything the
+host happens to export); a `.env` loader (a second source of truth, and an easy way to commit a
+secret); printing values behind a `--verbose` (a screenshot of `doctor` is a leak).
+
+**Consequences:** `doctor` fails on a missing required secret; a redaction bug is a
+security-class bug and gets the same treatment as a fabrication bug.
+
+---
+
+## D21 — A snapshot records the *request* it answers, not just the data
+
+**Status:** DECIDED 2026-10-06 (M2).
+
+**Context:** M2's exit criterion is that `--only panels,clips,render` re-renders offline.
+Done naively, that means any on-disk dataset is fair game for any build.
+
+**Decision:** `_build/data/_snapshot.json` records `{provider, provider_sha256, timeframe}`
+alongside a hash per dataset. A stage about to reuse datasets compares its own request against
+that record and **refuses** when it differs, naming the changed field:
+
+```
+vidkit: error: dataset snapshot is stale: the window changed (2026-08-01 to 2026-09-30
+(61 days) -> 2026-09-07 to 2026-10-06 (30 days)) — re-run the `data` stage (drop it from
+--only, or pass --refresh) to fetch it again
+```
+
+- The key is deliberately narrow: provider identity, provider *source*, and the resolved
+  window. Cosmetic changes (a chart title, a label) must **not** force a refetch.
+- `--refresh` re-adds the `data` stage; a plain build that selects `data` ignores the check
+  (it is about to overwrite the snapshot anyway).
+- A missing or corrupt snapshot is refused with the path named, never silently refetched — the
+  whole point of the offline path is that it does not touch the network. **CI proves this with
+  a canary**: the probe provider appends to a file every time it runs, so "the source was not
+  touched" is a fact about the filesystem rather than a reading of the log.
+
+**Alternatives rejected:** trust-on-first-write (reproduces D16's failure mode with a green
+verify); hash every input including the spec (a typo in a caption would refetch the source);
+record only a timestamp (cannot distinguish "stale" from "correct").
+
+**Consequences:** an honest offline re-render is the *default*, not an option to remember.
+
+---
+
+## D22 — Degradation is declared in advance, recorded, and only fatal by request
+
+**Status:** DECIDED 2026-10-06 (M2).
+
+**Context:** A provider reaches a live system. Sometimes the system is down. The engine needs an
+outcome that is neither a hang, nor an invented number, nor a hard failure.
+
+**Decision:** A provider may raise `SourceUnavailable` and return a value it *declared* in
+advance via `fallback_for(name, ctx)` or `fallbacks(ctx)`. If it does not, the build fails.
+
+- A fallback **used** is recorded: the dataset goes into `ctx.degraded[name] = why`, which
+  reaches `verify.json` as `facts.degraded`.
+- `guard.require_live_data: true` makes any recorded degradation a `verify` failure.
+- The default is `false`, because a provider that *synthesizes* its own series (hello-world's
+  does) is not degraded — it is authored. A provider that reads a live system should set it.
+- The exception keeps its message but is redacted before it reaches the log, so an outage
+  message cannot carry a token into a build log.
+
+**Alternatives rejected:** a silent `except` returning a default (indistinguishable from a
+real result, and D16 calls that a fabrication); always failing on outage (turns a transient
+network blip into a broken CI run); a `--allow-degraded` flag (easy to leave on, and invisible
+in the artifact).
+
+**Consequences:** "this number came from yesterday's cache" is a *fact in the report*, not a
+secret known to the operator.
+
+---
+
 ## Index
 
 | ID | Title | Status |
@@ -439,3 +532,6 @@ if it is *impossible*, fix the spec; if it is *inconsistent*, fix the narration.
 | D17 | A floating window may be described but never dated | DECIDED |
 | D18 | `vidkit init` writes a story that must build and verify unedited | DECIDED |
 | D19 | A narration/spec disagreement is `verify`'s job, not `load`'s | DECIDED |
+| D20 | Secrets are declared, env-resolved, and masked everywhere | DECIDED |
+| D21 | A snapshot records the request it answers, not just the data | DECIDED |
+| D22 | Degradation is declared, recorded, and only fatal by request | DECIDED |
