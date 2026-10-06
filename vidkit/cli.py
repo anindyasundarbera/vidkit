@@ -26,6 +26,7 @@ from .assembler import Assets, make_context, run
 from .errors import VidkitError
 from .narration import parse_scene_script, word_count
 from .panels import kinds as panel_kinds
+from .secrets import Secrets
 from .spec import load_spec
 from .scaffold import scaffold_story
 from .timeframe import Timeframe, parse_timeframe
@@ -102,7 +103,7 @@ def _doctor(spec_path: Path | None, timeframe: Timeframe | None = None) -> int:
         print(f"        scenes          {len(spec.scenes)}")
         print(f"        captures        {len(spec.captures)}")
         print(f"        charts          {len(spec.charts)}")
-        print(f"        provider        {spec.provider or '(none)'}")
+        print(f"        provider        {spec.provider_name or '(none)'}")
         if spec.story:
             note = "" if spec.story.declared else "  (folder convention)"
             print(f"        story           {spec.story.slug}{note}")
@@ -111,7 +112,41 @@ def _doctor(spec_path: Path | None, timeframe: Timeframe | None = None) -> int:
         tf = spec.timeframe
         print(f"        timeframe       {tf.label_with_source if tf else '(not declared)'}")
         print(f"        panel kinds     {', '.join(panel_kinds())}")
+        ok = _doctor_secrets(spec) and ok
     return 0 if ok else 1
+
+
+def _doctor_secrets(spec) -> bool:
+    """Print what the provider will ask for, masked, and fail on a missing must.
+
+    Nothing here ever contains a value: ``Secrets.describe`` renders a length,
+    which is enough to tell a wrong token from an absent one (R-B4).
+    """
+    if spec.provider is None:
+        return True
+    from .provider import collect_secrets, load_provider
+
+    declared = dict(spec.provider.secrets)
+    try:
+        module, _ = load_provider(spec.provider.module, spec.root)
+        declared.update(collect_secrets(module))
+    except VidkitError as exc:
+        print(f"  [NO ] provider          {exc}")
+        return False
+
+    needs = Secrets()
+    needs.declare(declared, why=f"declared by provider {spec.provider.module!r}")
+    needs.resolve()
+    print(f"        secrets         provider {spec.provider.module!r}")
+    if not needs.needs:
+        print("          (none declared)")
+    for line in needs.describe():
+        print(f"          {line}")
+    missing = needs.missing_required()
+    if missing:
+        print(f"  [NO ] secrets           not set: {', '.join(missing)}")
+        return False
+    return True
 
 
 def _plan(spec_path: Path, timeframe: Timeframe | None = None) -> int:
@@ -201,6 +236,11 @@ def main(argv: list[str] | None = None) -> int:
             p.add_argument("--only", default=None,
                            help="comma-separated stages: "
                                 "data,panels,stills,capture,narration,clips,concat,render,verify")
+            p.add_argument("--from", dest="from_stage", default=None, metavar="STAGE",
+                           help="run this stage and everything after it")
+            p.add_argument("--refresh", action="store_true",
+                           help="fetch provider data again instead of reusing a "
+                                "snapshot (adds the data stage back into --only/--from)")
 
     p_init = sub.add_parser("init", help="scaffold a new story directory")
     p_init.add_argument("dir", help="directory to create the story in")
@@ -233,9 +273,13 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         if args.cmd == "build":
             only = [s.strip() for s in args.only.split(",")] if args.only else None
+            if args.only and args.from_stage:
+                raise VidkitError("--only and --from select stages two different ways; "
+                                  "use one of them")
             assets = run(Path(args.spec).resolve(), only=only,
+                         from_stage=args.from_stage,
                          out_dir=Path(args.out) if args.out else None,
-                         timeframe=_override(args))
+                         timeframe=_override(args), refresh=args.refresh)
             print(json.dumps(_assets_to_json(assets), indent=1))
             return 0 if (assets.report is None or assets.report.ok) else 2
         if args.cmd == "tts":

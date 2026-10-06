@@ -50,52 +50,88 @@ traceability). Design consequences recorded as D17–D19.
 
 ---
 
-## Current phase: M2 — Provider & data hardening  *(P1)*
+## M2 — Provider & data hardening — **COMPLETE**
 
-**Purpose.** Make what a provider *says* good enough to hand to an agent. M1 made the request
-aimable; M2 makes the answer trustworthy, and makes a build resumable without a network.
-
-**Requirements.** R-B3 (dataset snapshots), R-B4 (secret contract), R-B5 (deterministic
-fallback). R-B1 (plugin loading) and R-B2 (timeframe threading) are already done — R-B2 landed
-in M1.
-
-**Exit criterion.**
+Exit criterion ([FEATURE-ROADMAP.md](FEATURE-ROADMAP.md) §5):
 
 > `vidkit build --only panels,clips,render` works from persisted data, **offline**.
 
+**Met, and the interesting half is what it refuses.** M1 made a build aimable; M2 makes its
+data trustworthy, and makes an offline re-render the *default* rather than an option to
+remember.
+
+### Verified evidence
+
+| Claim | How it was checked | Result |
+|---|---|---|
+| Offline re-render works | `build --only panels,clips,render` on hello-world | exit **0** in **99.20 s**, logging `datasets: reusing snapshot` |
+| …and does not touch the source | a probe provider that *appends to a file* when it runs | file unchanged across the panels build (CI step) |
+| A snapshot for another window is refused | `--only panels --timeframe 2026-02-01..2026-02-28` | exit **2**, `snapshot is stale` naming both windows |
+| A missing snapshot is refused, not refetched | deleted `_build/data/` | exit **2**, naming the data dir; source still untouched |
+| `--refresh` is the way out | `--only panels --refresh` | source asked again, panel re-rendered |
+| Secrets are masked | `doctor` on a spec with a declared variable | prints `NAME  set (37 chars)`, never the value |
+| …including in provider error text | `redact("upstream refused token <value>")` | `upstream refused token ***` |
+| A missing secret fails loudly | empty exported variable | `missing_required()` non-empty; `doctor` exits non-zero |
+| Degradation is a fact, not a hunch | `guard.require_live_data: true` + a fallback | `facts.degraded` non-empty; `all datasets live` fails |
+| Suite is green and still cheap | `python3 -m pytest tests -q` | **124 passed in 0.70 s** (P6 holds) |
+| CI asserts all of it | extracted every `run:` block and executed it | all pass locally |
+
+Design consequences recorded as **D20–D22**.
+
+---
+
+## Current phase: M3 — Capture v2  *(P0)*
+
+**Purpose.** Record real product *behaviour*, not just real product screens. This is the last
+capability that only ever existed in an ad-hoc script, and it is P0 because M5–M10 all assume
+capture is real.
+
+**Requirements.** R-C3 (downloads), R-C4 (artifact rendering), R-C5 (element waits),
+R-C6 (take selection), R-C7 (auth), R-C8 (deterministic rendering).
+
+**Exit criterion.**
+
+> A spec can capture a real downloaded file and film it, with no bespoke script.
+
 ### Ordered work
 
-1. **Snapshot guarantee (R-B3).** Datasets are already written to `data/*.json`; the work is to
-   make that a *guarantee* rather than a side effect — record enough alongside each snapshot
-   (dataset name, provider, resolved timeframe, a content hash) that a resumed build can prove
-   it is re-rendering from the data that matches the current spec, and **refuse** a stale
-   snapshot instead of silently mixing windows.
-2. **`--only` and `--from` actually honour it.** Confirm the stage list is validated
-   (`STAGES` order), that a skipped stage's outputs are *checked for existence* rather than
-   assumed, and that skipping `data` does not silently reach the network.
-3. **Secret/env contract (R-B4).** Providers declare what they need; the engine resolves from
-   the environment, never logs a value, never writes to the source system. A missing declared
-   secret must fail loudly at `doctor`, not mid-build.
-4. **Deterministic fallback (R-B5).** A model-dependent dataset that is unavailable must
-   produce a *declared* degradation — never a stuck "loading" frame, never an invented number.
-   This is D16 applied to the data path.
-5. **Provider guide (R-H5 partial).** Document the seam: what a provider may return, what the
-   engine validates, what happens when it lies.
+1. **`wait_for` action (R-C5).** Smallest and most load-bearing: a capture that races the UI
+   is the root cause of most flaky recordings. `wait_for_selector` with an optional timeout,
+   and a refusal that names the selector.
+2. **`download` action (R-C3).** `click` → `expect_download` → save the real bytes to
+   `_capture/artifacts/`, and record the path so a later shot can show it. The bytes are the
+   evidence — never a mocked filename.
+3. **`content`/`artifact` capture (R-C4).** Render the saved bytes in a page and screenshot
+   them. That is how a generated PDF, CSV or image becomes a shot.
+4. **Assertions before the shot (R-C1, already done) extended to the new actions.** Every new
+   action must be able to carry the same `assert` the URL capture has.
+5. **Take selection (R-C6).** `take: 2` or a predicate, so a recorded flow can be re-run and a
+   better take kept without re-authoring.
+6. **Auth/session (R-C7).** Reuse a stored `storage_state`, and refuse to record a login form
+   unless the spec says the login *is* the story.
+7. **Deterministic rendering (R-C8).** Freeze the clock, the locale, the viewport and
+   `prefers-reduced-motion` so two captures of the same flow are byte-comparable.
+8. **Capture guide.** Document each action with its refusals; a capture action that cannot
+   fail honestly is not finished.
 
 ### Tasks
 
 | # | Task | Status | Depends on |
 |---|---|---|---|
-| 1 | Snapshot metadata + staleness refusal (R-B3) | `[ ]` | — |
-| 2 | `--only/--from` re-render offline test — the M2 exit criterion | `[ ]` | 1 |
-| 3 | Secret/env declaration + resolution + `doctor` check (R-B4) | `[ ]` | — |
-| 4 | Declared-degradation fallback for unavailable datasets (R-B5) | `[ ]` | — |
-| 5 | `docs/authoring/providers.md` — the provider guide (R-H5) | `[ ]` | 1–4 |
-| 6 | Tests for 1–4, keeping the suite sub-second | `[ ]` | 1–4 |
-| 7 | Branch `phase/m2-provider-hardening` → commits → PR → merge | `[ ]` | 6 |
+| 1 | `wait_for` action + tests | `[ ]` | — |
+| 2 | `download` action → real bytes in `_capture/artifacts/` | `[ ]` | 1 |
+| 3 | `content`/`artifact` capture that shoots the saved bytes | `[ ]` | 2 |
+| 4 | `assert` support on every new action | `[ ]` | 2, 3 |
+| 5 | Take selection | `[ ]` | 2 |
+| 6 | Auth/session reuse | `[ ]` | 1 |
+| 7 | Determinism: frozen clock/locale/viewport/reduced-motion | `[ ]` | — |
+| 8 | `docs/authoring/capture-guide.md` | `[ ]` | 1–7 |
+| 9 | Branch `phase/m3-capture-v2` → commits → PR → merge | `[ ]` | 8 |
 
-**Evidence requirement.** 2 and 4 must be *demonstrated* (a real offline re-render; a real
-missing-secret failure), not asserted — same bar as M1.
+**Evidence requirement.** 2 and 3 must be demonstrated against a **local HTTP server** the
+test starts itself — no external network, and no browser needed for the parts that can be
+unit-tested with a fake page object. Playwright is absent on this machine, so every path that
+needs it is written to a narrow seam and unit-tested through a fake; the CI runner installs it.
 
 ---
 
@@ -142,6 +178,10 @@ scope and exit criteria.
 
 ## Still-open questions for the owner
 
-None blocking M2. The next genuinely open questions belong to M5 (job contract shape) and M9
+None blocking M3. The next genuinely open questions belong to M5 (job contract shape) and M9
 (movie mode scope); the one item that needs an explicit go-ahead is the **public `v1.0.0`
 tag at M6**.
+
+Playwright is not installed on the development machine, so M3 is written against a narrow
+seam and unit-tested with a fake page; the CI runner installs the real thing. Any capture
+claim that cannot be demonstrated locally is marked as such until CI proves it.

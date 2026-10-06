@@ -117,6 +117,16 @@ def verify_output(ctx: Context, assets, scenes_text: dict[int, str]) -> Report:
         rep.add("all live captures present", not missing,
                 f"missing: {missing}" if missing else f"{len(spec.captures)} captured")
 
+    # live-data guarantee: every dataset came from the source, not a fallback
+    degraded = dict(spec.degraded)
+    if guard.require_live_data:
+        where = "; ".join(f"{k}: {v}" for k, v in sorted(degraded.items()))
+        rep.add("all datasets live", not degraded,
+                f"degraded: {where}" if degraded else f"{len(ctx.data_dir.glob('*.json'))} dataset(s)")
+    elif degraded:
+        rep.add("all datasets live", True,
+                "degraded but declared (guard.require_live_data false): " + where)
+
     # narration word count vs duration (sanity: ~2-3 words/sec is plausible speech)
     total_words = sum(len(t.split()) for t in scenes_text.values())
     wps = total_words / dur if dur else 0

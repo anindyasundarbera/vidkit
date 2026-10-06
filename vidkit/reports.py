@@ -75,7 +75,7 @@ def doctor_report(spec_path: Path | None = None, *,
             "scenes": len(spec.scenes),
             "captures": len(spec.captures),
             "charts": len(spec.charts),
-            "provider": spec.provider or None,
+            "provider": spec.provider_name,
             "story": spec.story.to_dict() if spec.story else None,
             "timeframe": spec.timeframe.to_dict() if spec.timeframe else None,
         }

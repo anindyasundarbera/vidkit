@@ -2,7 +2,7 @@
 
 Stages run in order and can be limited with ``only``:
 
-``data``      provider datasets -> JSON in ``_build/data``
+``data``      provider datasets -> JSON in ``_build/data`` (+ ``_snapshot.json``)
 ``panels``    chart definitions -> SVG -> PNG stills
 ``stills``    static SVG/PNG assets referenced by scenes -> PNG stills
 ``capture``   Playwright screen recordings -> PNG stills
@@ -11,6 +11,12 @@ Stages run in order and can be limited with ``only``:
 ``concat``    clips -> one video track; WAVs -> one audio track
 ``render``    mux video + audio + burned-in captions -> final mp4
 ``verify``    run the guard checks and write a report
+
+``only=[...]`` selects stages by name; ``from_stage`` selects a suffix. Either way
+a skipped input is *proved* to be present — and datasets are proved to have been
+computed for this same provider and window — rather than assumed (R-B3).
+``refresh`` puts the ``data`` stage back into such a plan, so the source is asked
+again even though a snapshot would have been acceptable.
 """
 
 from __future__ import annotations
@@ -28,6 +34,8 @@ from . import tts as _tts
 from .context import Context
 from .errors import SpecError
 from .narration import build_srt, parse_scene_script, word_count
+from .snapshot import (SNAPSHOT_FILE, Snapshot, digest_text, load_datasets,
+                       request_key, verify_fresh)
 from .spec import Spec, load_spec
 from .timeframe import Timeframe, parse_timeframe
 from .svg import PanelDoc, document
@@ -81,7 +89,12 @@ def _announce(ctx: Context) -> None:
     ctx.info(f"timeframe: {tf.label()} [{tf.source}]" if tf else "timeframe: (not declared)")
 
 
-def _stage_set(only: Iterable[str] | None) -> set[str]:
+def _stage_set(only: Iterable[str] | None, from_stage: str | None = None) -> set[str]:
+    """Which stages to run. ``from_stage`` wins over ``only`` when both are given."""
+    if from_stage:
+        if from_stage not in STAGES:
+            raise SpecError(f"unknown stage {from_stage!r}; known: {', '.join(STAGES)}")
+        return set(STAGES[STAGES.index(from_stage):])
     if not only:
         return set(STAGES)
     chosen = set(only)
@@ -93,30 +106,68 @@ def _stage_set(only: Iterable[str] | None) -> set[str]:
 
 # --------------------------------------------------------------------------- #
 def run(spec_path: Path | str, *, only: Iterable[str] | None = None,
+        from_stage: str | None = None,
         out_dir: Path | None = None, timeframe: Timeframe | str | dict | None = None,
-        as_of: date | None = None) -> Assets:
+        as_of: date | None = None, refresh: bool = False) -> Assets:
     ctx = make_context(spec_path, out_dir, timeframe=timeframe, as_of=as_of)
     spec = ctx.spec
-    stages = _stage_set(only)
+    stages = _stage_set(only, from_stage)
+    if refresh:
+        # `--refresh` means "go to the source even though the snapshot would do",
+        # so it re-adds the stage that reaching the source requires
+        stages.add("data")
     assets = Assets()
 
     # -- provider ---------------------------------------------------------- #
     module = None
     if spec.provider:
-        module, _ = _provider.load_provider(spec.provider, ctx.root)
+        # `write_back: true` was already refused at load time (R-B4); every secret
+        # is declared before the module runs, so the module can
+        # only ever see values the engine is able to redact afterwards
+        ctx.secrets.declare(spec.provider.secrets)
+        module, _ = _provider.load_provider(spec.provider.module, ctx.root)
         reg = getattr(module, "register", None)
         if callable(reg):
             reg()
-        ctx.info(f"provider: {spec.provider}")
+        ctx.secrets.declare(_provider.collect_secrets(module))
+        ctx.secrets.resolve()
+        ctx.info(f"provider: {spec.provider.module}")
 
     # -- data -------------------------------------------------------------- #
     datasets: dict = {}
-    if "data" in stages:
-        datasets = _provider.collect_datasets(module, ctx)
+    provider_path = (ctx.root / f"{spec.provider_name}.py") if spec.provider_name else None
+    wanted = request_key(provider=spec.provider_name, provider_path=provider_path,
+                         timeframe=spec.timeframe)
+    ran_data = "data" in stages
+    if ran_data:
+        try:
+            datasets = _provider.collect_datasets(module, ctx)
+        except _provider.SourceUnavailable:
+            # an unreachable source is only fatal when nothing was declared in
+            # its place; `fallback()` raises again with an explanation if so
+            raise
+        recorded = dict(spec.degraded)
+        hashes = {}
         for key, value in datasets.items():
-            (ctx.data_dir / f"{key}.json").write_text(
-                json.dumps(value, indent=1, default=str), encoding="utf-8")
-        ctx.info(f"datasets: {', '.join(sorted(datasets)) or '(none)'}")
+            blob = json.dumps(value, indent=1, default=str)
+            (ctx.data_dir / f"{key}.json").write_text(blob, encoding="utf-8")
+            hashes[key] = digest_text(blob)
+        Snapshot(path=ctx.data_dir / SNAPSHOT_FILE, request=wanted,
+                 datasets=hashes, degraded=recorded).write()
+        if recorded:
+            ctx.info(f"datasets: {', '.join(sorted(datasets)) or '(none)'} "
+                     f"({len(recorded)} degraded)")
+        else:
+            ctx.info(f"datasets: {', '.join(sorted(datasets)) or '(none)'}")
+
+    # A skipped `data` stage must re-render from the snapshot that matches *this*
+    # request — a snapshot taken for another window is the bug this refuses.
+    need_data = bool(stages & {"panels", "stills", "capture"})
+    if need_data and not ran_data:
+        verify_fresh(Snapshot.read(ctx.data_dir), wanted, data_dir=ctx.data_dir)
+        ctx.info("datasets: reusing snapshot")
+        for name, why in (Snapshot.read(ctx.data_dir).degraded or {}).items():
+            ctx.degrade(name, why)
 
     # -- panels ------------------------------------------------------------ #
     panel_defs = _provider.collect_panels(module)
@@ -132,13 +183,17 @@ def run(spec_path: Path | str, *, only: Iterable[str] | None = None,
             else:
                 panel_defs[c.name] = (c.kind, c.dataset, dict(c.options))
         if not datasets:
-            # reload persisted datasets so panels can render on their own
-            for f in ctx.data_dir.glob("*.json"):
-                datasets[f.stem] = json.loads(f.read_text(encoding="utf-8"))
+            # reload persisted datasets so panels can render on their own; the
+            # freshness of these files was proved above, before this point
+            datasets = load_datasets(ctx.data_dir)
         for name, (kind, dataset, options) in panel_defs.items():
             data = datasets.get(dataset)
             if data is None and dataset in spec.__dict__:
                 data = spec.__dict__[dataset]
+            if data is None:
+                raise SpecError(
+                    f"chart {name!r} needs dataset {dataset!r}, which neither the "
+                    "provider produced nor the spec defines")
             doc = PanelDoc(spec.project.width, spec.project.height)
             title = options.pop("title", name)
             kicker = options.pop("kicker", "")

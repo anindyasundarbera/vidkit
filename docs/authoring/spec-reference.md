@@ -20,7 +20,7 @@ then `ROOT/..`, then the current directory.
 | `scenes` | ✅ | list | ≥ 1 scene |
 | `narration` | ✅* | mapping | *required unless every scene has `narration.inline` |
 | `voice` | — | mapping | defaults to Piper, engine on |
-| `provider` | — | string | module name; enables custom data/renderers |
+| `provider` | — | string or mapping | module name; enables custom data/renderers, secrets, fallbacks |
 | `timeframe` | — | mapping | the window of time the story is about; see below |
 | `captures` | — | list | screen recordings |
 | `charts` | — | list | data panels |
@@ -143,14 +143,37 @@ and the accepted spellings.
 
 ## `provider`
 
-A string naming a Python module in `ROOT` (with or without `.py`). If set, vidkit imports it
-and calls, when present: `register()`, `datasets(ctx)`, `panels()`, `stills(ctx)`.
+Names a Python module in `ROOT` (with or without `.py`). If set, vidkit imports it and
+calls, when present: `secrets()`, `register()`, `datasets(ctx)`, `panels()`, `stills(ctx)`.
 
-See [`provider-guide.md`](provider-guide.md).
+Two spellings are accepted. The short one is enough when the module needs no credentials:
 
 ```yaml
 provider: provider
 ```
+
+The long one declares what the provider reads from the environment, so `vidkit doctor` can
+report a missing variable before a render starts:
+
+| Field | Type | Default | Meaning |
+|---|---|---|---|
+| `module` | string | — | the module name in `ROOT` (required in the long form) |
+| `secrets` | mapping or list | `{}` | `NAME: true` for required, `NAME: false` for optional |
+| `write_back` | bool | `false` | must stay `false`; `true` is refused at load time |
+
+```yaml
+provider:
+  module: acme
+  secrets:
+    ACME_TOKEN: true
+    ACME_REGION: false
+```
+
+`write_back: true` is refused when the spec is loaded: vidkit is **read-only by contract**,
+so a provider may read from a source system and report on it, and nothing else. Secret values
+are read from the environment only and are masked in everything the engine prints. When a
+source is unreachable a provider raises `SourceUnavailable` and returns a declared fallback,
+which is recorded as a degraded dataset rather than passed off as live data.
 
 See [`provider-guide.md`](provider-guide.md).
 
@@ -274,6 +297,7 @@ scenes:
 | `banned` | list[string] | `[]` | substrings that must **not** appear in any narration/caption text |
 | `required` | list[string] | `[]` | substrings that **must** appear |
 | `require_live_mode` | bool | `false` | every declared capture must have been captured |
+| `require_live_data` | bool | `false` | no dataset may be degraded (a declared fallback counts as degraded) |
 
 Matching is case-insensitive over the union of scene text and caption text. See
 [`verification.md`](../verification/verification.md).
@@ -283,6 +307,7 @@ guard:
   banned: ["legal limit", "proves a", "a real event"]
   required: ["synthetic", "causation"]
   require_live_mode: true
+  require_live_data: true
 ```
 
 ---

@@ -8,6 +8,8 @@ A *provider* is a plain Python module named in the spec. It may supply:
 * ``stills(ctx) -> dict[str, Path]`` — named still images a scene can reference.
 * ``extra_voices`` — not used yet.
 * ``register()`` — called once so the provider can add custom panel kinds.
+* ``secrets() -> dict[str, str | bool]`` — the environment variables it reads,
+  so ``doctor`` can report a missing one before a render starts (R-B4).
 
 Only ``datasets`` is usually needed. vidkit loads the module from the spec's
 folder without installing anything; the module may import the host project's
@@ -23,7 +25,59 @@ from types import ModuleType
 from typing import Any
 
 from .context import Context
-from .errors import ProviderError
+from .errors import ProviderError, VidkitError
+
+
+class SourceUnavailable(VidkitError):
+    """A provider's data source could not be reached (R-B5).
+
+    Raise this — from ``datasets()`` or from inside a provider's own helpers —
+    and the engine will look for a *declared* fallback rather than failing the
+    build. See :func:`fallback` for the two shapes that are accepted.
+    """
+
+    def __init__(self, source: str, why: str = ""):
+        self.source = source
+        self.why = why
+        super().__init__(f"{source} unavailable" + (f": {why}" if why else ""))
+
+
+def fallback(ctx: Context, dataset: str, *, why: str = ""):
+    """The declared degradation path for one dataset (R-B5).
+
+    A model-dependent dataset that cannot be fetched must not hang a render,
+    and must not invent a number. This reads what the provider *declared* it
+    would show instead::
+
+        def datasets(ctx):
+            try:
+                return {"forecast": forecast(ctx)}
+            except SourceUnavailable as exc:
+                return fallback(ctx, "forecast", why=str(exc))
+
+    ``provider.fallbacks(ctx) -> {dataset: value}`` supplies the data;
+    ``provider.fallback_for(dataset, ctx) -> value`` supplies it one at a time.
+    Either way the dataset is marked **degraded**, which is reported and — under
+    ``guard.require_live_data`` — is a verification failure.
+    """
+    module = getattr(ctx, "_provider_module", None)
+    value = None
+    if module is not None:
+        one = getattr(module, "fallback_for", None)
+        if callable(one):
+            value = one(dataset, ctx)
+        else:
+            many = getattr(module, "fallbacks", None)
+            if callable(many):
+                value = (many(ctx) or {}).get(dataset)
+    if value is None:
+        raise SourceUnavailable(
+            dataset,
+            (why + "; " if why else "")
+            + "no `fallback_for()`/`fallbacks()` value was declared, so there is "
+              "nothing honest to show in its place")
+    ctx.degrade(dataset, why or "the live source was unavailable")
+    return value
 
 
 def load_provider(name: str, root: Path) -> tuple[ModuleType, bool]:
@@ -57,16 +111,41 @@ def call_provider(module: ModuleType | None, func: str, *args, default: Any = No
     return fn(*args)
 
 
+def collect_secrets(module: ModuleType | None) -> dict[str, Any]:
+    """``provider.secrets()`` — names to requirements, so ``doctor`` can check."""
+    if module is None:
+        return {}
+    fn = getattr(module, "secrets", None)
+    if fn is None:
+        return {}
+    raw = fn() or {}
+    if isinstance(raw, str):
+        return {raw: True}
+    if isinstance(raw, (list, tuple)):
+        return {str(n): True for n in raw}
+    if not isinstance(raw, dict):
+        raise ProviderError("provider.secrets() must return a dict, list or str")
+    return {str(k): v for k, v in raw.items()}
+
+
 def collect_datasets(module: ModuleType | None, ctx: Context) -> dict[str, Any]:
     if module is None:
         return {}
     fn = getattr(module, "datasets", None)
     if fn is None:
         return {}
+    # `fallback()` needs to find the provider module without threading it through
+    # every provider signature; it is set here because this is the only entry
+    # point that can raise SourceUnavailable.
+    ctx._provider_module = module
     try:
         data = fn(ctx)
-    except Exception as exc:  # surface provider bugs clearly
-        raise ProviderError(f"provider.datasets() failed: {exc}") from exc
+    except SourceUnavailable:
+        raise
+    except Exception as exc:  # surface provider bugs clearly, without the value
+        raise ProviderError(f"provider.datasets() failed: {ctx.secrets.redact(str(exc))}") from exc
+    finally:
+        ctx._provider_module = None
     if not isinstance(data, dict):
         raise ProviderError("provider.datasets() must return a dict")
     return data

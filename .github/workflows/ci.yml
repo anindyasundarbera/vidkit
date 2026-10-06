@@ -197,6 +197,144 @@ jobs:
           vidkit plan _scaffold/video.yaml | tee /dev/stderr | grep -q "2026-09-23 to 2026-10-06"
           vidkit build _scaffold/video.yaml
 
+      # R-B3 / R-B4 / R-B5 — the M2 exit criterion, asserted rather than claimed.
+      # A build with `--only panels` must re-render from the snapshot, must NOT
+      # reach the source, and must refuse a snapshot taken for a different window.
+      # The evidence is a canary the provider appends to: a log line saying
+      # "reusing snapshot" is a claim, an untouched file is a fact.
+      - name: Re-render offline, and refuse a stale snapshot
+        run: |
+          set -eu
+          probe=$(mktemp -d)
+          mkdir -p "$probe/story"
+          cat > "$probe/story/provider.py" <<'PY'
+          from pathlib import Path
+
+          CANARY = Path(__file__).resolve().parent / "canary.txt"
+
+
+          def datasets(ctx):
+              # append, so the file's *content* proves how many times we ran
+              CANARY.write_text((CANARY.read_text() if CANARY.exists() else "") + ".")
+              return {"n": {"headline": "1",
+                            "cards": [{"label": "a", "value": "1"}]}}
+          PY
+          cat > "$probe/story/narration.md" <<'MD'
+          # probe
+
+          ## Scene 1 · 0:00 – 0:05
+
+          **One.**
+          MD
+          cat > "$probe/story/video.yaml" <<'YAML'
+          project:
+            title: probe
+            slug: probe
+            output: probe.mp4
+            size: [640, 360]
+            fps: 12
+          provider: provider
+          timeframe: {start: 2026-01-01, end: 2026-01-31}
+          charts:
+            - name: n
+              kind: stat_cards
+              dataset: n
+          scenes:
+            - n: 1
+              shots: [{chart: n, effect: hold}]
+          narration: {source: narration.md}
+          voice: {engine: none}
+          guard:
+            require_live_data: true
+          YAML
+          : > "$probe/story/canary.txt"          # empty
+
+          vidkit build "$probe/story/video.yaml" --only data
+          first=$(cat "$probe/story/canary.txt")
+          test "$first" = "." || { echo "the data stage did not reach the provider" >&2; exit 1; }
+
+          # (a) the exit criterion: panels render from disk, offline
+          vidkit build "$probe/story/video.yaml" --only panels 2>&1 | tee "$probe/b.log"
+          grep -q "reusing snapshot" "$probe/b.log"
+          test -s "$probe/story/_build/stills/n.png"
+          test "$(cat "$probe/story/canary.txt")" = "$first" \
+            || { echo "--only panels re-ran the provider" >&2; exit 1; }
+          echo "OFFLINE RE-RENDER OK — the source was not touched"
+
+          # (b) a snapshot taken for another window must be refused, by name —
+          #     and the refusal must happen before the source is touched
+          if vidkit build "$probe/story/video.yaml" --only panels \
+               --timeframe 2026-02-01..2026-02-28 > "$probe/c.log" 2>&1; then
+            echo "expected a stale snapshot to be refused" >&2
+            exit 1
+          fi
+          grep -q "snapshot is stale" "$probe/c.log"
+          grep -q "2026-01-01 to 2026-01-31" "$probe/c.log"
+          test "$(cat "$probe/story/canary.txt")" = "$first" \
+            || { echo "a refused build reached the provider" >&2; exit 1; }
+          echo "STALE SNAPSHOT REFUSED — with the recorded window named"
+
+          # (c) --refresh is the documented way out
+          vidkit build "$probe/story/video.yaml" --only panels --refresh
+          test "$(cat "$probe/story/canary.txt")" = ".." \
+            || { echo "--refresh did not re-ask the source" >&2; exit 1; }
+          echo "REFRESH OK — the source was asked again"
+
+          # (d) a missing snapshot is refused by path, never silently refetched
+          rm -rf "$probe/story/_build/data"
+          if vidkit build "$probe/story/video.yaml" --only panels > "$probe/d.log" 2>&1; then
+            echo "expected a missing snapshot to be refused" >&2
+            exit 1
+          fi
+          grep -q "no dataset snapshot" "$probe/d.log"
+          test "$(cat "$probe/story/canary.txt")" = ".." \
+            || { echo "a build with no snapshot reached the provider" >&2; exit 1; }
+          echo "MISSING SNAPSHOT REFUSED — by path, without a refetch"
+
+      # R-B4: a declared secret that is absent must fail loudly, and a present
+      # one must never appear in the output. Both halves matter — a redaction bug
+      # is a security-class bug, so it gets a CI step rather than a review note.
+      - name: A missing secret fails loudly, a present one is never printed
+        run: |
+          set -eu
+          secret='s3cret-value-that-must-not-be-printed'
+
+          # (a) absent — and, just as important, *empty* — is not "set", and
+          #     `doctor` on a real spec exits non-zero naming the variable
+          ACME_TOKEN= python - <<'PY'
+          import sys
+          from vidkit.secrets import Secrets
+          s = Secrets()
+          s.declare({"ACME_TOKEN": "used to reach the ACME API"})
+          s.resolve()
+          print(*s.describe(), sep="\n")
+          if not s.missing_required():
+              sys.exit("an exported-but-empty variable was treated as set")
+          if s.get("ACME_TOKEN") is not None:
+              sys.exit("an empty variable produced a value")
+          PY
+
+          # (b) present — the inventory shows only the length, and the value is
+          #     masked in a provider's own exception text (the leak path that
+          #     actually matters: a 401 that echoes the token it sent)
+          ACME_TOKEN="$secret" python - <<'PY'
+          import sys
+          from vidkit.secrets import Secrets
+          s = Secrets()
+          s.declare({"ACME_TOKEN": "used to reach the ACME API"})
+          s.resolve()
+          out = "\n".join(s.describe())
+          out += "\n" + s.redact("upstream refused token " + s["ACME_TOKEN"])
+          print(out)
+          if "s3cret-value" in out:
+              sys.exit("the secret value was printed")
+          if "set (" not in out:
+              sys.exit("the inventory did not report the variable as set")
+          if "***" not in out:
+              sys.exit("the secret was not masked in provider text")
+          PY
+          echo "SECRET CONTRACT OK — declared, resolved, masked"
+
       - name: Assert verification passed
         run: |
           python - <<'PY'

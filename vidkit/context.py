@@ -6,7 +6,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from .errors import SpecError
 from .ffmpeg import Ffmpeg, Rsvg, Shell
+from .secrets import Secrets
 from .spec import Spec
 
 
@@ -17,6 +19,41 @@ class Context:
     out_dir: Path                  # where renders are written
     log: list[str] = field(default_factory=list)
     shell: Shell = field(default_factory=Shell)
+    secrets: Secrets = field(default_factory=Secrets)
+    _provider_module: Any = None   # set only while provider.datasets() is running
+
+    def secret(self, name: str, default: str | None = None) -> str | None:
+        """Read a declared secret.
+
+        The only supported way for a provider to reach a credential, so that
+        every value the engine knows about can be redacted from anything it
+        prints.
+        """
+        return self.secrets.get(name, default)
+
+    def require_secret(self, name: str) -> str:
+        """Read a secret, or raise naming the variable that is missing."""
+        if not self.secrets.has(name):
+            raise SpecError(
+                f"provider needs the environment variable {name}, which is not set"
+                " — export it, or declare it optional in the spec's `provider:` block")
+        return self.secrets[name]
+
+    # -- declared degradation (R-B5) --------------------------------------- #
+    def degrade(self, name: str, why: str) -> None:
+        """Declare that the dataset ``name`` is real but reduced.
+
+        Called by a provider that could not reach its source and fell back to
+        its own deterministic default. The build keeps going — a missing model
+        must never hang a render — but the fact is recorded, and
+        ``guard.require_live_data`` turns it into a verify failure.
+        """
+        self.degraded[str(name)] = str(why)
+        self.warn(f"dataset {name!r} is degraded: {why}")
+
+    @property
+    def degraded(self) -> dict[str, str]:
+        return self.spec.degraded
 
     @property
     def project(self):
@@ -106,6 +143,8 @@ class Context:
         }
         if self.spec.timeframe is not None:
             out["timeframe"] = self.spec.timeframe.to_dict()
+        if self.spec.degraded:
+            out["degraded"] = dict(self.spec.degraded)
         return out
 
     def info(self, message: str) -> None:

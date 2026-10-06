@@ -148,15 +148,26 @@ def tool_plan(spec: str | None = None) -> dict[str, Any]:
 
 
 def tool_build(spec: str | None = None, out: str | None = None,
-               only: list[str] | None = None) -> dict[str, Any]:
-    """Run the pipeline and return the artifacts + verification report."""
+               only: list[str] | None = None, from_stage: str | None = None,
+               refresh: bool = False) -> dict[str, Any]:
+    """Run the pipeline and return the artifacts + verification report.
+
+    ``only`` selects stages, ``from_stage`` resumes at one and runs the rest, and
+    ``refresh`` re-adds the ``data`` stage so the source is asked again. They are
+    the same contract as the CLI's ``--only`` / ``--from`` / ``--refresh``: an
+    agent that can select stages must also be able to say "do not trust what is
+    on disk" (R-B3).
+    """
     from .assembler import run
 
+    if only and from_stage:
+        raise ToolError("`only` and `from_stage` are mutually exclusive")
     spec_path = resolve_spec(spec)
     out_dir = Path(out).expanduser().resolve() if out else None
     try:
         with stdout_to_stderr():
-            assets = run(spec_path, only=only or None, out_dir=out_dir)
+            assets = run(spec_path, only=only or None, from_stage=from_stage,
+                         out_dir=out_dir, refresh=refresh)
     except VidkitError as exc:
         raise ToolError(str(exc)) from exc
     result = _assets_summary(assets)
@@ -396,12 +407,14 @@ def _register_tools(server) -> None:
         title="Build the video",
         description="Run the full pipeline (capture, charts, narration, render, verify). "
                     "Returns the output path, captions, and the verification report. "
-                    "Stages for `only`: data, panels, stills, capture, narration, clips, "
-                    "concat, render, verify.",
+                    "Stages for `only`/`from_stage`: data, panels, stills, capture, "
+                    "narration, clips, concat, render, verify. `refresh: true` re-asks "
+                    "the data source even when a snapshot would do.",
     )
     def vidkit_build(spec: str | None = None, out: str | None = None,
-                     only: list[str] | None = None) -> dict:
-        return tool_build(spec, out, only)
+                     only: list[str] | None = None, from_stage: str | None = None,
+                     refresh: bool = False) -> dict:
+        return tool_build(spec, out, only, from_stage, refresh)
 
     @server.tool(
         name="vidkit_tts",

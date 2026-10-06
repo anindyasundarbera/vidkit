@@ -15,6 +15,7 @@ render. The report is written to `OUT/_build/verify.json`.
 | `required phrase present: <p>` | `<p>` appears ≥ 1 time | script + SRT |
 | `captions readable` | every cue ≤ 2 lines × ≤ 42 chars | SRT |
 | `all live captures present` | every declared capture produced a PNG | `assets.capture_stills` |
+| `all datasets live` | no dataset was declared degraded (a fallback used after an outage) | provider + spec |
 | `speech rate plausible` | 1.6–3.6 words/sec | script + duration |
 | `no mock mode referenced` | `mode=mock` absent, or only as a prohibition | narration + captions |
 | `timeframe consistent with spec` | every window the narration states matches the resolved timeframe | script + SRT + spec |
@@ -76,11 +77,18 @@ guard:
   banned: ["legal limit", "proves a", "a real event"]
   required: ["synthetic", "causation"]
   require_live_mode: true       # every capture must have succeeded
+  require_live_data: true       # no dataset may have fallen back to a declared default
 ```
 
 - `guard.min_seconds` / `guard.max_seconds` override the project window for the check.
 - `require_live_mode: true` enforces that captures actually ran (use it whenever the story
   depends on real UI).
+- `require_live_data: true` enforces that every dataset came from its source. A provider
+  whose source was unreachable may raise `SourceUnavailable` and return a value it
+  *declared* in advance; that dataset is recorded in `facts.degraded` and fails this check.
+  Use it whenever the video's claim is "this is what the system says today"; leave it
+  `false`, and say so in the spec, for a demo whose provider synthesizes its own series.
+  See [the provider guide](../authoring/provider-guide.md#when-the-source-is-down).
 
 ## What verification does NOT do
 

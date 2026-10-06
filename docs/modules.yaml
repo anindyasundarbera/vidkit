@@ -83,7 +83,7 @@ modules:
       - {file: plan/PLAN.md, title: Plan, summary: What we are doing now and next; rewritten each phase.}
       - {file: plan/FEATURE-ROADMAP.md, title: Feature roadmap, summary: Phase-wise feature plan M0-M10 with exit criteria.}
       - {file: plan/HISTORY.md, title: History, summary: Append-only record of what has been done, with evidence.}
-      - {file: plan/DECISIONS.md, title: Decisions, summary: Append-only decision log (D1-D16) with alternatives and consequences.}
+      - {file: plan/DECISIONS.md, title: Decisions, summary: Append-only decision log (D1 onward) with alternatives and consequences.}
       - {file: plan/OPENMONTAGE.md, title: OpenMontage assessment, summary: Frozen research record and integration verdict for calesthio/OpenMontage.}
 
 # Suggested reading order for first contact.

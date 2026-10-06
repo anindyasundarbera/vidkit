@@ -274,7 +274,7 @@ Working tree clean, `main` tracking `origin/main`, remote tree carries all 54 fi
 
 ## 2026-10-06 — M1: the story & timeframe contract
 
-**Branch:** `phase/m1-story-timeframe` → PR → `main`.
+**Branch:** `phase/m1-story-timeframe` → PR #1 → `main`, merge commit **`aa3eb5d`** (CI green).
 
 The blocker is closed. vidkit can now be *aimed*: a story has an identity, and a build has a
 window of time it is about — a window that `verify` independently checks the video against.
@@ -354,9 +354,118 @@ its runtime window was guessed from `tf.days`, so the scaffold failed its own pa
 own runtime check. Now it emits real `—`/`·`/`–` and sizes the window from the narration's own
 word count at 2.5 words/sec — the same constant the silent-cut path actually uses.
 
+### The MCP surface got the same contract
+
+`vidkit build` accepts `from_stage` and `refresh`, refuses `only` and `from_stage` together,
+and the tool description names both. An agent that can select stages must also be able to say
+"do not trust what is on disk" — otherwise R-B3 only holds for humans.
+
+### Evidence in CI, not in a claim
+
+Two new steps, both of which *prove* something rather than assert it:
+
+- **Re-render offline, and refuse a stale snapshot.** The probe uses a provider that
+  **appends to a canary file** every time it runs. A log line saying `reusing snapshot` is a
+  claim; an unchanged file is a fact. Four cases: `--only panels` re-renders without touching
+  the source, a stale window is refused *by name* before the source is touched, `--refresh`
+  asks again, and a deleted snapshot is refused by path without a silent refetch.
+- **A missing secret fails loudly, a present one is never printed.** Covers the two halves
+  that matter: an exported-but-**empty** variable is not "set", and the value is masked in a
+  provider's own exception text — the leak path that actually happens.
+
 ### Documentation
 
 New `docs/authoring/stories-and-timeframes.md` (registered in `docs/modules.yaml`), and
 updates to `spec-reference.md`, `narration-and-captions.md`, `concepts.md`, `cli-reference.md`,
 `verification.md`. The `timeframe` key, the precedence rules, and the three things narration
 may say about time are all documented where an author or an agent will look for them.
+
+---
+
+## 2026-10-06 — M2: provider, secret and snapshot hardening
+
+**Branch:** `phase/m2-provider-hardening` → PR → `main`.
+
+M1 made a build *aimable*. M2 makes its **data** trustworthy, which is what has to be true
+before an agent is allowed to drive the provider seam.
+
+### The four things that changed
+
+**1. A snapshot records the request it answers (R-B3).** `_build/data/_snapshot.json` holds
+`{provider, provider_sha256, timeframe}` beside a hash per dataset. A stage about to reuse
+on-disk datasets compares its own request against that record and refuses when it differs:
+
+```
+datasets for "biggest" were fetched with a different timeframe
+  recorded: 2026-08-01 to 2026-09-30 (61 days)
+  wanted:   2026-09-07 to 2026-10-06 (30 days)
+re-run with --refresh, or build without --only so the data stage runs.
+```
+
+The key is deliberately narrow. Provider identity, provider *source* hash, and the resolved
+window. A chart title is not part of it — a cosmetic edit must never refetch a source.
+
+**2. Secrets are declared and masked (R-B4).** A need is declared in the spec's
+`provider.secrets` (so `doctor` and `plan` work without importing provider code) *and* the
+module's `secrets()`; the two are merged. Resolution is from the environment only. An empty
+string counts as **unset**. `Secrets.redact()` masks by longest value first and is applied to
+provider *exception text* as well as engine messages. `doctor` prints a masked inventory and
+exits non-zero on a missing required variable:
+
+```
+secrets:
+  ACME_TOKEN       set (43 chars)
+  ACME_BASE_URL    NOT SET — required
+```
+
+`provider.write_back: true` is now refused at load time — the engine never writes to a source
+system.
+
+**3. Degradation is declared, recorded, and only fatal by request (R-B5).** A provider may
+raise `SourceUnavailable` and return a value it *declared* via `fallback_for(name, ctx)` or
+`fallbacks(ctx)`. If it does not, the build fails. A fallback *used* is recorded in
+`ctx.degraded`, which reaches `verify.json` as `facts.degraded`; `guard.require_live_data: true`
+turns any degradation into a verify failure. The default is `false`, because hello-world's
+provider *synthesizes* its series and is authored, not degraded.
+
+**4. Stages are resumable.** `--from STAGE` selects a suffix; `--refresh` re-adds the `data`
+stage; the two are mutually exclusive with `--only`.
+
+### Evidence, not assertion
+
+| Probe | Result |
+|---|---|
+| `python3 -m pytest tests -q` | **124 passed in 0.70 s** (was 84; **+40** in `tests/test_providers.py`) |
+| `python3 -m vidkit build examples/hello-world/video.yaml --only panels,clips,render` | exits 0 in **99.20 s**, logging `[vidkit] datasets: reusing snapshot` — the offline exit criterion |
+| same, after editing the spec's window | exits **2**, refusing with the sentence above |
+| same, with `_build/data/` deleted | exits **2**, naming the data dir — never silently refetching |
+| same, with `--refresh` | refetches, then renders |
+| `python3 -m vidkit doctor examples/hello-world/video.yaml` | prints the masked secrets section |
+| the new CI steps, extracted and executed locally | `OFFLINE RE-RENDER OK`, `STALE SNAPSHOT REFUSED`, `MISSING SNAPSHOT REFUSED`, `REFRESH OK`, `SECRET CONTRACT OK` |
+
+### Defects found and fixed while building it
+
+1. **`load_datasets` fell back to a built-in sample.** A chart whose dataset was absent
+   rendered a *plausible* chart from canned numbers. That is exactly the fabrication D16
+   forbids, hiding behind a green build. It now raises a `SpecError` naming the missing file.
+2. **`Spec.provider` was a bare `str`.** It could not carry `secrets` or `write_back` without
+   the spec growing parallel top-level keys. Now a `ProviderSpec`, with `provider_name` kept
+   as the derived display string so no call site had to guess.
+3. **A provider exception's text reached the log unredacted.** With secrets in scope this is a
+   leak path: a `401` message that echoes the token it sent. `collect_datasets` now redacts.
+4. **`{}` for `provider:` was treated as a named module.** An empty mapping produced a
+   provider literally named `""`.
+
+### Documentation
+
+`docs/authoring/provider-guide.md` now documents the seam as a *contract* — `secrets()`,
+`fallbacks`, secrets and redaction, when the source is down, and datasets/snapshots/staleness.
+Also updated: `spec-reference.md` (the long-form `provider:` block, `require_live_data`),
+`cli-reference.md` (`--from`, `--refresh`, the staleness rule, exit code 2),
+`verification.md` (`all datasets live`), `concepts.md` (the state map and the boot sequence).
+
+### Decisions taken
+
+**D20** secrets are declared, environment-resolved, and masked everywhere. **D21** a snapshot
+records the request it answers, not just the data. **D22** degradation is declared in advance,
+recorded, and only fatal by request.

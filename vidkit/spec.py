@@ -120,6 +120,26 @@ class Guard:
     required: list[str] = field(default_factory=list)      # required substrings (any one? all — we require all)
     require_live_mode: bool = False
     require_audio: bool = True                             # a silent cut must be declared, never accidental
+    require_live_data: bool = False                        # a degraded dataset must be declared, never accidental
+
+
+@dataclass
+class ProviderSpec:
+    """How the spec names its provider, and what it promises about it (R-B4).
+
+    Short form: ``provider: provider`` — the module name alone. Long form::
+
+        provider:
+          module: acme_metrics
+          secrets: [ACME_TOKEN]
+          write_back: false
+    """
+    module: str | None = None
+    secrets: dict[str, bool] = field(default_factory=dict)   # name -> required
+    write_back: bool = False
+
+    def __bool__(self) -> bool:
+        return bool(self.module)
 
 
 STORY_MANIFEST = "story.yaml"
@@ -167,13 +187,14 @@ class Spec:
     scenes: list[Scene]
     voice: Voice = field(default_factory=Voice)
     narration: Narration = field(default_factory=Narration)
-    provider: str | None = None
+    provider: ProviderSpec | None = None
     captures: list[Capture] = field(default_factory=list)
     charts: list[Chart] = field(default_factory=list)
     guard: Guard = field(default_factory=Guard)
     story: Story | None = None
     timeframe: Timeframe | None = None
     root: Path = field(default_factory=Path.cwd)
+    degraded: dict[str, str] = field(default_factory=dict)   # dataset -> why it is not live
 
     # -- lookups ------------------------------------------------------------ #
     def capture(self, name: str) -> Capture | None:
@@ -188,6 +209,11 @@ class Spec:
     @property
     def size(self) -> tuple[int, int]:
         return self.project.size
+
+    @property
+    def provider_name(self) -> str | None:
+        """The provider module name, or ``None`` when the spec has no provider."""
+        return self.provider.module if self.provider else None
 
 
 # --------------------------------------------------------------------------- #
@@ -361,11 +387,14 @@ def load_spec(path: Path | str, *,
                   banned=[str(x) for x in (g.get("banned") or [])],
                   required=[str(x) for x in (g.get("required") or [])],
                   require_live_mode=bool(g.get("require_live_mode", False)),
-                  require_audio=bool(g.get("require_audio", True)))
+                  require_audio=bool(g.get("require_audio", True)),
+                  require_live_data=bool(g.get("require_live_data", False)))
+
+    provider = _provider_spec(raw.get("provider"))
 
     root = path.parent.resolve()
     spec = Spec(project=project, scenes=scenes, voice=voice, narration=narration,
-                provider=raw.get("provider"), captures=captures, charts=charts,
+                provider=provider, captures=captures, charts=charts,
                 guard=guard, root=root)
 
     spec.story = load_story(root, default_as_of=as_of)
@@ -373,6 +402,43 @@ def load_spec(path: Path | str, *,
 
     _validate(spec)
     return spec
+
+
+def _provider_spec(raw: Any) -> ProviderSpec | None:
+    """Accept both spellings of ``provider:``.
+
+    ``provider: acme`` is the short form and means the same as
+    ``provider: {module: acme}``. The long form is what lets a spec *declare*
+    what the provider needs, so a missing credential is a `doctor` failure
+    rather than a stack trace halfway through a render.
+    """
+    if raw is None:
+        return None
+    if isinstance(raw, str):
+        name = raw.strip()
+        return ProviderSpec(module=name) if name else None
+    if not isinstance(raw, dict):
+        raise SpecError("provider: must be a module name or a mapping")
+    unknown = sorted(set(raw) - {"module", "secrets", "write_back"})
+    if unknown:
+        raise SpecError("provider: unknown key(s): " + ", ".join(unknown)
+                        + " — expected module, secrets, write_back")
+    module = raw.get("module") or raw.get("name")
+    secrets: dict[str, bool] = {}
+    sec = raw.get("secrets")
+    if isinstance(sec, dict):
+        secrets = {str(k): bool(v) for k, v in sec.items()}
+    else:
+        for item in (sec or []):
+            secrets[str(item)] = True
+    if not module:
+        # a block with nothing but `secrets` describes no provider at all
+        if secrets or raw.get("write_back"):
+            raise SpecError("provider: a `secrets` or `write_back` entry needs a `module`")
+        return None
+    return ProviderSpec(module=str(module).strip(),
+                         secrets=secrets,
+                         write_back=bool(raw.get("write_back", False)))
 
 
 def _resolve_timeframe(raw: dict[str, Any], spec: Spec, override: Timeframe | None,
@@ -389,6 +455,11 @@ def _resolve_timeframe(raw: dict[str, Any], spec: Spec, override: Timeframe | No
 
 def _validate(spec: Spec) -> None:
     """Cross-reference checks that catch typos before any expensive rendering."""
+    if spec.provider is not None and spec.provider.write_back:
+        raise SpecError(
+            "the spec declares `provider.write_back: true`, but vidkit is read-only "
+            "by contract — a provider may read from its source system and report on "
+            "it, and nothing else")
     cap_names = {c.name for c in spec.captures}
     chart_names = {c.name for c in spec.charts}
     known_provider = spec.provider is not None
