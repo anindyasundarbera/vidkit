@@ -1,0 +1,135 @@
+# Pipeline
+
+The pipeline is a fixed, ordered list of **stages**. `vidkit build` runs them all;
+`--only a,b` runs a subset. This document defines each stage precisely: what it reads,
+what it writes, and what it needs.
+
+## Stage order
+
+```
+data → panels → stills → capture → narration → clips → concat → render → verify
+```
+
+- Defined in `assembler.STAGES`.
+- `--only` accepts any comma-separated subset, e.g. `--only panels` or
+  `--only clips,concat,render`.
+- **Dependency note:** `clips` needs `narration` results. If you run `--only clips`
+  without narration, vidkit loads existing WAVs from `_build/wavs/` if present, else
+  estimates duration from word count. `render` re-loads `_build/narration.wav` if the
+  narration stage did not run.
+
+## Stage reference
+
+### `data`
+**Reads:** the provider module (`provider.datasets(ctx)`).
+**Writes:** `OUT/_build/data/<name>.json` — one file per dataset key.
+**Purpose:** freeze the exact values the run used, so panels can re-render without the
+source system, and so the run is auditable.
+**Fails when:** the provider raises (wrapped as `ProviderError`), or returns a non-dict.
+
+### `panels`
+**Reads:** `spec.charts` merged with `provider.panels()`; `_build/data/*.json` (or the
+in-memory datasets from this run).
+**Writes:** `OUT/_build/panels/<name>.svg` and `OUT/_build/stills/<name>.png`.
+**Purpose:** turn each chart definition into a full-frame PNG.
+**Merge rule (guarantee):** for a chart that also exists in `provider.panels()`, the
+spec's `options` are merged **over** the provider's; either side may set `title`/`kicker`,
+and the provider's value wins only if the spec does not override it.
+**Fails when:** a renderer raises, or the SVG is malformed.
+
+### `stills`
+**Reads:** every `still:` shot in every scene (paths relative to `ROOT`), and
+`provider.stills(ctx)`.
+**Writes:** renders `.svg` sources to `OUT/_build/stills/<stem>.png`; registers `.png`
+sources as-is.
+**Purpose:** guarantee every still a scene references exists as a PNG before clipping.
+**Fails when:** a referenced still cannot be found.
+
+### `capture`
+**Reads:** `spec.captures[]`.
+**Writes:** `OUT/_capture/<name>.png` (one per capture), registered as a still.
+**Purpose:** record real UI.
+**Guarantee:** the capture's `assert`, if present, runs after the actions and **before**
+the screenshot. A failed assertion raises and aborts the build.
+**Fails when:** Playwright is absent (warning + skip, unless the capture is required — see
+`verify.require_live_mode`), no browser is found, an action times out, or an assertion
+fails.
+
+### `narration`
+**Reads:** the scene script (from `narration.source` merged with `narration.inline`).
+**Writes:** `OUT/_build/wavs/scene-NN.txt` (the exact spoken text) and `scene-NN.wav`.
+**Purpose:** produce per-scene audio and, critically, **measure** it.
+**Guarantee:** `SceneAudio.seconds` is the measured duration (ffmpeg), not an estimate.
+**Fails when:** the voice model is missing (falls back to estimated durations with a
+warning — the pipeline does not hard-fail), or an engine configured but not runnable.
+
+### `clips`
+**Reads:** the scene spans from `narration`; the still for each shot.
+**Writes:** `OUT/_build/clips/scene-<n>-<i>.mp4` one per shot.
+**Purpose:** render each still to a clip whose length is `scene_duration × (shot.weight / Σweights)`.
+**Effect:** `hold` = static; `zoom` = slow Ken-Burns push-in ending at `1 + zoom`.
+**Fails when:** a shot's still is unresolved, or ffmpeg fails.
+
+### `concat`
+**Reads:** the clips (sorted numerically by scene/shot) and the scene WAVs.
+**Writes:** `OUT/_build/clips/video-track.mp4` (stream-copied) and
+`OUT/_build/narration.wav` (concatenated audio, or absent if silent).
+**Purpose:** join without re-encoding the video.
+
+### `render`
+**Reads:** the video track, the audio track, and the scene spans.
+**Writes:** `OUT/narration.srt` (retimed to the *real* spans) and `OUT/<project.output>`.
+**Purpose:** burn captions and mux.
+**Guarantees:**
+- The SRT is built with a **fidelity assertion** — its text must equal the script's text
+  token-for-token (see `narration.build_srt(strict=True)`).
+- Every cue is asserted to be ≤ 2 lines of ≤ 42 characters.
+- The mux is bounded by `project.max_seconds` (a hard `-t` ceiling).
+
+### `verify`
+**Reads:** the output media, the guards, and the narration text.
+**Writes:** `OUT/_build/verify.json`; prints a PASS/FAIL table.
+**Purpose:** evaluate the acceptance checks (see [`verification.md`](../verification/verification.md)).
+**Exit code:** `vidkit build` returns `2` if any check fails, `0` otherwise.
+
+## Running a subset
+
+```bash
+# re-render panels only (fast; uses persisted datasets)
+vidkit build SPEC --only panels
+
+# re-clip and re-render after changing a scene's shot order
+vidkit build SPEC --only clips,concat,render
+
+# refresh the screen recordings without redoing anything else
+vidkit build SPEC --only capture
+```
+
+> After `--only panels`, the PNG stills are refreshed, but existing **clips** still hold
+> the old frames. Re-run `clips,concat,render` to propagate a panel change into the video.
+
+## Data flow diagram
+
+```
+provider.datasets(ctx) ──► data/<name>.json ──► panels/<name>.svg ──► stills/<name>.png
+                                                       │
+narration.source ──► scene text ──┬──► tts ──► wavs/scene-NN.wav ──► narration.wav
+                                  │                       │
+spec.stills ─────────────► stills/<stem>.png             │
+spec.captures ──► captures/<name>.png                    │
+                                  └────────► clips (sized by measured audio)
+                                                       │
+                              video-track.mp4 ─────────┴──► render ──► out.mp4 + narration.srt
+                                                                          │
+                                                          guards ────────►► verify.json
+```
+
+## Idempotence and re-runs
+
+- Every stage overwrites its own outputs; the pipeline is safe to re-run.
+- `data` re-fetches, so a re-run picks up new values (this is the point).
+- `narration` re-synthesizes and re-measures, so timing follows the current voice settings.
+- Deleting `OUT` resets completely.
+
+See also: [`concepts.md`](concepts.md) for the mental model, and
+[`spec-reference.md`](../authoring/spec-reference.md) for the fields that configure each stage.

@@ -1,0 +1,25 @@
+# Python bytecode / caches
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+
+# generated render output (safe to delete; `vidkit build` recreates it)
+.out/
+_build/
+_capture/
+_frames/
+*.mp4
+*.srt
+
+# scratch / logs
+*.log
+
+# packaging
+dist/
+build/
+*.egg-info/
+
+# editor / OS
+.DS_Store
+*.swp

@@ -1,0 +1,99 @@
+# vidkit spec — hello-world (the smallest complete build)
+#
+# Every number this video shows is counted from the files in this repository at
+# build time by `provider.py`. Nothing is fetched, nothing is hard-coded, and
+# nothing outside the standard library is needed — which is what makes this
+# example usable as a CI fixture.
+#
+# Run from the repo root:
+#   vidkit doctor examples/hello-world/video.yaml
+#   vidkit plan   examples/hello-world/video.yaml
+#   vidkit build  examples/hello-world/video.yaml
+#
+# Requires: ffmpeg, rsvg-convert. No browser, no voice model, no network.
+
+project:
+  title: "vidkit hello world — a spec, a provider, a video"
+  slug: hello-world
+  output: hello-world.mp4
+  size: [1920, 1080]
+  fps: 30
+  # The cut is deliberately short: 217 spoken words at the silent-cut estimate
+  # of 2.5 words/sec lands near 87s. The window is loose enough to absorb a
+  # different word count without failing, tight enough to catch a stuck build.
+  min_seconds: 60
+  max_seconds: 120
+
+voice:
+  engine: none                # offline: lengths are estimated from the wording
+
+narration:
+  source: narration.md        # "## Scene N — … · mm:ss–mm:ss", spoken lines in **bold**
+
+provider: provider            # provider.py — eight datasets, all measured from disk
+
+# ---------------------------------------------------------------------------
+# One chart per dataset the provider returns. Together these exercise all
+# eight built-in panel kinds, so this example fails loudly if a panel kind
+# regresses.
+# ---------------------------------------------------------------------------
+charts:
+  - {name: overview,     kind: stat_cards,  dataset: overview}
+  - {name: notes,        kind: text_panel,  dataset: notes}
+  - {name: size_profile, kind: line_series, dataset: size_profile}
+  - {name: biggest,      kind: bar_profile, dataset: biggest}
+  - {name: pipeline,     kind: strip,       dataset: pipeline}
+  - {name: facts,        kind: kv_table,    dataset: facts}
+  - {name: cli,          kind: endpoints,   dataset: cli}
+  - {name: terminal,     kind: terminal,    dataset: terminal}
+
+# ---------------------------------------------------------------------------
+# Scene plan. Weight splits a scene's (estimated) narration duration between
+# its shots; unweighted shots divide it evenly.
+# ---------------------------------------------------------------------------
+scenes:
+  - n: 0
+    title: Title
+    shots:
+      - {still: assets/00-title.svg, effect: zoom}
+  - n: 1
+    title: What a spec is
+    shots:
+      - {chart: overview, effect: hold}
+  - n: 2
+    title: What a provider is
+    shots:
+      - {chart: notes, effect: hold}
+  - n: 3
+    title: The shape of the code
+    shots:
+      - {chart: size_profile, effect: hold, weight: 0.55}
+      - {chart: biggest, effect: hold, weight: 0.45}
+  - n: 4
+    title: The pipeline
+    shots:
+      - {chart: pipeline, effect: hold}
+  - n: 5
+    title: Verification
+    shots:
+      - {chart: facts, effect: hold}
+  - n: 6
+    title: Running it
+    shots:
+      - {chart: cli, effect: hold, weight: 0.5}
+      - {chart: terminal, effect: hold, weight: 0.5}
+  - n: 7
+    title: That is vidkit
+    shots:
+      - {still: assets/07-end.svg, effect: zoom}
+
+# ---------------------------------------------------------------------------
+# Acceptance checks.
+# ---------------------------------------------------------------------------
+guard:
+  banned:
+    - "mode=mock"
+  required:
+    - "measured"
+  require_live_mode: false    # no captures in this example
+  require_audio: false        # a declared silent cut, not an accidental one

@@ -1,0 +1,237 @@
+"""Tests for the MCP tool functions and server wiring.
+
+The ``tool_*`` functions are pure (data in, data out) and importable without the ``mcp``
+package, so most tests run with no optional dependency. Tests that touch the server skip
+when ``mcp`` is absent.
+"""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+import pytest
+
+from vidkit.errors import ToolError
+from vidkit import mcp_server as m
+
+EXAMPLE = Path(__file__).resolve().parents[1] / "examples" / "hello-world" / "video.yaml"
+
+
+# --------------------------------------------------------------------------- #
+def test_panel_kinds_tool_lists_builtins():
+    out = m.tool_panel_kinds()
+    assert "line_series" in out["kinds"]
+    assert "terminal" in out["kinds"]
+    assert len(out["kinds"]) >= 8
+
+
+def test_docs_tool_index_and_named():
+    index = m.tool_docs(None)
+    assert "spec-reference" in index  # the index links to other docs
+    spec = m.tool_docs("spec-reference")
+    assert "project" in spec and "# Spec reference" in spec
+    # a name with .md also resolves
+    assert m.tool_docs("concepts.md").startswith("#")
+
+
+def test_docs_tool_routes_by_module():
+    # bare stems resolve regardless of module folder
+    assert m.tool_docs("concepts").startswith("# Concepts")
+    assert m.tool_docs("mcp-server").startswith("# vidkit as an MCP server")
+    # module-qualified names resolve too
+    assert m.tool_docs("authoring/spec-reference").startswith("# Spec reference")
+
+
+def test_docs_index_tool_lists_modules():
+    rep = m.tool_docs_index()
+    ids = {mod["id"] for mod in rep["modules"]}
+    assert {"foundations", "authoring", "capture", "verification",
+            "operations", "guides", "plan"} <= ids
+    files = [d["file"] for mod in rep["modules"] for d in mod["docs"]]
+    assert "authoring/spec-reference.md" in files
+
+
+def test_docs_tool_exposes_plan_docs():
+    """The plan/ module must be readable through the same route as every other doc.
+
+    ``docs/plan/*.md`` are registered in ``docs/modules.yaml``, so they resolve
+    by bare stem and by module-qualified path. ``ROADMAP`` is deliberately NOT
+    one of them: a file of that name here would shadow the root ``ROADMAP.md``
+    that owns the requirement IDs, because module docs win over root docs in
+    the route builder. Hence ``FEATURE-ROADMAP``.
+    """
+    plan_docs = {
+        "PLAN": ("# PLAN.md", "what we are doing"),
+        "HISTORY": ("# HISTORY.md", "append-only"),
+        "DECISIONS": ("# DECISIONS.md", None),
+        "OPENMONTAGE": ("# OPENMONTAGE", None),
+        "FEATURE-ROADMAP": ("# FEATURE-ROADMAP.md", None),
+    }
+    for stem, (heading, needle) in plan_docs.items():
+        text = m.tool_docs(stem)
+        assert text.startswith(heading), (stem, text[:60])
+        if needle:
+            assert needle.lower() in text.lower(), (stem, needle)
+
+    # module-qualified route to the same files
+    assert m.tool_docs("plan/DECISIONS").startswith("# DECISIONS.md")
+    assert m.tool_docs("plan/PLAN.md").startswith("# PLAN.md")
+
+    # the plan module is advertised in the index, with all five docs
+    rep = m.tool_docs_index()
+    plan = next(mod for mod in rep["modules"] if mod["id"] == "plan")
+    assert len(plan["docs"]) == 5
+
+    # and no plan doc steals the root ROADMAP route
+    assert "FEATURE-ROADMAP" in m._doc_routes()
+
+
+def test_docs_tool_unknown_name_raises():
+    with pytest.raises(ToolError):
+        m.tool_docs("does-not-exist")
+
+
+def test_resolve_spec_missing_raises():
+    with pytest.raises(ToolError):
+        m.resolve_spec("/no/such/spec.yaml")
+
+
+@pytest.mark.skipif(not EXAMPLE.exists(), reason="example spec missing")
+def test_plan_tool_on_example():
+    rep = m.tool_plan(str(EXAMPLE))
+    assert rep["slug"] == "hello-world"
+    assert len(rep["scenes"]) == 8
+    assert rep["narration_words"] > 100
+    assert isinstance(rep["within_window"], bool)
+    assert "measured" in rep["required"]
+
+
+def test_doctor_tool_environment():
+    rep = m.tool_doctor(None)
+    names = {t["name"] for t in rep["tools"]}
+    assert {"ffmpeg", "rsvg-convert", "piper (TTS)"} <= names
+    assert isinstance(rep["ok"], bool)
+
+
+@pytest.mark.skipif(not EXAMPLE.exists(), reason="example spec missing")
+def test_doctor_tool_with_spec():
+    rep = m.tool_doctor(str(EXAMPLE))
+    assert rep["spec"]["slug"] == "hello-world"
+    assert rep["spec"]["scenes"] == 8
+
+
+def test_verify_report_tool_missing_file(tmp_path):
+    spec = tmp_path / "video.yaml"
+    spec.write_text(
+        "project: {title: T, slug: t, output: t.mp4, min_seconds: 1, max_seconds: 10}\n"
+        "narration: {inline: {0: 'hi'}}\n"
+        "scenes: [{n: 0, shots: [{still: missing.svg}]}]\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "missing.svg").write_text("<svg/>", encoding="utf-8")
+    with pytest.raises(ToolError):
+        m.tool_verify_report(str(spec), str(tmp_path / "out"))
+
+
+def test_default_spec_prefers_example():
+    # From the vidkit root, the example spec is the default. Assert the intent
+    # (a resolvable spec) rather than a specific slug: the repo may ship more
+    # than one example, and the pick is alphabetical by design.
+    import os
+    cwd = os.getcwd()
+    try:
+        os.chdir(Path(__file__).resolve().parents[1])
+        found = m.default_spec()
+        assert found is not None
+        assert found.endswith(("video.yaml", "video.yml"))
+        assert Path(found).exists()
+        # The default must be a spec the loader actually accepts.
+        assert m.tool_plan(str(found))["slug"]
+    finally:
+        os.chdir(cwd)
+
+
+def test_default_spec_picks_examples_deterministically():
+    """`default_spec()` is alphabetical, so adding an example must not be silent.
+
+    The examples/ pattern is the one an outside user hits, and it is sorted —
+    this test pins that a shipped example is selected at all, and that the
+    choice is stable across calls rather than filesystem-order dependent.
+    """
+    import os
+    repo = Path(__file__).resolve().parents[1]
+    if not (repo / "examples").is_dir():
+        pytest.skip("no examples/ directory")
+    cwd = os.getcwd()
+    try:
+        os.chdir(repo)
+        picks = {m.default_spec() for _ in range(3)}
+        assert len(picks) == 1, f"unstable default spec: {picks}"
+        assert next(iter(picks)).startswith(str(repo / "examples"))
+    finally:
+        os.chdir(cwd)
+
+
+# --------------------------------------------------------------------------- #
+def test_stdout_to_stderr_redirects_prints():
+    """The guard must keep stray prints off stdout (which carries JSON-RPC)."""
+    import io
+    import sys
+
+    fake_out, fake_err = io.StringIO(), io.StringIO()
+    real_out, real_err = sys.stdout, sys.stderr
+    try:
+        sys.stdout, sys.stderr = fake_out, fake_err
+        with m.stdout_to_stderr():
+            print("should-not-be-on-stdout")
+    finally:
+        sys.stdout, sys.stderr = real_out, real_err
+    assert fake_out.getvalue() == ""
+    assert "should-not-be-on-stdout" in fake_err.getvalue()
+
+
+def test_build_server_registers_toolset():
+    pytest.importorskip("mcp")
+    import anyio
+
+    server = m.build_server()
+
+    async def go():
+        tools = await server.list_tools()
+        return [t.name for t in tools]
+
+    names = anyio.run(go)
+    assert {"vidkit_doctor", "vidkit_plan", "vidkit_build", "vidkit_verify",
+            "vidkit_docs", "vidkit_docs_index", "vidkit_panel_kinds"} <= set(names)
+    assert len(names) == 10
+
+
+def test_build_server_resources():
+    pytest.importorskip("mcp")
+    import anyio
+
+    server = m.build_server()
+
+    async def go():
+        res = await server.list_resources()
+        tmpl = await server.list_resource_templates()
+        return [str(r.uri) for r in res], [t.uriTemplate for t in tmpl]
+
+    resources, templates = anyio.run(go)
+    assert "vidkit://docs/index" in resources
+    assert "vidkit://docs/modules" in resources
+    assert "vidkit://docs/{name}" in templates
+
+
+def test_server_tool_call_roundtrip():
+    pytest.importorskip("mcp")
+    import anyio
+
+    server = m.build_server()
+
+    async def go():
+        out = await server.call_tool("vidkit_panel_kinds", {})
+        return out[0].text
+
+    text = anyio.run(go)
+    assert "line_series" in text

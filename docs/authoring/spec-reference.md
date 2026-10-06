@@ -1,0 +1,274 @@
+# Spec reference
+
+A spec is a plain-data document in **YAML** (`.yaml`/`.yml`, needs PyYAML) or **JSON**
+(`.json`, always works). It has five sections plus two optionals. Nothing in a spec
+executes code.
+
+**Validation happens at load time** (`spec.load_spec` → `_validate`). Malformed specs fail
+before any rendering, with a message naming the offending scene/field.
+
+Path resolution: any relative path in a spec is resolved against `ROOT` (the spec's folder),
+then `ROOT/..`, then the current directory.
+
+---
+
+## Top-level keys
+
+| Key | Required | Type | Notes |
+|---|---|---|---|
+| `project` | ✅ | mapping | see below |
+| `scenes` | ✅ | list | ≥ 1 scene |
+| `narration` | ✅* | mapping | *required unless every scene has `narration.inline` |
+| `voice` | — | mapping | defaults to Piper, engine on |
+| `provider` | — | string | module name; enables custom data/renderers |
+| `captures` | — | list | screen recordings |
+| `charts` | — | list | data panels |
+| `guard` | — | mapping | acceptance checks |
+
+---
+
+## `project`
+
+| Field | Required | Type | Default | Meaning |
+|---|---|---|---|---|
+| `title` | ✅ | string | — | human title (used by `plan`, reports) |
+| `slug` | ✅ | string | — | short id |
+| `output` | ✅ | string | — | output filename, e.g. `demo.mp4` |
+| `size` | — | `[w, h]` | `[1920, 1080]` | frame size |
+| `fps` | — | int | `30` | frame rate |
+| `min_seconds` | — | number | `180` | lower bound of the runtime window |
+| `max_seconds` | — | number | `300` | upper bound; also the hard mux ceiling |
+
+**Constraint:** `min_seconds < max_seconds` (else `SpecError`).
+
+```yaml
+project:
+  title: "Two sources, one picture"
+  slug: hello-world
+  output: hello-world.mp4
+  size: [1920, 1080]
+  fps: 30
+  min_seconds: 180
+  max_seconds: 300
+```
+
+---
+
+## `voice`
+
+| Field | Type | Default | Meaning |
+|---|---|---|---|
+| `engine` | `"piper"` \| `"none"` | `"piper"` | TTS engine; `none` forces a silent cut |
+| `model` | string | `null` | path to a Piper `.onnx` voice |
+| `length_scale` | number | `1.0` | > 1 = slower; ~1.08 is a calm documentary pace |
+| `executable` | string | `null` | override the piper entry point |
+| `sentence_silence` | number | `null` | seconds of silence between sentences |
+
+If no engine is available, the `narration` stage warns and estimates each scene's duration
+from its word count (~2.5 words/sec). The pipeline does **not** hard-fail.
+
+```yaml
+voice:
+  engine: piper
+  model: ../../../video/_capture/voices/en_US-lessac-medium.onnx
+  length_scale: 1.08
+```
+
+---
+
+## `narration`
+
+| Field | Type | Meaning |
+|---|---|---|
+| `source` | string | Markdown file with the spoken script (see below) |
+| `inline` | mapping `scene_n -> text` | per-scene text; overrides `source` for those scenes |
+
+Scene text is resolved: `inline[n]` if present, else the `source` block for scene `n`.
+Every scene must resolve to non-empty text.
+
+**Script file format** (`source`) — see
+[`narration-and-captions.md`](narration-and-captions.md) for the full grammar:
+
+```markdown
+## Scene 3 — What deserves attention · 1:02–1:28
+
+[stage direction — not spoken]
+
+**The dashboard surfaces what deserves attention: a reading above a screening reference.**
+```
+
+- Headers: `## Scene <n> — <title> · <mm:ss>–<mm:ss>`. The times are informational; the
+  pipeline uses measured audio for real timing, **not** these numbers.
+- Spoken lines: the parts in `**bold**`.
+- `[bracketed]` lines and everything else are ignored.
+
+```yaml
+narration:
+  source: narration.md
+  # inline: { 0: "A short replacement for scene 0." }
+```
+
+---
+
+## `provider`
+
+A string naming a Python module in `ROOT` (with or without `.py`). If set, vidkit imports it
+and calls, when present: `register()`, `datasets(ctx)`, `panels()`, `stills(ctx)`.
+
+See [`provider-guide.md`](provider-guide.md).
+
+```yaml
+provider: provider
+```
+
+See [`provider-guide.md`](provider-guide.md).
+
+---
+
+## `captures[]`
+
+| Field | Required | Type | Default | Meaning |
+|---|---|---|---|---|
+| `name` | ✅ | string | — | referenced by `shots[].capture` |
+| `url` | ✅ | string | — | page to open |
+| `actions` | — | list | `[]` | interaction script (below) |
+| `assert` | — | mapping | — | state check before screenshot |
+| `viewport` | — | `[w, h]` | `project.size` | browser viewport |
+| `device_scale` | — | number | `2.0` | device pixel ratio (2 → sharp 2× PNG) |
+| `wait_until` | — | string | `"networkidle"` | Playwright load state |
+| `wait_after` | — | number | `0.0` | extra settle time after actions |
+| `full_page` | — | bool | `false` | full-page vs. viewport screenshot |
+
+### `assert`
+Exactly one of the following is honoured (checked in this order):
+
+| Field | Meaning |
+|---|---|
+| `selector` | element must exist (if nothing else is given) |
+| `contains` | element's text must contain this substring (case-insensitive) |
+| `equals` | element's text must equal this (exact, trimmed) |
+| `exists` | `true` forces an existence check only |
+
+### `actions[]` — canonical form
+
+```yaml
+- {type: wait,   seconds: 2.5}
+- {type: select, selector: "#site-selector", value: "yam-ito"}
+- {type: click,  selector: "[data-local-tab=evidence]"}
+- {type: fill,   selector: "#q", value: "text"}
+- {type: press,  selector: "#q", value: "Enter"}
+- {type: scroll, selector: "#site-workspace"}       # or omit selector to scroll to top
+- {type: eval,   script: "window.scrollTo(0, 0)"}
+```
+
+A single-key form is also accepted: `- {select: {selector: "#x", value: "y"}}`.
+
+```yaml
+captures:
+  - name: overview
+    url: "http://127.0.0.1:8090/?mode=live"
+    viewport: [1920, 1080]
+    device_scale: 2
+    actions:
+      - {type: wait,   seconds: 2.5}
+      - {type: select, selector: "#site-selector", value: "yam-ito"}
+      - {type: eval,   script: "window.scrollTo(0, 0)"}
+    assert: {selector: "#mode-indicator", contains: "Live adapter"}
+```
+
+---
+
+## `charts[]`
+
+| Field | Required | Type | Default | Meaning |
+|---|---|---|---|---|
+| `name` | ✅ | string | — | referenced by `shots[].chart`; also the PNG stem |
+| `kind` | ✅ | string | — | a built-in kind or a provider-registered kind |
+| `dataset` | — | string | = `name` | key into the provider datasets |
+| `options` | — | mapping | `{}` | passed to the renderer (`title`, `kicker`, colours, layout) |
+
+**Merge rule (guarantee):** if `provider.panels()` also defines a panel with the same name,
+the spec's `options` are merged **over** the provider's. So a spec can set
+`{title: "x"}` on a chart the provider already defines.
+
+```yaml
+charts:
+  - {name: trend, kind: line_series, dataset: trend}
+  - {name: stats, kind: stat_cards, dataset: totals,
+     options: {title: "Live totals", per_row: 4}}
+```
+
+---
+
+## `scenes[]`
+
+| Field | Required | Type | Meaning |
+|---|---|---|---|
+| `n` | ✅ | int | scene index (sorted ascending) |
+| `title` | — | string | shown by `plan` |
+| `shots` | ✅ | list | ≥ 1 shot |
+
+### `shots[]`
+
+| Field | Required | Type | Default | Meaning |
+|---|---|---|---|---|
+| `still` | one of these | string | — | path to an SVG/PNG asset |
+| `capture` | | string | — | name of a `captures[]` entry |
+| `chart` | | string | — | name of a `charts[]` (or provider) panel |
+| `effect` | — | `"hold"` \| `"zoom"` | `"hold"` | static vs. slow push-in |
+| `weight` | — | number | `1.0` | share of the scene's duration |
+
+**Constraint:** exactly one of `still`/`capture`/`chart`.
+
+Scene duration = the measured narration duration of that scene. Each shot gets
+`duration × weight / Σweights`.
+
+```yaml
+scenes:
+  - n: 2
+    title: Two kinds of evidence
+    shots:
+      - {capture: context, effect: hold, weight: 0.6}
+      - {still: assets/two-streams.svg, effect: zoom, weight: 0.4}
+```
+
+---
+
+## `guard`
+
+| Field | Type | Default | Meaning |
+|---|---|---|---|
+| `min_seconds` | number | `project.min_seconds` | override the window floor |
+| `max_seconds` | number | `project.max_seconds` | override the window ceiling |
+| `banned` | list[string] | `[]` | substrings that must **not** appear in any narration/caption text |
+| `required` | list[string] | `[]` | substrings that **must** appear |
+| `require_live_mode` | bool | `false` | every declared capture must have been captured |
+
+Matching is case-insensitive over the union of scene text and caption text. See
+[`verification.md`](../verification/verification.md).
+
+```yaml
+guard:
+  banned: ["legal limit", "proves a", "a real event"]
+  required: ["synthetic", "causation"]
+  require_live_mode: true
+```
+
+---
+
+## Minimal valid spec
+
+```yaml
+project: {title: "Hello", slug: hello, output: hello.mp4}
+narration: {inline: {0: "Hello world."}}
+scenes:
+  - n: 0
+    shots:
+      - {still: card.svg}
+```
+
+## A note on what the spec cannot express
+
+The spec deliberately cannot embed data, run code, or define logic. Anything project-specific
+belongs in the **provider**. If you find yourself wishing a spec field could compute
+something, that is a signal to move it into `provider.py`.

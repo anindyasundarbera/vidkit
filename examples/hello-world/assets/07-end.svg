@@ -1,0 +1,25 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1920" height="1080" viewBox="0 0 1920 1080" role="img"
+     aria-label="End card: that is vidkit. Edit the spec and run the build again.">
+  <defs>
+    <linearGradient id="accent" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#1F6FB2"/>
+      <stop offset="1" stop-color="#4FA3D8"/>
+    </linearGradient>
+    <style>
+      .ink   { fill:#16232B; font-family:"Liberation Sans","DejaVu Sans",sans-serif; }
+      .muted { fill:#5B6B75; font-family:"Liberation Sans","DejaVu Sans",sans-serif; }
+    </style>
+  </defs>
+
+  <rect width="1920" height="1080" fill="#F7F5F0"/>
+  <rect x="0" y="0" width="1920" height="6" fill="url(#accent)"/>
+
+  <text class="ink" x="210" y="495" font-size="96" font-weight="800">That is vidkit.</text>
+
+  <rect x="214" y="549" width="270" height="6" fill="url(#accent)"/>
+
+  <text class="muted" x="210" y="645" font-size="42">Edit the spec.</text>
+  <text class="muted" x="210" y="708" font-size="42">Run the build again.</text>
+
+  <text class="muted" x="210" y="930" font-size="29" font-weight="700">vidkit build examples/hello-world/video.yaml</text>
+</svg>

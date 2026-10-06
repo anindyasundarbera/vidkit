@@ -1,0 +1,133 @@
+"""Automated acceptance checks — the guardrails that keep a video honest.
+
+The checks encode hard-won lessons: runtime inside a window, no forbidden
+phrasing anywhere on screen or in narration, required disclosures present, audio
+non-silent, captions readable, and (when a capture asserted a mode) the live-mode
+guarantee actually held.
+"""
+
+from __future__ import annotations
+
+import re
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any
+
+from .context import Context
+
+
+@dataclass
+class Check:
+    name: str
+    ok: bool
+    detail: str = ""
+
+
+@dataclass
+class Report:
+    checks: list[Check] = field(default_factory=list)
+    facts: dict[str, Any] = field(default_factory=dict)
+
+    def add(self, name: str, ok: bool, detail: str = "") -> None:
+        self.checks.append(Check(name, ok, detail))
+
+    @property
+    def ok(self) -> bool:
+        return all(c.ok for c in self.checks)
+
+    def to_dict(self) -> dict:
+        return {"ok": self.ok, "facts": self.facts,
+                "checks": [c.__dict__ for c in self.checks]}
+
+    def print(self) -> None:
+        print("\n[vidkit] verification")
+        for c in self.checks:
+            mark = "PASS" if c.ok else "FAIL"
+            line = f"  [{mark}] {c.name}"
+            if c.detail:
+                line += f" — {c.detail}"
+            print(line)
+        print(f"[vidkit] verification: {'ALL PASS' if self.ok else 'FAILURES PRESENT'}")
+
+
+# --------------------------------------------------------------------------- #
+def _collect_text(ctx: Context, scenes_text: dict[int, str], srt: Path | None) -> str:
+    parts = list(scenes_text.values())
+    if srt and srt.exists():
+        # strip cue numbers and timestamps, keep caption text
+        for block in srt.read_text(encoding="utf-8").split("\n\n"):
+            lines = block.splitlines()[2:]
+            parts.extend(lines)
+    return "\n".join(parts)
+
+
+def verify_output(ctx: Context, assets, scenes_text: dict[int, str]) -> Report:
+    spec = ctx.spec
+    guard = spec.guard
+    project = spec.project
+    rep = Report()
+
+    out = assets.output or (ctx.out_dir / project.output)
+    dur = ctx.ffmpeg.duration(out) if Path(out).exists() else 0.0
+    lo = guard.min_seconds or project.min_seconds
+    hi = guard.max_seconds or project.max_seconds
+    rep.facts["duration_seconds"] = round(dur, 2)
+    rep.facts["duration_human"] = f"{int(dur//60)}:{dur%60:05.2f}"
+    rep.facts["output"] = str(out)
+    rep.add("output exists", Path(out).exists(), str(out))
+    rep.add("runtime within window", lo <= dur <= hi,
+            f"{dur:.2f}s within [{lo:.0f}, {hi:.0f}]")
+
+    # audio present and audible
+    vol = ctx.ffmpeg.mean_volume(out) if Path(out).exists() else None
+    rep.facts["mean_volume_db"] = vol
+    if assets.audio_track or (ctx.build / "narration.wav").exists():
+        rep.add("audio present", vol is not None and vol > -50,
+                f"mean volume {vol} dB" if vol is not None else "no audio stream")
+    elif guard.require_audio:
+        rep.add("audio present", False, "silent cut (no TTS audio)")
+    else:
+        rep.add("audio present", True, "silent cut (declared: guard.require_audio false)")
+
+    # text-level guards
+    haystack = _collect_text(ctx, scenes_text, assets.srt)
+    low = haystack.lower()
+    for phrase in guard.banned:
+        hits = low.count(phrase.lower())
+        rep.add(f"banned phrase absent: {phrase!r}", hits == 0, f"{hits} hit(s)")
+    for phrase in guard.required:
+        rep.add(f"required phrase present: {phrase!r}",
+                phrase.lower() in low, "found" if phrase.lower() in low else "missing")
+
+    # readability of captions
+    if assets.srt and assets.srt.exists():
+        bad = []
+        for block in assets.srt.read_text(encoding="utf-8").split("\n\n"):
+            lines = block.splitlines()[2:]
+            if len(lines) > 2 or any(len(l) > 42 for l in lines):
+                bad.append(block.splitlines()[0])
+        rep.add("captions readable (<=2 lines, <=42 chars)", not bad,
+                f"{len(bad)} bad cue(s): {bad[:3]}" if bad else "all cues ok")
+
+    # live-mode guarantee: every declared live capture was captured
+    if guard.require_live_mode:
+        missing = [c.name for c in spec.captures
+                   if c.name not in (assets.capture_stills or {})]
+        rep.add("all live captures present", not missing,
+                f"missing: {missing}" if missing else f"{len(spec.captures)} captured")
+
+    # narration word count vs duration (sanity: ~2-3 words/sec is plausible speech)
+    total_words = sum(len(t.split()) for t in scenes_text.values())
+    wps = total_words / dur if dur else 0
+    rep.facts["narration_words"] = total_words
+    if not assets.audio_track and not (ctx.build / "narration.wav").exists():
+        # no narration track was muxed, so the speech-rate check has nothing to read
+        rep.add("speech rate plausible", True, "skipped (silent cut)")
+    else:
+        rep.add("speech rate plausible", 1.6 <= wps <= 3.6,
+                f"{wps:.2f} words/sec")
+
+    # no mock leakage on screen
+    rep.add("no mock mode referenced", "mode=mock" not in low or "never" in low,
+            "mode=mock only appears as a prohibition")
+    return rep

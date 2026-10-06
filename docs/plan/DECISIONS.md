@@ -1,0 +1,366 @@
+# DECISIONS.md — decision log
+
+> **Append-only ADR log.** Never rewrite or delete an entry. If a decision is reversed, add a
+> new entry that supersedes the old one and mark the old one `SUPERSEDED BY Dxx`.
+>
+> Format: **Context → Decision → Alternatives → Consequences.**
+>
+> For *what* we are doing see [PLAN.md](PLAN.md) and [ROADMAP.md](FEATURE-ROADMAP.md). For *what
+> happened* see [HISTORY.md](HISTORY.md).
+
+---
+
+## D1 — Story identity manifest shape
+
+**Status:** DECIDED 2026-10-06 — **option C (both)**, owner's choice.
+**Context:** M1 needs a durable, named "story" artifact. Today a story is implied by a
+folder of files (`video.yaml` + `narration.md` + `provider.py`) with no declaration.
+
+**Options.**
+
+| Option | Pro | Con |
+|---|---|---|
+| **A. Folder convention only** | Zero new syntax; nothing to keep in sync. | Implicit. An agent cannot validate it, and renaming a folder breaks identity. |
+| **B. Explicit `story.yaml`** | Validatable, self-describing, carries title/timeframe default/owner. | A second file to keep consistent with the spec — a new drift risk. |
+| **C. Both** — optional `story.yaml`, convention fallback | Backwards compatible; strict mode when present. | Two code paths — the kind of thing that can rot. |
+
+**Decision:** **C**. A story is a *folder* by convention, and may *additionally* declare
+itself with `story.yaml`. Both are supported; an agent that has never seen the repo can still
+consume any folder, and one that wants validation gets it when the manifest is present.
+
+**Alternatives rejected:** A alone (nothing for an agent to validate against, and folder
+renames silently change identity); B alone (breaks every existing story and every
+`examples/` fixture).
+
+**Consequences:** Implemented as *one* code path — `load_spec` synthesises a story identity
+from the folder when `story.yaml` is absent, so there is no parallel branch to drift.
+`vidkit init` (M1) writes a manifest; a present manifest is validated strictly.
+
+---
+
+## D2 — Spec format stays YAML
+
+**Status:** DECIDED 2026-10-06.
+**Context:** A spec is a tree of typed dataclasses. Could be JSON, TOML, or Python.
+
+**Decision:** YAML, permanently.
+
+**Alternatives:** *JSON* — no comments, and narration-adjacent fields get noisy. *TOML* —
+flat-friendly, bad at the nested scene/shot lists vidkit uses. *Python DSL* — maximum power,
+but a spec becomes code: unvalidatable, unsnapshottable, and a security surface if an agent
+writes it.
+
+**Consequences:** specs stay plain data (invariant I8) — diffable, hashable, snapshottable,
+and safe for an agent to author. We accept YAML's ambiguities and mitigate them with strict
+validation in `_validate()`.
+
+---
+
+## D3 — Timeframe representation
+
+**Status:** DECIDED 2026-10-06 — **option C (both)**, owner's choice.
+**Context:** Windows are hard-coded in provider URL strings today. M1 must introduce a real
+timeframe.
+
+**Options.**
+
+| Option | Example | Pro | Con |
+|---|---|---|---|
+| **A. Relative** | `{days: 28, as_of: 2026-10-06}` | Matches how users think ("last month"); providers take it directly. | Not reproducible later without pinning `as_of`; awkward for academic/historical windows. |
+| **B. Absolute** | `{start: 2026-09-08, end: 2026-10-06}` | Unambiguous, hashable, reproducible. | "Last 28 days" must be computed by the author. |
+| **C. Both**, one resolved | either form → one resolved `{start, end}` | Author convenience + engine determinism. | Slightly more parsing. |
+
+**Decision:** **C**. Both spellings are accepted and resolve to a single `{start, end}`.
+`as_of` defaults to the spec's own date and is **recorded in the provenance manifest**, so a
+relative spec is still reproducible after the fact. A build never silently means a different
+window than it did yesterday.
+
+**Alternatives rejected:** A alone (unreproducible once "today" moves — an honesty hole);
+B alone (forces every author and every agent to hand-compute windows).
+
+**Consequences:** `ctx.timeframe` exposes one shape. `verify` (R-F7) checks the window stated
+in narration against the resolved window, so a mismatch fails the build.
+
+---
+
+## D4 — Engine stays host-agnostic
+
+**Status:** DECIDED (pre-existing, reaffirmed 2026-10-06).
+**Context:** `vidkit/` contained host-specific knowledge about the OneAquaHealth project.
+
+**Decision:** No host term, URL, port, or path may appear in `vidkit/` code. Hosts supply a
+folder with a spec, narration, and an optional `provider.py`.
+
+**Alternatives:** A `vidkit-plugins` package exposing host hooks; a config file naming the
+host. Both put host knowledge one layer deeper without removing it.
+
+**Consequences:** invariant I1. Enforced by `grep` in CI ([AGENTS.md](../../AGENTS.md) §4).
+Two comment-level host references remain and are [PLAN.md](PLAN.md) M0 task 14.
+
+---
+
+## D5 — Story lives in the consumer repo; MCP-only integration
+
+**Status:** DECIDED (pre-existing, reaffirmed 2026-10-06).
+**Context:** Where do stories live — inside vidkit, or in the consuming repo?
+
+**Decision:** In the **consumer repo**. vidkit never vendors a consumer's story, and
+consumers never vendor vidkit. Integration is by pointing a client at the standalone MCP
+server.
+
+**Alternatives:** A monorepo with `vidkit/` + `stories/` — convenient, but it makes vidkit
+own content it cannot maintain, and breaks the extraction runbook in root `ROADMAP.md` §5.
+
+**Consequences:** invariant I9. There is **no** in-tree story: `examples/oneaquahealth/` was
+removed on 2026-10-06 (Q2 answered — it moves to the OneAquaHealth repo), and `examples/hello-world/`
+is a fixture, not a story.
+
+---
+
+## D6 — Assert-before-shot aborts the build
+
+**Status:** DECIDED (pre-existing).
+**Context:** A capture can silently grab an error page or a loading spinner.
+
+**Decision:** A capture may declare `assert` actions; if any fails, the **build aborts** — it
+does not record the failure and continue.
+
+**Alternatives:** Warn-and-continue (produces a video that lies), or retry-then-continue
+(hides flakiness).
+
+**Consequences:** invariant I2. Flaky environments fail loudly, which is the point.
+
+---
+
+## D7 — Document set shape: 6 files, 4 in `docs/plan/`
+
+**Status:** DECIDED 2026-10-06.
+**Context:** Conversational findings are lost to context compaction. Durable state must have
+a home before work resumes. Root `ROADMAP.md`'s own §3 "current state" table had already gone
+stale and misled research — the same failure at a smaller scale.
+
+**Decision:** Five documents under `docs/plan/`, alongside the root `AGENTS.md`:
+
+| File | Mutability | Question it answers |
+|---|---|---|
+| `AGENTS.md` | stable | *What are the rules?* |
+| `docs/plan/PLAN.md` | **rewritten** each phase | *What right now?* |
+| `docs/plan/HISTORY.md` | **append-only** | *What already happened?* |
+| `docs/plan/FEATURE-ROADMAP.md` | revised per phase | *In what order, and why?* |
+| `docs/plan/DECISIONS.md` | **append-only** | *Why this and not that?* |
+| `docs/plan/OPENMONTAGE.md` | **frozen**, dated | *What did we find out about X?* |
+
+**Alternatives:** One big `PLAN.md` (the mutability rules conflict — a doc cannot be both
+rewritten and append-only); a `docs/adr/` per-decision directory (correct but heavy at this
+project's size); GitHub Issues (external, and the repo has no remote yet).
+
+**Consequences:** Each file has one mutability rule, stated in its own header. The plan
+module is registered in `docs/modules.yaml` so `vidkit docs` can route to it. The roadmap is
+named `FEATURE-ROADMAP.md`, **not** `ROADMAP.md`: `_doc_routes()` maps bare stems first-wins
+across modules, so a `docs/plan/ROADMAP.md` would have silently shadowed the root
+`ROADMAP.md` that owns the requirement IDs.
+
+---
+
+## D8 — Docs are routed, not scattered
+
+**Status:** DECIDED (pre-existing, extended 2026-10-06).
+**Context:** `docs/` has 15 documents across 6 modules and a machine-readable route table.
+
+**Decision:** Every document belongs to a module in `docs/modules.yaml` with a human and an
+agent entry point. `docs/plan/` becomes a module.
+
+**Alternatives:** A flat `docs/` (unnavigable at this size), or README-only routing (what the
+project already rejected).
+
+**Consequences:** `vidkit docs` and the MCP `vidkit_docs` tool can reach every document
+without a filesystem walk. Adding a document means editing the route table — deliberate
+friction that keeps the table true.
+
+---
+
+## D9 — Do not integrate OpenMontage
+
+**Status:** DECIDED 2026-10-06.
+**Context:** The owner asked whether vidkit can implement or integrate
+`calesthio/OpenMontage`.
+
+**Decision:** **No integration. No code reuse. No vendoring.** Concepts only.
+
+**Evidence:** [OPENMONTAGE.md](OPENMONTAGE.md) — no MCP server (0 code hits), no public API,
+no entry points, architecture explicitly forbids programmatic orchestration, AGPL-3.0.
+
+**Alternatives considered and rejected.**
+
+| Alternative | Why rejected |
+|---|---|
+| Import `tools.*` / `lib.*` as a library | No stable interface; and it would relicense vidkit to AGPL-3.0. |
+| Shell out to a wrapper script we maintain | We would be maintaining a compatibility shim against a 64k-star repo moving daily — a permanent tax with no payoff. |
+| Fork it | AGPL fork + 2,600-path tree to maintain. Absurd for a single maintainer. |
+| Drop vidkit and use OpenMontage alone | It does not solve the owner's problem: it produces *plausible* videos, vidkit produces *proven* ones. And it has no sandbox/terminal/Docker capability either. |
+| Copy just the skill Markdown | Copyright applies to the Markdown. Ideas are not copyrightable; text is. |
+
+**Consequences:** no OpenMontage phase exists in [ROADMAP.md](FEATURE-ROADMAP.md). Six concepts are
+borrowed into phases that already exist (§6 of OPENMONTAGE.md). The AGPL boundary is
+documented so a future contributor does not cross it by accident.
+
+---
+
+## D10 — MCP-first is the only integration surface
+
+**Status:** DECIDED (pre-existing, reaffirmed 2026-10-06).
+**Context:** An external agent must be able to drive vidkit.
+
+**Decision:** The **standalone MCP server** is the primary surface. The CLI is the secondary
+surface and must reach parity (R-G2). No library-import integration is offered or supported.
+
+**Alternatives:** Publish `vidkit` as an importable library — tempting, but it exposes the
+internal dataclasses as a public API, and every consumer upgrade becomes a compatibility
+problem. A subprocess-the-CLI surface is a subset of MCP and buys nothing.
+
+**Consequences:** invariant I9. M5 completes the MCP surface. Every CLI command needs `--json`
+so an agent has a non-MCP path.
+
+---
+
+## D11 — The hello-world fixture is offline, measured, and silent
+
+**Status:** DECIDED 2026-10-06.
+**Context:** M0's exit criterion needs a build that runs in CI with no network, no API keys,
+and no TTS engine.
+
+**Decision:** `examples/hello-world/` uses `voice.engine: none` and
+`guard.require_audio: false`, and its provider **measures the repo** rather than hard-coding
+numbers.
+
+**Alternatives:** *A recorded WAV* — binary in git, and it would desync whenever narration
+changed. *A hosted TTS in CI* — keys, cost, flakiness. *Hard-coded numbers* — the fixture
+would start lying the moment the code changed, which is precisely the failure vidkit exists
+to prevent.
+
+**Consequences:** the fixture exercises the pipeline, the panel renderers, captions, and
+`verify` — offline, in under a second of test time. Requires the `guard.require_audio` engine
+change recorded in [HISTORY.md](HISTORY.md). A silent cut is now a declared PASS rather than
+an impossible FAIL, which sharpens invariant I6 instead of weakening it.
+
+---
+
+## D12 — The spec is the control plane; the agent is a driver
+
+**Status:** DECIDED 2026-10-06.
+**Context:** OpenMontage's Rule Zero is *"the agent IS the control plane"* — production flow
+lives in an agent conversation, guided by skill Markdown.
+
+**Decision:** vidkit inverts this. **The spec is the control plane.** The agent *authors* a
+spec and the engine executes it deterministically. The agent does not improvise the pipeline
+at render time.
+
+**Alternatives:** Adopt Rule Zero — maximum flexibility, but it destroys reproducibility,
+makes `verify` meaningless (there is nothing to verify against), and breaks invariant I8.
+A hybrid (agent steers mid-build) — the same objection, plus non-determinism during a build.
+For the M10 session model, an agent *may* interact with an environment and *select takes*, but
+the **assembly** is still spec-driven.
+
+**Consequences:** this is vidkit's differentiator and the reason it exists alongside
+OpenMontage rather than instead of it. Do not erode it for flexibility.
+
+---
+
+## D13 — Sandbox and Docker come after the story/timeframe contract
+
+**Status:** DECIDED 2026-10-06.
+**Context:** The owner's headline capability request is Playwright + sandboxed terminal +
+Docker. It is tempting to start there.
+
+**Decision:** Sandbox work is [ROADMAP.md](FEATURE-ROADMAP.md) **M7–M8**, sequenced after M1 (story
+and timeframe) and after the M6 v1.0 line.
+
+**Alternatives:** Build the sandbox first — it is the most visible capability and the most
+fun. Rejected because a sandbox with nothing to aim at produces demos that cannot be
+specified: every recording would be an ad-hoc script whose output no spec describes, which
+violates invariant I8 and makes `verify` vacuous.
+
+**Consequences:** the capability arrives later than the owner may want it, but it arrives
+*declared in a spec* — bounded, reproducible, and attested in `verify.json`. A sandbox bolted
+on without the contract would have to be rebuilt once M1 landed.
+
+---
+
+## D14 — Movie mode is additive, not a fork
+
+**Status:** DECIDED 2026-10-06.
+**Context:** The owner wants vidkit to "create movies when controlled by an external capable
+agent", while remaining a demo-video engine. Two pipelines would be the obvious answer.
+
+**Decision:** Movie mode ([ROADMAP.md](FEATURE-ROADMAP.md) M9) **extends the spec surface only**. It
+must reuse the same 9 stages. **If movie mode needs a tenth stage, the design is wrong.**
+
+**Alternatives:** A parallel movie pipeline — two code paths, two bug surfaces, and the
+honesty invariants would have to be re-implemented and re-verified on the second path. A
+film-specific fork of the repo — same objection, permanent.
+
+**Consequences:** the invariants apply to films unchanged. A film cannot be "artistic licence"
+for a distorted still or an undeclared silent cut. If a genuine need for a tenth stage
+appears, it is a signal to revisit the stage decomposition — not to fork.
+
+---
+
+## D15 — Terminal footage is recorded, never animated
+
+**Status:** DECIDED 2026-10-06.
+**Context:** OpenMontage synthesises terminal output with a React component
+(`TerminalScene.tsx`) — a *fake* terminal. The natural shortcut is to copy that approach.
+
+**Decision:** vidkit records a **real PTY**. The command, its exit code, and its duration are
+attested in `verify.json`.
+
+**Alternatives:** A synthetic terminal animation — cheaper, fully controllable, and it
+**lies**. A screenshot of a terminal — honest but not a *recording*, and it cannot show
+process. A screen recording — heavy, non-deterministic, captures unrelated windows.
+
+**Consequences:** invariant I7 holds on the new surface. A non-zero exit fails the build
+unless the spec declares it expected. Fonts must be pinned or the recording is not
+reproducible — a real constraint that must be solved in M7.
+
+---
+
+## D16 — Nothing is fabricated; unverifiable output is not emitted
+
+**Status:** DECIDED (pre-existing, restated 2026-10-06).
+**Context:** Every "video generation" tool faces the temptation to smooth over gaps with a
+placeholder, a mock, or a restaged take.
+
+**Decision:** Every frame traces to a **real capture**, a **measured dataset**, or a
+**declared asset**. If vidkit cannot produce the honest thing, it **fails the build** rather
+than emitting something plausible. The only exception is a failure that the spec explicitly
+declares expected.
+
+**Alternatives:** Warn-and-continue — produces a lying video, which is the exact product
+vidkit is built to avoid. Placeholder frames — same. Silent retry — hides flakiness until it
+matters.
+
+**Consequences:** invariants I2, I3, I6, I7. This is the reason vidkit exists next to
+OpenMontage; if it is ever relaxed, vidkit becomes a worse OpenMontage.
+
+---
+
+## Index
+
+| ID | Title | Status |
+|---|---|---|
+| D1 | Story identity manifest shape — **both** | DECIDED |
+| D2 | Spec format stays YAML | DECIDED |
+| D3 | Timeframe representation — **both** forms | DECIDED |
+| D4 | Engine stays host-agnostic | DECIDED |
+| D5 | Story lives in the consumer repo; MCP-only | DECIDED |
+| D6 | Assert-before-shot aborts the build | DECIDED |
+| D7 | Document set shape: 6 files | DECIDED |
+| D8 | Docs are routed, not scattered | DECIDED |
+| D9 | Do not integrate OpenMontage | DECIDED |
+| D10 | MCP-first is the only integration surface | DECIDED |
+| D11 | hello-world is offline, measured, and silent | DECIDED |
+| D12 | The spec is the control plane | DECIDED |
+| D13 | Sandbox and Docker come after the timeframe contract | DECIDED |
+| D14 | Movie mode is additive, not a fork | DECIDED |
+| D15 | Terminal footage is recorded, never animated | DECIDED |
+| D16 | Nothing is fabricated | DECIDED |

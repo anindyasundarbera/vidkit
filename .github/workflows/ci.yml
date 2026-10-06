@@ -1,0 +1,92 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: pytest (${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.12"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[dev]"
+
+      - name: Unit tests
+        run: python -m pytest tests -q
+
+  build-example:
+    # The claim this repo makes is that a fresh clone can build a video with
+    # nothing but ffmpeg + rsvg-convert. This job is what proves it.
+    name: build hello-world end to end
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      # rsvg-convert is required: it rasterises the SVG panels and stills.
+      - name: Install system tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends ffmpeg librsvg2-bin
+
+      - name: Install vidkit
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e .
+
+      - name: Doctor
+        run: vidkit doctor examples/hello-world/video.yaml
+
+      - name: Plan
+        run: vidkit plan examples/hello-world/video.yaml
+
+      - name: Build
+        run: vidkit build examples/hello-world/video.yaml
+
+      # `vidkit build` already runs verify and exits non-zero on any failing
+      # check, so this is a belt-and-braces assertion on the written report.
+      - name: Assert verification passed
+        run: |
+          python - <<'PY'
+          import json, pathlib, sys
+          report = pathlib.Path("examples/hello-world/_build/verify.json")
+          if not report.exists():
+              sys.exit("verify.json was not written")
+          data = json.loads(report.read_text())
+          for check in data["checks"]:
+              print(f"[{'PASS' if check['ok'] else 'FAIL'}] {check['name']}")
+          if not data["ok"]:
+              sys.exit("verification reported failures")
+          print("ALL PASS")
+          PY
+
+      - name: Assert artifacts exist
+        run: |
+          test -s examples/hello-world/hello-world.mp4
+          test -s examples/hello-world/narration.srt

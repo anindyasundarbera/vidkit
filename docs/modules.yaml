@@ -1,0 +1,91 @@
+# vidkit documentation module map.
+#
+# Machine-readable route table for agents. Each module groups related docs and
+# declares who should read it and in what order. `vidkit_docs` (MCP) and
+# `vidkit docs` (CLI) resolve names against this file, so a doc is reachable by
+# its bare stem regardless of which module folder it lives in.
+#
+# Fields:
+#   id       stable identifier (the folder name, except `root`)
+#   title    human-readable module name
+#   summary  one line: what this module answers
+#   audience agent | human | both
+#   route    path template agents can request (module id + doc stem)
+#   docs     ordered [{file, title, summary}]
+
+version: 1
+root: docs
+
+modules:
+  - id: foundations
+    title: Foundations
+    summary: The mental model — what a spec/provider/capture/panel is and how stages run.
+    audience: both
+    route: docs/foundations/<doc>
+    docs:
+      - {file: foundations/concepts.md, title: Concepts, summary: One-screen mental model and vocabulary.}
+      - {file: foundations/pipeline.md, title: Pipeline, summary: The stage machine; what each stage reads and writes.}
+      - {file: foundations/architecture.md, title: Architecture, summary: Module map, key types, extension seams, invariants.}
+
+  - id: authoring
+    title: Authoring a story
+    summary: How to write the spec, provider, panels, and narration.
+    audience: both
+    route: docs/authoring/<doc>
+    docs:
+      - {file: authoring/spec-reference.md, title: Spec reference, summary: Every video.yaml field, type, and default.}
+      - {file: authoring/provider-guide.md, title: Provider guide, summary: The bridge between vidkit and your data.}
+      - {file: authoring/panels-reference.md, title: Panels reference, summary: Every built-in panel kind and its dataset shape.}
+      - {file: authoring/narration-and-captions.md, title: Narration and captions, summary: Script grammar, caption rules, voice tuning.}
+
+  - id: capture
+    title: Capture
+    summary: Recording real UI with Playwright and asserting its state.
+    audience: both
+    route: docs/capture/<doc>
+    docs:
+      - {file: capture/capture-guide.md, title: Capture guide, summary: Actions, assertions, reliability tactics.}
+
+  - id: verification
+    title: Verification
+    summary: The acceptance checks and the verify.json report.
+    audience: both
+    route: docs/verification/<doc>
+    docs:
+      - {file: verification/verification.md, title: Verification, summary: Every check, pass/fail semantics, what it does not do.}
+
+  - id: operations
+    title: Operations
+    summary: Running, diagnosing, exposing, and extracting the tool.
+    audience: both
+    route: docs/operations/<doc>
+    docs:
+      - {file: operations/cli-reference.md, title: CLI reference, summary: Commands, flags, exit codes.}
+      - {file: operations/mcp-server.md, title: MCP server, summary: Tools, resources, transports, client wiring.}
+      - {file: operations/troubleshooting.md, title: Troubleshooting, summary: Error text to cause to fix.}
+      - {file: operations/extracting-to-new-repo.md, title: Extracting to a new repo, summary: Standalone packaging checklist.}
+
+  - id: guides
+    title: Guides
+    summary: Copy-paste patterns for common tasks.
+    audience: both
+    route: docs/guides/<doc>
+    docs:
+      - {file: guides/recipes.md, title: Recipes, summary: Known-good patterns for common video tasks.}
+
+  - id: plan
+    title: Plan and decisions
+    summary: Where the project is going, what happened, and why each choice was made.
+    audience: both
+    route: docs/plan/<doc>
+    docs:
+      - {file: plan/PLAN.md, title: Plan, summary: What we are doing now and next; rewritten each phase.}
+      - {file: plan/FEATURE-ROADMAP.md, title: Feature roadmap, summary: Phase-wise feature plan M0-M10 with exit criteria.}
+      - {file: plan/HISTORY.md, title: History, summary: Append-only record of what has been done, with evidence.}
+      - {file: plan/DECISIONS.md, title: Decisions, summary: Append-only decision log (D1-D16) with alternatives and consequences.}
+      - {file: plan/OPENMONTAGE.md, title: OpenMontage assessment, summary: Frozen research record and integration verdict for calesthio/OpenMontage.}
+
+# Suggested reading order for first contact.
+# Agents: fetch foundations/concepts, then authoring/spec-reference, then the task module.
+human_start: [foundations, authoring]
+agent_start: [foundations/concepts, authoring/spec-reference, operations/mcp-server]

@@ -1,0 +1,33 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1920" height="1080" viewBox="0 0 1920 1080" role="img"
+     aria-label="Title card: vidkit hello world. The smallest complete build.">
+  <defs>
+    <linearGradient id="accent" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#1F6FB2"/>
+      <stop offset="1" stop-color="#4FA3D8"/>
+    </linearGradient>
+    <style>
+      .ink   { fill:#16232B; font-family:"Liberation Sans","DejaVu Sans",sans-serif; }
+      .muted { fill:#5B6B75; font-family:"Liberation Sans","DejaVu Sans",sans-serif; }
+      .eyebrow { fill:#1F6FB2; font-family:"Liberation Sans","DejaVu Sans",sans-serif;
+                 letter-spacing:.18em; }
+    </style>
+  </defs>
+
+  <rect width="1920" height="1080" fill="#F7F5F0"/>
+  <rect x="0" y="0" width="1920" height="6" fill="url(#accent)"/>
+
+  <text class="eyebrow" x="210" y="369" font-size="30" font-weight="700">VIDKIT</text>
+
+  <text class="ink" x="210" y="510" font-size="114" font-weight="800">hello world</text>
+
+  <rect x="214" y="564" width="330" height="6" fill="url(#accent)"/>
+
+  <text class="muted" x="210" y="660" font-size="39">
+    The smallest complete build — offline.
+  </text>
+  <text class="muted" x="210" y="720" font-size="39">
+    No browser, no voice, no network.
+  </text>
+
+  <text class="muted" x="210" y="939" font-size="29" font-weight="700">examples/hello-world</text>
+</svg>
