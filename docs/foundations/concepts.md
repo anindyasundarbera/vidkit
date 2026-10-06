@@ -4,9 +4,9 @@ Read this once; everything else refers back to it.
 
 ## The one-sentence model
 
-> A **spec** declares *what* the video is; a **provider** supplies *the data*; the
-> **pipeline** turns stills into clips; **captions + audio** drive the timing; **verify**
-> checks the promises.
+> A **story** is a folder; a **spec** declares *what* the video is; a **provider** supplies
+> *the data*; the **pipeline** turns stills into clips; **captions + audio** drive the timing;
+> **verify** checks the promises.
 
 ```
    spec.yaml ─────────────┐
@@ -19,6 +19,8 @@ Read this once; everything else refers back to it.
 
 | Term | Meaning | Defined by |
 |---|---|---|
+| **Story** | The folder (spec + narration + provider), plus an optional `story.yaml` manifest carrying slug, title, owner and timeframe. | `story.yaml`, `spec.Story` |
+| **Timeframe** | The closed interval `[start, end]` the video is about, both ends inclusive. May come from `story.yaml`, the spec, or an override. | `timeframe:` / `spec.Timeframe` |
 | **Project** | Title, slug, output name, size, fps, runtime window. | `project:` in the spec |
 | **Scene** | One narration block. Has an index `n`, a title, and ≥1 shot. | `scenes:` in the spec |
 | **Shot** | One visual beat inside a scene: a `still`, a `capture`, or a `chart`, plus a `weight` (share of the scene's duration) and an `effect` (`hold`/`zoom`). | `scenes[].shots[]` |
@@ -30,6 +32,7 @@ Read this once; everything else refers back to it.
 | **Narration** | The spoken script, either a Markdown file or inline per scene. | `narration:` |
 | **Guard** | Banned/required phrases, runtime window, live-mode requirement. | `guard:` |
 | **Stage** | One step of the pipeline (see `pipeline.md`). | `assembler.STAGES` |
+| **Floating window** | A relative timeframe with no `as_of`: it resolves against *today*, so narration may state its day count but never its dates. | `spec._validate_timeframe` |
 | **Context** | The shared runtime object: paths, shell, ffmpeg, rsvg, logging. | `context.Context` |
 
 ## Three ideas that explain most of the design
@@ -68,6 +71,14 @@ means a typo in the spec is caught at load time (before any expensive render).
 - Modules: `provider.py`, `panels.py`, `svg.py`.
 - The spec's cross-reference validation lives in `spec.py::_validate`.
 
+### 4. Every claim that can be checked is checked
+
+The spec's `timeframe:` and the narration are two independent records of the same fact. Rather
+than trusting the author to keep them in sync, `verify` reads the window back out of the
+narration and captions and fails when it disagrees with the spec (R-F7). The same instinct
+produced `guard.banned`/`guard.required`, the live-mode requirement, and caption-fidelity
+assertions: **promises in the spec, proof in the report.**
+
 ## What is deterministic vs. what is captured
 
 | Produced deterministically | Captured from a running system |
@@ -82,7 +93,8 @@ shows a product, it came from a capture. (See the non-goals in `README.md`.)
 
 ## The lifetime of a run
 
-1. `load_spec` parses and validates the spec → a `Spec`.
+1. `load_spec` parses and validates the spec → a `Spec`; the story is loaded and the
+   timeframe resolved (`override > spec > story`).
 2. `make_context` builds a `Context` (paths, tool wrappers) and creates output dirs.
 3. The provider module is imported; its `register()` runs if present.
 4. Stages execute in order (`pipeline.md`), each writing into `OUT/_build/*`.
@@ -112,4 +124,5 @@ There is no database and no daemon; deleting `OUT` resets everything.
 
 - How the stages run: [`pipeline.md`](pipeline.md)
 - Every spec field: [`spec-reference.md`](../authoring/spec-reference.md)
+- Stories and windows: [`stories-and-timeframes.md`](../authoring/stories-and-timeframes.md)
 - Writing a provider: [`provider-guide.md`](../authoring/provider-guide.md)

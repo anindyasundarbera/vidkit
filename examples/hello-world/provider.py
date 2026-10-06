@@ -48,8 +48,13 @@ def _modules() -> list[Path]:
     return sorted(p for p in PKG.glob("*.py") if p.name != "__init__.py")
 
 
-def datasets(ctx) -> dict[str, Any]:  # noqa: ARG001 - ctx unused by design
-    """Return every dataset the spec's charts reference."""
+def datasets(ctx) -> dict[str, Any]:
+    """Return every dataset the spec's charts reference.
+
+    The story's window arrives as ``ctx.timeframe`` — the *resolved* object, not a
+    string to re-parse. A data source would be handed ``ctx.timeframe.as_prompt()``
+    here; this example has no data source, so the window is shown instead.
+    """
     modules = _modules()
     loc = {p.stem: _code_lines(p) for p in modules}
     total_loc = sum(loc.values())
@@ -61,6 +66,7 @@ def datasets(ctx) -> dict[str, Any]:  # noqa: ARG001 - ctx unused by design
 
     # -- stat_cards: headline counts, all measured -------------------------- #
     overview = {
+        "window days": f"{ctx.timeframe.days}" if ctx.timeframe else "-",
         "modules": len(modules),
         "code lines": f"{total_loc:,}",
         "stages": len(STAGES),
@@ -109,10 +115,16 @@ def datasets(ctx) -> dict[str, Any]:  # noqa: ARG001 - ctx unused by design
            for name, note in commands]
 
     # -- kv_table: the environment this build actually saw ----------------- #
+    spec_slug = ctx.spec.project.slug
     spec_file = ctx.root / "video.yaml"
     digest = hashlib.sha256(spec_file.read_bytes()).hexdigest()[:12] \
         if spec_file.exists() else "unavailable"
+    tf = ctx.timeframe
     facts = [
+        {"v": ctx.story.slug if ctx.story else spec_slug, "k": "story"},
+        {"v": tf.label() if tf else "(not declared)", "k": "window"},
+        {"v": tf.source if tf else "-", "k": "window declared in"},
+        {"v": "yes" if (tf and tf.floating) else "no", "k": "window floats"},
         {"v": platform.python_version(), "k": "python"},
         {"v": sys.platform, "k": "platform"},
         {"v": "yes" if shutil.which("ffmpeg") else "no", "k": "ffmpeg"},

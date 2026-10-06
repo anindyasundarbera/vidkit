@@ -9,11 +9,13 @@ executes code; the optional ``provider`` module supplies data and custom panels.
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
+from datetime import date
 from pathlib import Path
 from typing import Any
 
 from .errors import SpecError
+from .timeframe import Timeframe, find_window_claims, parse_timeframe
 
 try:  # optional
     import yaml as _yaml
@@ -120,6 +122,45 @@ class Guard:
     require_audio: bool = True                             # a silent cut must be declared, never accidental
 
 
+STORY_MANIFEST = "story.yaml"
+
+
+@dataclass
+class Story:
+    """The identity of a story: the folder it lives in, plus what it declares.
+
+    A story is a *folder* (``video.yaml`` + ``narration.md`` + ``provider.py``).
+    It may additionally declare itself with a ``story.yaml`` manifest; when that
+    is present it is validated strictly, and when it is absent the identity is
+    synthesised from the folder so there is only ever one code path (D1).
+    """
+
+    root: Path
+    slug: str
+    title: str = ""
+    timeframe: Timeframe | None = None
+    manifest: Path | None = None          # set only when story.yaml was read
+    owner: str = ""
+    description: str = ""
+
+    @property
+    def declared(self) -> bool:
+        """True when a manifest file backed this identity."""
+        return self.manifest is not None
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "slug": self.slug,
+            "title": self.title or self.slug,
+            "root": str(self.root),
+            "declared": self.declared,
+            "manifest": str(self.manifest) if self.manifest else None,
+            "owner": self.owner,
+            "description": self.description,
+            "timeframe": self.timeframe.to_dict() if self.timeframe else None,
+        }
+
+
 @dataclass
 class Spec:
     project: Project
@@ -130,6 +171,8 @@ class Spec:
     captures: list[Capture] = field(default_factory=list)
     charts: list[Chart] = field(default_factory=list)
     guard: Guard = field(default_factory=Guard)
+    story: Story | None = None
+    timeframe: Timeframe | None = None
     root: Path = field(default_factory=Path.cwd)
 
     # -- lookups ------------------------------------------------------------ #
@@ -158,6 +201,49 @@ def _load_raw(path: Path) -> dict[str, Any]:
             )
         return _yaml.safe_load(text)
     return json.loads(text)
+
+
+def _slugify(text: str) -> str:
+    out = [c if c.isalnum() else "-" for c in text.strip().lower()]
+    slug = "".join(out).strip("-")
+    while "--" in slug:
+        slug = slug.replace("--", "-")
+    return slug or "story"
+
+
+def load_story(root: Path | str, *, default_as_of: Any = None) -> Story:
+    """Read (or synthesise) the identity of the story in ``root``.
+
+    ``story.yaml`` when present is validated strictly — a typo in a manifest
+    must fail loudly, not be silently ignored. When it is absent the identity is
+    derived from the folder name, so a bare folder is still a first-class story
+    that an agent can be handed (D1, R-A1).
+    """
+    root = Path(root).resolve()
+    manifest = root / STORY_MANIFEST
+    if not manifest.exists():
+        return Story(root=root, slug=_slugify(root.name), title=root.name)
+
+    raw = _load_raw(manifest)
+    if raw is None:
+        raw = {}
+    if not isinstance(raw, dict):
+        raise SpecError(f"{STORY_MANIFEST} must be a mapping")
+
+    known = {"title", "slug", "timeframe", "owner", "description"}
+    unknown = sorted(set(raw) - known)
+    if unknown:
+        raise SpecError(
+            f"{STORY_MANIFEST}: unknown key(s) {', '.join(unknown)} — "
+            f"allowed: {', '.join(sorted(known))}"
+        )
+    title = str(raw.get("title", "") or root.name)
+    slug = _slugify(str(raw.get("slug", "") or root.name))
+    timeframe = parse_timeframe(raw.get("timeframe"), where=f"{STORY_MANIFEST}.timeframe",
+                                source="story", default_as_of=default_as_of)
+    return Story(root=root, slug=slug, title=title, timeframe=timeframe,
+                 manifest=manifest, owner=str(raw.get("owner", "")),
+                 description=str(raw.get("description", "")))
 
 
 def _shots(raw: dict[str, Any], where: str) -> Shot:
@@ -195,7 +281,16 @@ def _action(raw: dict[str, Any], where: str) -> Action:
     raise SpecError(f"{where}: unknown action type {kind!r}")
 
 
-def load_spec(path: Path | str) -> Spec:
+def load_spec(path: Path | str, *,
+              timeframe: Timeframe | None = None,
+              as_of: date | None = None) -> Spec:
+    """Read a spec, resolve its story and its timeframe, and validate.
+
+    ``timeframe`` (already resolved) is an explicit caller override — the CLI's
+    ``--timeframe``/``--days`` flags and the MCP job contract both arrive here,
+    and override whatever the spec declared. ``as_of`` is the fallback end date
+    for a relative window that did not write one down.
+    """
     path = Path(path)
     if not path.exists():
         raise SpecError(f"spec not found: {path}")
@@ -268,12 +363,28 @@ def load_spec(path: Path | str) -> Spec:
                   require_live_mode=bool(g.get("require_live_mode", False)),
                   require_audio=bool(g.get("require_audio", True)))
 
+    root = path.parent.resolve()
     spec = Spec(project=project, scenes=scenes, voice=voice, narration=narration,
                 provider=raw.get("provider"), captures=captures, charts=charts,
-                guard=guard, root=path.parent.resolve())
+                guard=guard, root=root)
+
+    spec.story = load_story(root, default_as_of=as_of)
+    spec.timeframe = _resolve_timeframe(raw, spec, timeframe, as_of)
 
     _validate(spec)
     return spec
+
+
+def _resolve_timeframe(raw: dict[str, Any], spec: Spec, override: Timeframe | None,
+                       as_of: date | None) -> Timeframe | None:
+    """One resolved window, and where it came from. Precedence: override > spec > story."""
+    declared = parse_timeframe(raw.get("timeframe"), where="timeframe",
+                               source="spec", default_as_of=as_of)
+    if override is not None:
+        return replace(override, source="override")
+    if declared is not None:
+        return declared
+    return spec.story.timeframe
 
 
 def _validate(spec: Spec) -> None:
@@ -295,3 +406,55 @@ def _validate(spec: Spec) -> None:
                 raise SpecError(f"scene {sc.n}: chart {sh.ref!r} is not defined")
     if spec.narration.source is None and not spec.narration.inline:
         raise SpecError("spec needs narration.source or narration.inline")
+
+    _validate_timeframe(spec)
+
+
+def _validate_timeframe(spec: Spec) -> None:
+    """Refuse a narration whose window the resolved timeframe cannot guarantee.
+
+    The verify check (R-F7) compares the window narration *states* against the
+    resolved window, so narration that pins an endpoint is only checkable when
+    the spec pinned that same endpoint. Two cases are caught here, before any
+    expensive rendering, rather than at verify time:
+
+    * a **floating** window — ``{days: 28}`` with no ``as_of`` — resolves against
+      today, so narration may only mention the day count, never a date;
+    * a window narration states that the spec does not declare at all.
+    """
+    if spec.narration.source is None:
+        return
+    text = _narration_text(spec)
+    if text is None:
+        return
+    claims = find_window_claims(text, as_of=spec.timeframe.end if spec.timeframe else None)
+    if not claims:
+        return
+    if spec.timeframe is None:
+        first = claims[0]
+        raise SpecError(
+            f"narration states a {first.label()} window (`{first.raw}`) but the "
+            "spec declares no timeframe — add `timeframe: {days: N, as_of: YYYY-MM-DD}` "
+            "or `timeframe: {start: ..., end: ...}`, or drop the dates from the narration"
+        )
+    if spec.timeframe.floating:
+        dated = [c for c in claims if c.exact or c.end_anchor]
+        if dated:
+            raise SpecError(
+                f"narration states the window `{dated[0].raw}` but the spec's "
+                "timeframe is relative and pins no `as_of`, so it would mean a "
+                "different window tomorrow — add `as_of: YYYY-MM-DD` to the spec "
+                "timeframe, or use `timeframe: {start: ..., end: ...}`"
+            )
+
+
+def _narration_text(spec: Spec) -> str | None:
+    """The narration prose, or ``None`` when it cannot be read yet."""
+    if spec.narration.source:
+        path = spec.root / spec.narration.source
+        if not path.exists():
+            raise SpecError(f"narration file not found: {spec.narration.source}")
+        return path.read_text(encoding="utf-8")
+    if spec.narration.inline:
+        return "\n".join(spec.narration.inline[k] for k in sorted(spec.narration.inline))
+    return None

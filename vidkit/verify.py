@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any
 
 from .context import Context
+from .timeframe import find_window_claims, timeframe_matches
 
 
 @dataclass
@@ -130,4 +131,32 @@ def verify_output(ctx: Context, assets, scenes_text: dict[int, str]) -> Report:
     # no mock leakage on screen
     rep.add("no mock mode referenced", "mode=mock" not in low or "never" in low,
             "mode=mock only appears as a prohibition")
+
+    # timeframe consistency (R-F7): the window narration states must be the one
+    # the spec resolved. A video that says "the last 28 days" while its spec says
+    # 90 is exactly the kind of lie this engine exists to catch.
+    tf = spec.timeframe
+    if tf is not None:
+        rep.facts["timeframe"] = tf.to_dict()
+    claims = find_window_claims(haystack, as_of=tf.end if tf else None)
+    rep.facts["window_claims"] = [
+        {"raw": c.raw, "days": c.days, "exact": c.exact,
+         "start": c.start.isoformat() if c.start else None,
+         "end": c.end.isoformat() if c.end else None,
+         "end_anchor": c.end_anchor.isoformat() if c.end_anchor else None}
+        for c in claims
+    ]
+    if tf is None:
+        rep.add("timeframe consistent with spec", not claims,
+                "narration states "
+                + ", ".join(f"{c.raw!r}" for c in claims)
+                + " but the spec declares no timeframe" if claims else "no timeframe declared")
+    elif not claims:
+        rep.add("timeframe consistent with spec", True,
+                f"narration states no window; spec says {tf.label()}")
+    else:
+        bad = [d for c in claims for ok, d in [timeframe_matches(tf, c)] if not ok]
+        bad = list(dict.fromkeys(bad))          # one line per distinct disagreement
+        rep.add("timeframe consistent with spec", not bad,
+                "; ".join(bad) if bad else f"matches {tf.label()}")
     return rep

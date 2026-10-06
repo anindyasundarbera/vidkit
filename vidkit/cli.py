@@ -6,7 +6,12 @@
     vidkit tts    SPEC       (re)synthesize narration only
     vidkit capture SPEC      (re)capture screen recordings only
     vidkit verify SPEC       re-run the acceptance checks on the last render
+    vidkit init   DIR        scaffold a runnable story (spec + narration + provider)
     vidkit docs   [NAME]     print the docs router, or a named document
+
+``--timeframe``/``--days``/``--as-of`` override the window declared by the spec or its
+``story.yaml``, for every command that loads a spec. ``--days`` is a shorthand for
+``--timeframe "Nd"`` ending at ``--as-of`` (today, if omitted).
 """
 
 from __future__ import annotations
@@ -22,10 +27,38 @@ from .errors import VidkitError
 from .narration import parse_scene_script, word_count
 from .panels import kinds as panel_kinds
 from .spec import load_spec
+from .scaffold import scaffold_story
+from .timeframe import Timeframe, parse_timeframe
 
 
 # --------------------------------------------------------------------------- #
-def _doctor(spec_path: Path | None) -> int:
+def _override(args) -> Timeframe | None:
+    """Build a timeframe override from ``--timeframe`` / ``--days`` / ``--as-of``."""
+    raw = getattr(args, "timeframe", None)
+    days = getattr(args, "days", None)
+    as_of = getattr(args, "as_of", None)
+    if days is not None:
+        if raw:
+            raise VidkitError("use either --timeframe or --days, not both")
+        raw = f"{days}d"
+    if raw is None:
+        if as_of is not None:
+            raise VidkitError("--as-of only makes sense with --timeframe or --days")
+        return None
+    return parse_timeframe(raw, where="--timeframe", source="override", default_as_of=as_of)
+
+
+def _add_timeframe_args(p) -> None:
+    p.add_argument("--timeframe", default=None, metavar="SPEC",
+                   help='override the window: "28d", "6m", "2026-09-08..2026-10-06", '
+                        '"{days: 28, as_of: 2026-10-06}"')
+    p.add_argument("--days", type=int, default=None, metavar="N",
+                   help='shorthand for --timeframe "Nd"')
+    p.add_argument("--as-of", default=None, metavar="DATE",
+                   help="the day a relative window ends (default: today)")
+
+
+def _doctor(spec_path: Path | None, timeframe: Timeframe | None = None) -> int:
     from .capture import _find_chrome, _playwright_available
     from .ffmpeg import Ffmpeg, Rsvg, Shell
 
@@ -59,7 +92,7 @@ def _doctor(spec_path: Path | None) -> int:
 
     if spec_path:
         try:
-            spec = load_spec(spec_path)
+            spec = load_spec(spec_path, timeframe=timeframe)
         except VidkitError as exc:
             print(f"  [NO ] spec              {exc}")
             return 1
@@ -70,16 +103,29 @@ def _doctor(spec_path: Path | None) -> int:
         print(f"        captures        {len(spec.captures)}")
         print(f"        charts          {len(spec.charts)}")
         print(f"        provider        {spec.provider or '(none)'}")
+        if spec.story:
+            note = "" if spec.story.declared else "  (folder convention)"
+            print(f"        story           {spec.story.slug}{note}")
+        else:
+            print("        story           (not resolved)")
+        tf = spec.timeframe
+        print(f"        timeframe       {tf.label_with_source if tf else '(not declared)'}")
         print(f"        panel kinds     {', '.join(panel_kinds())}")
     return 0 if ok else 1
 
 
-def _plan(spec_path: Path) -> int:
-    spec = load_spec(spec_path)
+def _plan(spec_path: Path, timeframe: Timeframe | None = None) -> int:
+    spec = load_spec(spec_path, timeframe=timeframe)
     print(f"{spec.project.title}  [{spec.project.slug}]")
     print(f"  output: {spec.project.output}  {spec.project.width}x{spec.project.height} "
           f"@{spec.project.fps}")
     print(f"  runtime window: {spec.project.min_seconds:.0f}-{spec.project.max_seconds:.0f}s")
+    if spec.story:
+        note = "" if spec.story.declared else "  (folder convention)"
+        print(f"  story: {spec.story.slug}{note}")
+    else:
+        print("  story: (not resolved)")
+    print(f"  timeframe: {spec.timeframe.label_with_source if spec.timeframe else '(not declared)'}")
     total_words = 0
     source = None
     if spec.narration.source:
@@ -107,6 +153,19 @@ def _plan(spec_path: Path) -> int:
     return 0
 
 
+def _init(target: Path, *, title: str | None, slug: str | None,
+          timeframe: Timeframe | None) -> int:
+    """Scaffold a runnable story directory; never overwrite what is already there."""
+    written = scaffold_story(target, title=title, slug=slug, timeframe=timeframe)
+    print(f"scaffolded {target}")
+    for path in written:
+        print(f"  + {path.relative_to(target)}")
+    print("\nnext:")
+    print(f"  vidkit plan  {target / 'video.yaml'}")
+    print(f"  vidkit build {target / 'video.yaml'}")
+    return 0
+
+
 def _assets_to_json(assets: Assets) -> dict:
     return {
         "output": str(assets.output) if assets.output else None,
@@ -124,9 +183,11 @@ def main(argv: list[str] | None = None) -> int:
 
     p_doc = sub.add_parser("doctor", help="check environment + spec")
     p_doc.add_argument("spec", nargs="?")
+    _add_timeframe_args(p_doc)
 
     p_plan = sub.add_parser("plan", help="show the scene plan")
     p_plan.add_argument("spec")
+    _add_timeframe_args(p_plan)
 
     for name, help_ in (("build", "run the full pipeline"),
                         ("tts", "synthesize narration only"),
@@ -135,10 +196,17 @@ def main(argv: list[str] | None = None) -> int:
         p = sub.add_parser(name, help=help_)
         p.add_argument("spec")
         p.add_argument("--out", default=None, help="output directory (default: spec folder)")
+        _add_timeframe_args(p)
         if name == "build":
             p.add_argument("--only", default=None,
                            help="comma-separated stages: "
                                 "data,panels,stills,capture,narration,clips,concat,render,verify")
+
+    p_init = sub.add_parser("init", help="scaffold a new story directory")
+    p_init.add_argument("dir", help="directory to create the story in")
+    p_init.add_argument("--title", default=None, help="project title (default: from the dir name)")
+    p_init.add_argument("--slug", default=None, help="project slug (default: from the dir name)")
+    _add_timeframe_args(p_init)
 
     p_docs = sub.add_parser("docs", help="print the docs router or a named document")
     p_docs.add_argument("name", nargs="?", help="doc name (bare stem or module/name)")
@@ -149,9 +217,13 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         if args.cmd == "doctor":
-            return _doctor(Path(args.spec).resolve() if args.spec else None)
+            tf = _override(args) if args.spec else None
+            return _doctor(Path(args.spec).resolve() if args.spec else None, tf)
         if args.cmd == "plan":
-            return _plan(Path(args.spec).resolve())
+            return _plan(Path(args.spec).resolve(), _override(args))
+        if args.cmd == "init":
+            return _init(Path(args.dir).resolve(), title=args.title, slug=args.slug,
+                         timeframe=_override(args))
         if args.cmd == "docs":
             from .mcp_server import tool_docs, tool_docs_index
             if args.index:
@@ -162,23 +234,28 @@ def main(argv: list[str] | None = None) -> int:
         if args.cmd == "build":
             only = [s.strip() for s in args.only.split(",")] if args.only else None
             assets = run(Path(args.spec).resolve(), only=only,
-                         out_dir=Path(args.out) if args.out else None)
+                         out_dir=Path(args.out) if args.out else None,
+                         timeframe=_override(args))
             print(json.dumps(_assets_to_json(assets), indent=1))
             return 0 if (assets.report is None or assets.report.ok) else 2
         if args.cmd == "tts":
             assets = run(Path(args.spec).resolve(), only=["narration"],
-                         out_dir=Path(args.out) if args.out else None)
+                         out_dir=Path(args.out) if args.out else None,
+                         timeframe=_override(args))
             return 0
         if args.cmd == "capture":
             assets = run(Path(args.spec).resolve(), only=["capture"],
-                         out_dir=Path(args.out) if args.out else None)
+                         out_dir=Path(args.out) if args.out else None,
+                         timeframe=_override(args))
             return 0
         if args.cmd == "verify":
             ctx = make_context(Path(args.spec).resolve(),
-                               Path(args.out) if args.out else None)
+                               Path(args.out) if args.out else None,
+                               timeframe=_override(args))
             assets = Assets()
             assets.output = ctx.out_dir / ctx.spec.project.output
-            assets.audio_track = ctx.build / "narration.wav"
+            wav = ctx.build / "narration.wav"
+            assets.audio_track = wav if wav.exists() else None
             assets.srt = ctx.out_dir / "narration.srt"
             from .assembler import _scripts_for
             from .verify import verify_output

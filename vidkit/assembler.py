@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass, field
+from datetime import date
 from pathlib import Path
 from typing import Iterable
 
@@ -28,6 +29,7 @@ from .context import Context
 from .errors import SpecError
 from .narration import build_srt, parse_scene_script, word_count
 from .spec import Spec, load_spec
+from .timeframe import Timeframe, parse_timeframe
 from .svg import PanelDoc, document
 from .verify import Report, verify_output
 
@@ -49,14 +51,34 @@ class Assets:
 
 
 # --------------------------------------------------------------------------- #
-def make_context(spec_path: Path | str, out_dir: Path | None = None) -> Context:
+def make_context(spec_path: Path | str, out_dir: Path | None = None, *,
+                 timeframe: Timeframe | str | dict | None = None,
+                 as_of: date | None = None) -> Context:
+    """Build the runtime context: load the spec, resolve the window, make dirs.
+
+    ``timeframe`` overrides whatever the spec or the story manifest declared; it
+    is how ``--timeframe``/``--days`` and the MCP job contract reach the pipeline.
+    """
     spec_path = Path(spec_path).resolve()
-    spec = load_spec(spec_path)
+    override = (timeframe if isinstance(timeframe, Timeframe)
+                else parse_timeframe(timeframe, where="--timeframe",
+                                     source="override", default_as_of=as_of))
+    spec = load_spec(spec_path, timeframe=override, as_of=as_of)
     root = spec_path.parent
     out = Path(out_dir).resolve() if out_dir else root
     ctx = Context(spec=spec, root=root, out_dir=out)
     ctx.ensure_dirs()
+    _announce(ctx)
     return ctx
+
+
+def _announce(ctx: Context) -> None:
+    story = ctx.spec.story
+    if story is not None:
+        ctx.info(f"story: {story.slug}"
+                 + ("" if story.declared else " (folder convention)"))
+    tf = ctx.spec.timeframe
+    ctx.info(f"timeframe: {tf.label()} [{tf.source}]" if tf else "timeframe: (not declared)")
 
 
 def _stage_set(only: Iterable[str] | None) -> set[str]:
@@ -71,8 +93,9 @@ def _stage_set(only: Iterable[str] | None) -> set[str]:
 
 # --------------------------------------------------------------------------- #
 def run(spec_path: Path | str, *, only: Iterable[str] | None = None,
-        out_dir: Path | None = None) -> Assets:
-    ctx = make_context(spec_path, out_dir)
+        out_dir: Path | None = None, timeframe: Timeframe | str | dict | None = None,
+        as_of: date | None = None) -> Assets:
+    ctx = make_context(spec_path, out_dir, timeframe=timeframe, as_of=as_of)
     spec = ctx.spec
     stages = _stage_set(only)
     assets = Assets()

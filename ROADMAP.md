@@ -174,10 +174,10 @@ authoritative "what is done now" record is
 
 | Item | State today |
 |---|---|
-| Package | `vidkit/` — **17 modules** (`spec, context, provider, capture, narration, panels, svg, tts, ffmpeg, assembler, verify, reports, cli, mcp_server, errors, __init__, __main__`) |
-| Tests | `tests/test_core.py` (20) + `tests/test_mcp.py` (17) — **44 passing** |
+| Package | `vidkit/` — **19 modules** (`spec, context, timeframe, scaffold, provider, capture, narration, panels, svg, tts, ffmpeg, assembler, verify, reports, cli, mcp_server, errors, __init__, __main__`) |
+| Tests | `tests/test_core.py`, `tests/test_mcp.py`, `tests/test_timeframe.py` — **84 passing** (0.7 s) |
 | Examples | `examples/hello-world/` only — **host-free**; 8 scenes, 8 panel kinds, no browser/network/TTS needed |
-| `docs/` | **20 docs in 7 modules** under `docs/`, routed by `docs/README.md` + `docs/modules.yaml` |
+| `docs/` | **21 docs in 7 modules** under `docs/`, routed by `docs/README.md` + `docs/modules.yaml` |
 | MCP server | **present** — `vidkit/mcp_server.py`; 10 tools + 3 resources |
 | `LICENSE` | **present** (MIT) |
 | `CHANGELOG.md` | **present** (Keep a Changelog) |
@@ -222,9 +222,9 @@ authoritative "what is done now" record is
 
 | Gap | Requirement |
 |---|---|
-| No timeframe field anywhere in the spec; windows hard-coded in provider URL strings (`?days=28`, `?days=90`) | R-A3, R-B2 |
-| No story manifest / story identity | R-A1, R-G3 |
-| No `init`/scaffold | R-A2, R-G4 |
+| ~~No timeframe field anywhere in the spec; windows hard-coded in provider URL strings (`?days=28`, `?days=90`)~~ — **closed in M1** | R-A3, R-B2 |
+| ~~No story manifest / story identity~~ — **closed in M1** | R-A1, R-G3 |
+| ~~No `init`/scaffold~~ — **closed in M1** | R-A2, R-G4 |
 | No download capture (`expect_download`) | R-C3 |
 | No `set_content` / artifact-frame rendering | R-C4 |
 | No `wait_for_selector` action | R-C5 |
@@ -233,7 +233,7 @@ authoritative "what is done now" record is
 | Panel x-axis is index-based, not date-proportional | R-D3 |
 | No overlay / lower-thirds composite (`ffmpeg overlay`) | R-D4 |
 | `still_to_clip` uses bare `scale=W:H` → **stretches** full-page captures (regression risk) | R-D5 |
-| No timeframe consistency check | R-F7 |
+| ~~No timeframe consistency check~~ — **closed in M1** | R-F7 |
 | No provenance manifest | R-F8 |
 | No MCP server (dangling wiring) | R-G1 |
 | No `--json` on CLI | R-G2 |
@@ -309,18 +309,18 @@ PASS** (8 panels, 12 stills, 87.20 s); the wheel ships `py.typed` + `LICENSE`. *
 clean GitHub runner** (run `37513459095`): all three jobs green, including `build hello-world
 end to end`, which installs only `ffmpeg` + `librsvg2-bin` and asserts `verify.json` is ok.
 
-### M1 — Story & timeframe contract *(P0)* — ~3–5 days
+### M1 — Story & timeframe contract *(P0)* — **COMPLETE 2026-10-06**
 
-The functional gap that blocks the whole premise.
+The functional gap that blocked the whole premise is closed.
 
-- [ ] Add `story` identity + manifest (D1) and validate it.
-- [ ] Add `timeframe` to the spec: **both** `{days, as_of}` and `{start, end}` (D3); expose as `ctx.timeframe`, and record the resolved window in the provenance manifest.
-- [ ] Thread `ctx.timeframe` into `provider.datasets(ctx)`; forbid hard-coded windows in the reference example.
-- [ ] Add a **timeframe-consistency verify check** (R-F7): the window stated in narration/captions matches the spec.
-- [ ] `vidkit init <dir>` scaffold (R-A2) producing a runnable story, including timeframe placeholders.
-- [ ] Update `plan` to print the resolved timeframe.
+- [x] Add `story` identity + manifest (D1) and validate it.
+- [x] Add `timeframe` to the spec: **both** `{days, as_of}` and `{start, end}` (D3); expose as `ctx.timeframe`, and record the resolved window in the provenance manifest.
+- [x] Thread `ctx.timeframe` into `provider.datasets(ctx)`; forbid hard-coded windows in the reference example.
+- [x] Add a **timeframe-consistency verify check** (R-F7): the window stated in narration/captions matches the spec.
+- [x] `vidkit init <dir>` scaffold (R-A2) producing a runnable story, including timeframe placeholders.
+- [x] Update `plan` to print the resolved timeframe.
 
-**Exit:** two builds of the same story with different timeframes produce different, correctly-labelled videos; a story with a mismatched narration window fails `verify`.
+**Exit:** two builds of the same story with different timeframes produce different, correctly-labelled videos; a story with a mismatched narration window fails `verify`. **Both are now asserted by CI** (a second build with a different window; a mismatched narration that must exit 2 with the timeframe check as its only failure; a scaffolded story that must build and verify clean). Tests 44 → **84** in ~1.5 s.
 
 ### M2 — Provider & data hardening *(P1)* — ~2–3 days
 

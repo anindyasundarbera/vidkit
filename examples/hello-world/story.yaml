@@ -1,0 +1,15 @@
+# The identity of this story (R-A1). vidkit runs perfectly well without this
+# file — it derives the slug from the folder name — but declaring it gives an
+# agent a stable handle, and gives the repo a place to say *when* this cut is
+# about.
+title: vidkit hello world — a spec, a provider, a video
+slug: hello-world
+# The window the finished cut is about. Both spellings are accepted; this one
+# is absolute, so the labels never move under a rerun.
+timeframe:
+  start: 2026-09-07
+  end: 2026-10-06
+owner: anindyasundarbera
+description: >
+  The smallest complete vidkit build: eight scenes, eight panel kinds, zero
+  network calls. Used as the CI fixture, and as the worked example in the docs.
