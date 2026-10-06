@@ -15,6 +15,7 @@ Run as `vidkit …` (installed console script) or `python -m vidkit …`.
 | `vidkit build SPEC [--out DIR] [--only STAGES] [--from STAGE] [--refresh]` | run the pipeline |
 | `vidkit tts SPEC [--out DIR]` | (re)synthesize narration only |
 | `vidkit capture SPEC [--out DIR]` | (re)capture screen recordings only |
+| `vidkit auth URL [--spec SPEC] [--save PATH] [--wait SECONDS]` | record a signed-in browser session once |
 | `vidkit verify SPEC [--out DIR]` | re-run the acceptance checks |
 | `vidkit docs [NAME] [--index]` | print the docs router, a named doc, or the route table |
 
@@ -131,6 +132,28 @@ vidkit capture SPEC.yaml   # refresh stills from the live UI
 
 > After `tts`, re-run `clips,concat,render` for the new timings to reach the video. After
 > `capture`, re-run the same.
+
+## `auth`
+
+Records an authenticated browser session **once, by hand**, so no capture ever films a login
+form. vidkit opens a headed browser, you sign in however the product requires (SSO, MFA, a
+magic link), and the cookies are written to a Playwright storage state that captures reuse.
+
+```bash
+vidkit auth http://127.0.0.1:8090/ --spec video.yaml
+vidkit auth https://staging.example.com/login --save .auth/session.json --wait 300
+```
+
+| Flag | Default | Meaning |
+|---|---|---|
+| `url` (positional) | — | where to open the browser |
+| `--spec SPEC` | — | the spec whose folder the default state path is relative to |
+| `--save PATH` | `.auth/session.json` | where to write the storage state |
+| `--wait SECONDS` | `180` | how long to leave the window open for you |
+
+vidkit never sees the password. What it *does* see is a credential file, and it says so on
+every run — keep it out of git. `vidkit init` writes `.auth/` into the story's `.gitignore`
+for exactly this reason. Reference the file from a capture with `storage_state:`.
 
 ## `verify`
 

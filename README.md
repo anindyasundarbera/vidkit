@@ -110,8 +110,20 @@ captures:
     assert: {selector: "#mode-indicator", contains: "Live adapter"}
 ```
 
-Actions: `wait`, `select`, `click`, `fill`, `press`, `scroll`, `eval`. The `assert` runs
-**after** the actions and before the screenshot — if it fails, the build stops.
+Actions: `wait`, `wait_for`, `select`, `click`, `fill`, `press`, `scroll`, `eval`,
+`download`. Any action may carry its own `assert:`; a scene-level `assert` runs after the
+actions and before the screenshot. If a check fails, the build stops — it never films the
+wrong frame.
+
+`wait_for` waits for a *named* state (`visible`/`attached`/`hidden`/`detached`) and refuses
+when it never arrives, so a slow page cannot be mistaken for a correct one. `download` saves
+a file the page produced; a capture may then declare `artifact:` **instead of** `url:` to film
+that file as itself — vidkit sniffs the bytes, rasterises a PDF, and refuses if neither is
+possible. An `artifact:` no `download` produces is rejected at load time.
+
+Signing in is not an action: `vidkit auth <url>` records a browser session once, by hand, and
+captures reuse it with `storage_state:`. Filming a login form is possible only when the spec
+says `allow_login: true`.
 
 ### Charts — real numbers, no hard-coding
 
@@ -159,7 +171,7 @@ A provider may also define `stills(ctx) -> {name: path}` for pre-rendered images
 
 * **New chart** — `panels.register(name, fn)`; `fn(data, options, doc)` appends SVG via the
   helpers in `vidkit.svg` (`text`, `rect`, `line`, `polyline`, `circle`, `text_block`).
-* **New capture action** — add a branch in `vidkit/capture.py::_apply`.
+* **New capture action** — add a branch in `vidkit/capture.py::apply`.
 * **New TTS engine** — add a branch in `vidkit/tts.py`.
 * **New stage** — add to `vidkit/assembler.py::STAGES` and guard with the `only` set.
 
@@ -170,7 +182,7 @@ vidkit/
   spec.py       load + validate a spec (fails fast on typos)
   context.py    the shared runtime object (paths, shell, ffmpeg, rsvg)
   provider.py   plugin loading + interface
-  capture.py    Playwright screen capture with assertions
+  capture.py    Playwright capture: downloads, artifacts, takes, assertions
   narration.py  parse the script; build readable, faithful SRT
   panels.py     data -> SVG panel renderers (built-in + registry)
   svg.py        SVG primitives + theme

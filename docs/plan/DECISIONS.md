@@ -509,6 +509,107 @@ secret known to the operator.
 
 ---
 
+## D23 — An artifact is filmed as itself, or not at all
+
+**Status:** DECIDED 2026-10-07 (M3).
+
+**Context:** Some of the most convincing evidence a product can show is not in the DOM: a
+downloaded CSV, a generated invoice, an exported PDF. M3's exit criterion is literally "capture
+a real downloaded file and film it". The easy implementation films a *page* the download URL
+happens to render, or drops the bytes into a styled template — both produce a picture that is
+*about* the file rather than *of* it.
+
+**Decision:** `captures[].artifact: <name>` films the bytes **themselves**, and every step that
+could substitute something prettier is a refusal instead.
+
+- `artifact:` and `url:` are mutually exclusive; both are load-time errors.
+- An `artifact:` that no `download` action in the spec produces is rejected by `load_spec`.
+- Artifact captures are ordered **after** every URL capture, so the producer always runs first.
+- The producer must have written it *this run*: a file left over from an earlier build is not
+  evidence, so the resolver only sees the artifacts the current run recorded.
+- The bytes are **sniffed** (`%PDF-`, a PNG/JPEG magic, text that parses as delimited rows). If
+  the content does not match the claimed kind, the build stops: `its bytes are not recognisable
+  as a <kind>`. A wrong 200-page error page saved as `report.pdf` cannot be filmed as a report.
+- A PDF is **rasterised** through `pdftoppm`, falling back to `gs`. If neither is installed the
+  build refuses with a sentence naming both — never a placeholder frame, and never a caption
+  that says "PDF" over an empty box.
+- Empty and oversized (> 8 MB) files are refused, and the artifact name is defended against
+  path traversal: a capture cannot name `../../etc/passwd`.
+- `verify` closes the loop: `filmed artifacts are real files`, emitted **only** when the spec
+  declares an artifact capture.
+
+**Alternatives rejected:** film the download URL in a new page (depicts the *source*, not the
+download, and often requires the session the click already had); render the bytes into a styled
+template (a fabrication — it is vidkit's design, not the product's output); accept any file that
+exists (a stale or truncated file passes); let a missing rasteriser fall back to showing the
+file's name and size as text (a screenshot of a filename is not the document).
+
+**Consequences:** "this shot is the file the product produced" becomes a checked fact. The cost
+is a hard dependency on `poppler-utils` or `ghostscript` for PDF artifacts — a refusal the user
+can act on, rather than a silent degradation.
+
+---
+
+## D24 — A take is named, and promoting one is explicit
+
+**Status:** DECIDED 2026-10-07 (M3).
+
+**Context:** Recorded flows vary. A capture that raced a spinner on take one may be perfect on
+take two. Re-authoring the spec to retry is bad; silently overwriting the good take with a
+worse retry is worse.
+
+**Decision:** `captures[].take: N` (default `1`, `>= 1` enforced at load) names the take to
+record. Each capture records `_capture/<name>-take-N.png` and is registered as a still under
+that name; there is **no** automatic promotion and **no** predicate language.
+
+- Re-running capture with a higher `take` writes a new file; the previous take stays on disk.
+- Changing the number *is* the promotion. Nothing is deleted, so a bad promotion is reversible.
+- A `take < 1` is a load-time error, because take zero reads like "the take before the first"
+  and would be a silent off-by-one in the filename.
+
+**Alternatives rejected:** a `take: best` predicate over a scoring function (an unverifiable
+notion of "best" — D16's failure mode, arriving through the back door); keep-the-latest (loses
+the take you wanted to compare against); a `--promote` flag on the CLI (hidden state that the
+spec does not describe, so a rebuild cannot reproduce it).
+
+**Consequences:** a take is a *file*, so the spec plus the disk describe the build completely.
+The cost is that the promoted take must be stated in the spec — which is also the guarantee.
+
+---
+
+## D25 — A login form is filmed only on purpose
+
+**Status:** DECIDED 2026-10-07 (M3).
+
+**Context:** M3 added session reuse (`storage_state`) so a capture can reach a signed-in page,
+and a capture that fills a form is just a `fill` action. But a `fill` into a password field is
+how a recording accidentally leaks a credential onto a frame that will be published.
+
+**Decision:** Two distinct, explicit paths, and nothing in between.
+
+- **`vidkit auth URL`** opens a headed browser, you sign in by hand, and the cookies are
+  written to a Playwright storage state that captures reuse via `storage_state:`. vidkit never
+  sees the password. It *does* see a credential-bearing file, and says so on every run;
+  `vidkit init` writes `.auth/` into the story's `.gitignore`.
+- **`allow_login: true`** is required for a capture that fills a password-shaped field (or
+  clicks a login/submit control on a page with one). It is a declaration that the login **is**
+  the scene, and it is per capture, not per spec.
+- Absent the flag, such a capture is refused **at load time**, before a browser opens:
+  `fills a password field — record a session first`.
+- An `allow_login` capture is still subject to every other refusal: it must assert the state
+  it claims, and it cannot film an artifact that is not there.
+
+**Alternatives rejected:** allow it and rely on review (the whole point of an assertion-checked
+build is that review happens *before* the frames are rendered); a `--allow-login` CLI flag
+(invisible in the artifact, so the published spec would not describe what it filmed); ban it
+outright (a product tour legitimately begins with its sign-in experience, and banning a
+capability pushes the author to a bespoke script outside every guarantee).
+
+**Consequences:** the failure mode this guards against — a password on a published frame — is
+now structurally impossible without a line in the spec saying it was intended.
+
+---
+
 ## Index
 
 | ID | Title | Status |
@@ -535,3 +636,6 @@ secret known to the operator.
 | D20 | Secrets are declared, env-resolved, and masked everywhere | DECIDED |
 | D21 | A snapshot records the request it answers, not just the data | DECIDED |
 | D22 | Degradation is declared, recorded, and only fatal by request | DECIDED |
+| D23 | An artifact is filmed as itself, or not at all | DECIDED |
+| D24 | A take is named, and promoting one is explicit | DECIDED |
+| D25 | A login form is filmed only on purpose | DECIDED |

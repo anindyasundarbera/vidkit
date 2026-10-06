@@ -35,8 +35,12 @@ vidkit plan SPEC.yaml       # catch spec problems before rendering
 | `provider.panels()[…] must be a dict or tuple` | provider bug | return the right shape |
 | `provider.panels() must return a dict` | provider bug | return a dict |
 | `unknown panel kind 'x'` | kind not built-in and not registered | register it, or fix the name |
-| `capture 'x' failed: Page.click: Timeout …` | wrong selector / page not ready | inspect the markup; add a wait |
-| `assertion failed: …, contains 'live' (saw 'Mock dataset')` | wrong app state — guard working | fix URL/state; do not remove the assert |
+| `capture 'x' failed: Page.click: Timeout …` | wrong selector / page not ready | inspect the markup; use `wait_for` instead of a fixed `wait` |
+| `capture 'x' failed: waited 15s for '#y' to be visible, and it was not` | the state never arrived | fix the selector, raise `timeout`, or the page really is broken |
+| `capture 'x' films artifact 'y', but no such file is in …` | the `download` that makes it did not run | the producing capture failed, or its `save_as` name differs |
+| `cannot show y.csv: its bytes are not recognisable as a csv` | the URL returned an error page, not the file | check the download URL and any session it needs |
+| `cannot show y.pdf: no PDF rasteriser is installed …` | neither `pdftoppm` nor `gs` | install `poppler-utils` or `ghostscript` |
+| `capture 'x' fills a password field — record a session first` | a login form is being filmed | run `vidkit auth`, set `storage_state:`, or declare `allow_login: true` || `assertion failed: …, contains 'live' (saw 'Mock dataset')` | wrong app state — guard working | fix URL/state; do not remove the assert |
 | `playwright not installed — skipping capture` | no Playwright | `pip install "vidkit[capture]"`, or use `still:` |
 | `TTS failed for scene N …; estimating duration` | voice model missing/broken | fix `voice.model` |
 | `no TTS engine available … silent cut` | engine off/unavailable | install piper or accept the silent cut |
@@ -49,6 +53,7 @@ vidkit plan SPEC.yaml       # catch spec problems before rendering
 | `[FAIL] audio present — no audio stream` | silent cut | set up TTS, or accept if intended |
 | `[FAIL] required phrase present: 'x' — missing` | disclosure absent | add it to the script |
 | `[FAIL] all live captures present — missing: […]` | a capture did not run | see [`capture-guide.md`](../capture/capture-guide.md) |
+| `[FAIL] filmed artifacts are real files — …` | an `artifact:` capture found no real file | the producing `download` did not run or wrote nothing |
 
 ## Common scenarios
 
@@ -77,8 +82,25 @@ against libass's default 384×288 canvas.
 
 ### "A capture keeps timing out"
 
-The live system is slow or the selector changed. Add a `wait`, and verify the selector against
-the real DOM. Prefer asserting a readiness marker over a long fixed sleep.
+The live system is slow or the selector changed. Replace fixed sleeps with `wait_for` on the
+element that *proves* readiness — it returns the moment the state arrives, and its failure
+message names exactly what was waited for. Verify the selector against the real DOM.
+
+### "I need to sign in before filming"
+
+Do not fill the login form in the spec. Record the session once:
+
+```bash
+vidkit auth https://staging.example.com/login --spec video.yaml
+```
+
+then point the capture at the storage state it wrote. See [`capture-guide.md`](../capture/capture-guide.md).
+
+### "I filmed a PDF and got a blank frame"
+
+vidkit rasterises a PDF through `pdftoppm` or `gs`; if neither is installed it refuses rather
+than film a placeholder. Install `poppler-utils` (or `ghostscript`), or capture the document
+from the product's own viewer instead.
 
 ### "It worked, then the tag/data drifted"
 

@@ -47,13 +47,18 @@ sources as-is.
 
 ### `capture`
 **Reads:** `spec.captures[]`.
-**Writes:** `OUT/_capture/<name>.png` (one per capture), registered as a still.
-**Purpose:** record real UI.
-**Guarantee:** the capture's `assert`, if present, runs after the actions and **before**
-the screenshot. A failed assertion raises and aborts the build.
+**Writes:** `OUT/_capture/<name>-take-N.png` (one take per capture) and
+`OUT/_capture/artifacts/*` (files a `download` action produced), registered as stills.
+**Purpose:** record real UI, and real files.
+**Guarantee:** a capture's `assert`, and any per-action `assert`, run **before** the frame is
+written. A failed assertion raises and aborts the build. An `artifact:` capture films only a
+file that exists, has bytes, and whose content matches its kind; a `url:` capture refuses a
+selector it cannot find. Artifact captures run **after** every other capture, so a `download`
+earlier in the spec has always produced its file.
 **Fails when:** Playwright is absent (warning + skip, unless the capture is required — see
-`verify.require_live_mode`), no browser is found, an action times out, or an assertion
-fails.
+`verify.require_live_mode`), no browser is found, a `wait_for` state never arrives, a
+download times out, an assertion fails, an artifact is missing/empty/oversized, a PDF cannot
+be rasterised, or a login form is filmed without declaring it.
 
 ### `narration`
 **Reads:** the scene script (from `narration.source` merged with `narration.inline`).
@@ -116,7 +121,7 @@ provider.datasets(ctx) ──► data/<name>.json ──► panels/<name>.svg �
 narration.source ──► scene text ──┬──► tts ──► wavs/scene-NN.wav ──► narration.wav
                                   │                       │
 spec.stills ─────────────► stills/<stem>.png             │
-spec.captures ──► captures/<name>.png                    │
+spec.captures ──► captures/<name>-take-N.png             │
                                   └────────► clips (sized by measured audio)
                                                        │
                               video-track.mp4 ─────────┴──► render ──► out.mp4 + narration.srt

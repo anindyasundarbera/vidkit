@@ -117,6 +117,19 @@ def verify_output(ctx: Context, assets, scenes_text: dict[int, str]) -> Report:
         rep.add("all live captures present", not missing,
                 f"missing: {missing}" if missing else f"{len(spec.captures)} captured")
 
+    # artifact integrity: a filmed artifact is the real file, and it is not empty
+    artifacts = getattr(assets, "artifacts", None) or {}
+    declared = [c.artifact for c in spec.captures if c.artifact]
+    if declared:
+        rep.facts["artifacts"] = {
+            n: {"path": str(a.path), "bytes": a.bytes}
+            for n, a in sorted(artifacts.items())}
+        absent = [p for p in declared if p not in artifacts]
+        empty = sorted(n for n, a in artifacts.items() if not a.bytes)
+        rep.add("filmed artifacts are real files", not absent and not empty,
+                f"missing: {absent}, empty: {empty}" if (absent or empty)
+                else f"{len(artifacts)} artifact(s)")
+
     # live-data guarantee: every dataset came from the source, not a fallback
     degraded = dict(spec.degraded)
     if guard.require_live_data:

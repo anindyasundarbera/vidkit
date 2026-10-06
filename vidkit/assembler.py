@@ -36,7 +36,7 @@ from .errors import SpecError
 from .narration import build_srt, parse_scene_script, word_count
 from .snapshot import (SNAPSHOT_FILE, Snapshot, digest_text, load_datasets,
                        request_key, verify_fresh)
-from .spec import Spec, load_spec
+from .spec import Artifact, Spec, load_spec
 from .timeframe import Timeframe, parse_timeframe
 from .svg import PanelDoc, document
 from .verify import Report, verify_output
@@ -50,6 +50,7 @@ class Assets:
     stills: dict[str, Path] = field(default_factory=dict)      # name -> png
     panel_stills: dict[str, Path] = field(default_factory=dict)
     capture_stills: dict[str, Path] = field(default_factory=dict)
+    artifacts: dict[str, Artifact] = field(default_factory=dict)   # name -> real bytes
     scene_audio: list[_tts.SceneAudio] = field(default_factory=list)
     video_track: Path | None = None
     audio_track: Path | None = None
@@ -234,6 +235,8 @@ def run(spec_path: Path | str, *, only: Iterable[str] | None = None,
             if res.path:
                 assets.capture_stills[res.name] = res.path
                 assets.stills[res.name] = res.path
+            for art in res.artifacts:
+                assets.artifacts[art.name] = art
 
     # -- narration --------------------------------------------------------- #
     scripts = _scripts_for(spec, ctx)

@@ -88,13 +88,13 @@ Priorities: **P0** = required for v1.0, **P1** = strongly expected, **P2** = lat
 | ID | Requirement | Pri |
 |---|---|---|
 | R-C1 | Playwright capture of a URL with an **assertion that runs before the screenshot**; a failed assertion aborts the build. | P0 |
-| R-C2 | An action DSL covering: `wait`, `select`, `click`, `fill`, `press`, `scroll`, `eval`. | P0 |
+| R-C2 | An action DSL covering: `wait`, `wait_for`, `select`, `click`, `fill`, `press`, `scroll`, `eval`, `download`. | P0 |
 | R-C3 | **Download captures**: click a real control, wait for the browser download, save the real bytes. | P0 |
-| R-C4 | **Artifact rendering**: display real bytes (HTML/CSV/JSON) in a page and screenshot them (`set_content`). | P0 |
+| R-C4 | **Artifact rendering**: film real downloaded bytes as themselves (CSV/TSV/PDF/PNG), sniffed so the content must match its kind. | P0 |
 | R-C5 | Explicit **element waits** (`wait_for_selector`), not only fixed sleeps. | P0 |
-| R-C6 | **Take selection / retry**: re-issue an identical request and keep the best take; never edit output to fake a better take. | P1 |
-| R-C7 | Session/auth support (login or token) for non-anonymous products. | P1 |
-| R-C8 | Deterministic rendering: fixed viewport, device scale, colour profile. | P1 |
+| R-C6 | **Take selection / retry**: re-issue an identical request and name the take you keep; never edit output to fake a better take. | P1 |
+| R-C7 | Session/auth support (login or token) for non-anonymous products; a login form is filmed only when declared. | P1 |
+| R-C8 | Deterministic rendering: fixed viewport, device scale, and a frozen clock, locale, timezone, motion and randomness. | P1 |
 
 ### D. Presentation
 
@@ -163,7 +163,7 @@ Priorities: **P0** = required for v1.0, **P1** = strongly expected, **P2** = lat
 
 ## 3. Current state
 
-### 3.0 Baseline (verified on disk, 2026-10-06)
+### 3.0 Baseline (verified on disk, 2026-10-07)
 
 This repo **is** the extraction target — the M0 split has happened. §3.1–§3.5 below are the
 **pre-extraction** snapshot from `2026-10-04`, kept because they are the evidence base for the
@@ -174,15 +174,15 @@ authoritative "what is done now" record is
 
 | Item | State today |
 |---|---|
-| Package | `vidkit/` — **21 modules** (…, `secrets`, `snapshot`) |
-| Tests | `tests/test_core.py`, `tests/test_mcp.py`, `tests/test_timeframe.py`, `tests/test_providers.py` — **124 passing** (0.7 s) |
-| Examples | `examples/hello-world/` only — **host-free**; 8 scenes, 8 panel kinds, no browser/network/TTS needed |
+| Package | `vidkit/` — **21 modules**, incl. `secrets`, `snapshot`, `scaffold`, `reports`, `timeframe` |
+| Tests | `test_core`, `test_mcp`, `test_timeframe`, `test_providers`, `test_capture` — **198 passing** (1.7 s) |
+| Examples | `examples/hello-world/` (host-free, offline) and `examples/capture-kit/` (a local server, a real CSV and PDF; needs Chromium) |
 | `docs/` | **21 docs in 7 modules** under `docs/`, routed by `docs/README.md` + `docs/modules.yaml` |
 | MCP server | **present** — `vidkit/mcp_server.py`; 10 tools + 3 resources |
 | `LICENSE` | **present** (MIT) |
 | `CHANGELOG.md` | **present** (Keep a Changelog) |
 | `py.typed` | **present**, and ships in the built wheel |
-| CI | **present** — `.github/workflows/ci.yml` (`test` + `build-example`) |
+| CI | **present** — `.github/workflows/ci.yml` (`test` + `build-example` + `capture-probe`) |
 | Host coupling in engine | **0** — `grep -rniE "oneaquahealth\|oah_\|fhir" vidkit/*.py` → 0 |
 | OAH story | **removed** from this repo; preserved at `~/Projects/oneaquahealth-story-backup/` pending its move into the OAH repo |
 | Git history | **published** — first commit `87b7435` on `main`, pushed to <https://github.com/anindyasundarbera/vidkit> (public) |
@@ -210,7 +210,8 @@ authoritative "what is done now" record is
 - Spec load/validate: `project, voice, narration, provider, captures, charts, scenes, guard`.
 - Stages: `data, panels, stills, capture, narration, clips, concat, render, verify` with `--only`.
 - CLI: `doctor, plan, build, tts, capture, verify`.
-- Capture: Playwright, actions `wait/select/click/fill/press/scroll/eval`, `assert` **before** screenshot.
+- Capture: Playwright, actions `wait/wait_for/select/click/fill/press/scroll/eval/download`,
+  `assert` **before** the frame, real downloads filmed as themselves, named takes, session reuse.
 - Panels: 8 built-in kinds + `register()` extension.
 - Narration: scene-header parsing, bold-line extraction, token-faithful SRT, ≤2 lines/≤42 chars.
 - TTS: per-scene piper WAVs; measured duration is the clock; silent fallback.
@@ -225,11 +226,11 @@ authoritative "what is done now" record is
 | ~~No timeframe field anywhere in the spec; windows hard-coded in provider URL strings (`?days=28`, `?days=90`)~~ — **closed in M1** | R-A3, R-B2 |
 | ~~No story manifest / story identity~~ — **closed in M1** | R-A1, R-G3 |
 | ~~No `init`/scaffold~~ — **closed in M1** | R-A2, R-G4 |
-| No download capture (`expect_download`) | R-C3 |
-| No `set_content` / artifact-frame rendering | R-C4 |
-| No `wait_for_selector` action | R-C5 |
-| No take-selection/retry | R-C6 |
-| No auth/session support | R-C7 |
+| ~~No download capture (`expect_download`)~~ — **closed in M3** | R-C3 |
+| ~~No artifact rendering~~ — **closed in M3** | R-C4 |
+| ~~No `wait_for_selector` action~~ — **closed in M3** | R-C5 |
+| ~~No take-selection/retry~~ — **closed in M3** | R-C6 |
+| ~~No auth/session support~~ — **closed in M3** | R-C7 |
 | Panel x-axis is index-based, not date-proportional | R-D3 |
 | No overlay / lower-thirds composite (`ffmpeg overlay`) | R-D4 |
 | `still_to_clip` uses bare `scale=W:H` → **stretches** full-page captures (regression risk) | R-D5 |
@@ -335,17 +336,22 @@ is now refused with a sentence naming what changed, `--refresh` forces a refetch
 resumes a suffix, and `guard.require_live_data` turns a declared degradation into a verify
 failure. Tests 84 → **124** in ~0.7 s.
 
-### M3 — Capture v2 *(P0)* — ~3–5 days
+### M3 — Capture v2 *(P0)* — **DONE**
 
-Bring the artifact-capture capability that only ever existed in the ad-hoc OneAquaHealth script.
+Brought the artifact-capture capability that only ever existed in the ad-hoc OneAquaHealth
+script into the engine.
 
-- [ ] `download` action: click + `expect_download` + save real bytes to `_capture/artifacts/` (R-C3).
-- [ ] `content`/`artifact` capture: render real bytes in a page and screenshot (R-C4).
-- [ ] `wait_for` action (`wait_for_selector`) (R-C5).
-- [ ] Optional take-selection/retry policy declared in the spec (R-C6).
-- [ ] Auth/session support (R-C7); deterministic render defaults (R-C8).
+- [x] `download` action: click + `expect_download` + save real bytes to `_capture/artifacts/` (R-C3).
+- [x] `artifact` capture: film real downloaded bytes as themselves, sniffed by kind, a PDF
+      rasterised through `pdftoppm`/`gs` (R-C4).
+- [x] `wait_for` action with named states and a timeout (R-C5).
+- [x] Named takes: `take: N` records and promotes explicitly (R-C6).
+- [x] `vidkit auth` records a session once; `storage_state:` reuses it; a login form needs
+      `allow_login: true` (R-C7); determinism frozen by default (R-C8).
 
-**Exit:** a spec can capture a real downloaded file and film it, with no bespoke script.
+**Exit met, against a real Chromium**: `examples/capture-kit/video.yaml` films five captures, a
+real 158-byte CSV and a real 1104-byte PDF, and rasterises the PDF to 1275×1650. Suite 124 →
+**198** tests. CI gained a `capture-probe` job that installs poppler and Chromium.
 
 ### M4 — Presentation v2 *(P0/P1)* — ~3–5 days
 

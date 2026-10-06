@@ -354,3 +354,114 @@ jobs:
         run: |
           test -s examples/hello-world/hello-world.mp4
           test -s examples/hello-world/narration.srt
+
+  capture-probe:
+    # Capture v2's whole claim is "vidkit films a real product, including bytes it
+    # downloads". That cannot be demonstrated by unit tests against a fake page, so
+    # this job drives a real headless Chromium against a real local product page and
+    # then asserts the artifact PNG is a PNG. The page is examples/capture-kit, which
+    # needs no network.
+    name: film a real page and a real download
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install system tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends ffmpeg librsvg2-bin poppler-utils
+
+      - name: Install vidkit with the capture extra
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[capture]"
+
+      - name: Install the browser Playwright drives
+        run: python -m playwright install --with-deps chromium
+
+      - name: Serve the kit on localhost
+        run: |
+          set -eu
+          python examples/capture-kit/server.py --port 8765 &
+          for _ in $(seq 1 40); do
+            if curl -fsS http://127.0.0.1:8765/ >/dev/null; then exit 0; fi
+            sleep 0.25
+          done
+          echo "capture-kit server never came up" >&2
+          exit 1
+
+      - name: Film it
+        run: vidkit build examples/capture-kit/video.yaml
+
+      # The refusals matter as much as the success: a capture whose assertion is
+      # false must fail the build rather than quietly photograph the wrong state.
+      - name: A capture that asserts the wrong state fails the build
+        run: |
+          set -eu
+          python - <<'PY'
+          import pathlib, re
+          src = pathlib.Path("examples/capture-kit/video.yaml")
+          text = src.read_text()
+          broken = text.replace('contains: "5 rows"', 'contains: "nine hundred rows"')
+          if broken == text:
+              raise SystemExit("fixture changed: nothing to break")
+          pathlib.Path("_capture_refusal/video.yaml").parent.mkdir(parents=True, exist_ok=True)
+          pathlib.Path("_capture_refusal/video.yaml").write_text(broken)
+          pathlib.Path("_capture_refusal/narration.md").write_text(
+              pathlib.Path("examples/capture-kit/narration.md").read_text())
+          PY
+          if vidkit build _capture_refusal/video.yaml >/dev/null 2>&1; then
+            echo "a false assertion did not fail the build" >&2
+            exit 1
+          fi
+          echo "REFUSAL OK — a capture that asserts the wrong state fails loudly"
+
+      - name: Assert the artifacts are real
+        run: |
+          set -eu
+          python - <<'PY'
+          import json, pathlib, struct, sys
+
+          out = pathlib.Path("examples/capture-kit")
+          csv = out / "_capture/artifacts/usage.csv"
+          pdf = out / "_capture/artifacts/summary.pdf"
+          for path in (csv, pdf):
+              if not path.is_file() or path.stat().st_size == 0:
+                  sys.exit(f"{path} is missing or empty — the download never landed")
+
+          rows = csv.read_text().strip().splitlines()
+          if rows[0] != "day,channel,visits,signups" or len(rows) != 6:
+              sys.exit(f"usage.csv is not the five rows the page showed: {rows[:2]}")
+
+          if not pdf.read_bytes().startswith(b"%PDF-"):
+              sys.exit("summary.pdf is not a PDF")
+
+          for name in ("csv_page", "pdf_page"):
+              png = out / f"_capture/{name}.png"
+              data = png.read_bytes()
+              if data[:8] != b"\x89PNG\r\n\x1a\n":
+                  sys.exit(f"{name}.png is not a PNG")
+              width, height = struct.unpack(">II", data[16:24])
+              if width < 200 or height < 200:
+                  sys.exit(f"{name}.png is only {width}x{height}")
+
+          report = json.loads((out / "_build/verify.json").read_text())
+          checks = {c["name"]: c for c in report["checks"]}
+          for want in ("all live captures present", "filmed artifacts are real files"):
+              if not checks.get(want, {}).get("ok"):
+                  sys.exit(f"verify check {want!r} did not pass")
+
+          print(f"CAPTURE OK — {len(rows) - 1} real rows, a real PDF, "
+                "two real artifact stills")
+          PY
+
+      - name: Assert artifacts exist
+        run: |
+          test -s examples/capture-kit/capture-kit.mp4
+          grep -q "filmed artifacts are real files" examples/capture-kit/_build/verify.json

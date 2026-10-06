@@ -15,6 +15,7 @@ render. The report is written to `OUT/_build/verify.json`.
 | `required phrase present: <p>` | `<p>` appears ≥ 1 time | script + SRT |
 | `captions readable` | every cue ≤ 2 lines × ≤ 42 chars | SRT |
 | `all live captures present` | every declared capture produced a PNG | `assets.capture_stills` |
+| `filmed artifacts are real files` | every `artifact:` capture filmed a non-empty file that came from a `download` | `assets.artifacts` |
 | `all datasets live` | no dataset was declared degraded (a fallback used after an outage) | provider + spec |
 | `speech rate plausible` | 1.6–3.6 words/sec | script + duration |
 | `no mock mode referenced` | `mode=mock` absent, or only as a prohibition | narration + captions |
@@ -22,6 +23,20 @@ render. The report is written to `OUT/_build/verify.json`.
 
 The `no mock mode referenced` check exists because a script may legitimately *say* "we never
 open `?mode=mock`"; so it allows the phrase near the word "never".
+
+### `filmed artifacts are real files` (R-C4)
+
+Emitted **only when the spec declares at least one `artifact:` capture** — a story that films
+no files should not carry a check it cannot fail.
+
+It asserts that each declared artifact resolved to a real file that a `download` action
+actually produced this run, and that the file has bytes in it. A filename in a spec is not
+evidence; a file on disk with a size is. `detail` reports how many artifacts were checked.
+
+Most of the work happens earlier and more cheaply: an `artifact:` that no `download` in the
+spec produces is refused by `load_spec`, and a zero-byte or oversized file is refused by
+`capture.artifact_source`. This check is the last line — it catches an artifact that was
+declared, validated, and then never actually written.
 
 ### `timeframe consistent with spec` (R-F7)
 

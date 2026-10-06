@@ -4,7 +4,7 @@
 > For the phase-wise plan see [FEATURE-ROADMAP.md](FEATURE-ROADMAP.md). For what already
 > happened see [HISTORY.md](HISTORY.md). For why, see [DECISIONS.md](DECISIONS.md).
 >
-> Last updated: **2026-10-06**.
+> Last updated: **2026-10-07**.
 
 ---
 
@@ -80,108 +80,82 @@ Design consequences recorded as **D20–D22**.
 
 ---
 
-## Current phase: M3 — Capture v2  *(P0)*
+## M3 — Capture v2 — **COMPLETE**
 
-**Purpose.** Record real product *behaviour*, not just real product screens. This is the last
-capability that only ever existed in an ad-hoc script, and it is P0 because M5–M10 all assume
-capture is real.
-
-**Requirements.** R-C3 (downloads), R-C4 (artifact rendering), R-C5 (element waits),
-R-C6 (take selection), R-C7 (auth), R-C8 (deterministic rendering).
-
-**Exit criterion.**
+Exit criterion ([FEATURE-ROADMAP.md](FEATURE-ROADMAP.md) §6):
 
 > A spec can capture a real downloaded file and film it, with no bespoke script.
 
+**Met, against a real Chromium, not a fake page object.** Every claim below was produced by
+running the actual browser; the unit tests exist to keep it that way, not to stand in for it.
+
+### Verified evidence
+
+| Claim | How it was checked | Result |
+|---|---|---|
+| A real page can be driven and proven | `vidkit build examples/capture-kit/video.yaml` against a real Chromium | exit **0**; `[PASS] all live captures present — 5 captures` |
+| A real download is real bytes | `wc -c`, `head` | `usage.csv` **158 B**, header + exactly 5 data rows |
+| A downloaded PDF is a real PDF | `file`/magic + `pdftotext` | `%PDF-`, 1104 B, one page of real summary text |
+| An artifact is filmed as itself | sniff + rasterise | `csv_page.png` 66 496 B; `pdf_page.png` **1275×1650**, the PDF's own text |
+| …and refuses when it cannot | `pdftoppm`/`gs` monkeypatched to fail | `cannot show a.pdf: pdftoppm failed …`, then `gs failed` |
+| A wrong assertion stops the build | a spec asserting `#summary contains 'nine hundred rows'` | exit **1**, `… (saw '5 rows · 7016 visits · 395 signups')` |
+| Determinism is real | freeze script injected before the page runs | clock, locale, timezone, reduced-motion, `Math.random` all pinned |
+| The suite is green and still cheap | `python3 -m pytest tests -q` | **198 passed in 1.71 s** (P6 holds) |
+| CI asserts all of it, with a browser | extracted the `capture-probe` `run:` blocks and executed them | serve OK, film OK, refusal OK, `CAPTURE OK` |
+
+**Two real bugs were found only because the browser was real**, after the unit tests were
+green: the fixture's HTML constant had doubled braces without an `f` prefix, so the page
+raised `Uncaught SyntaxError`; and its `load()` removed an element that was already gone, so
+the second *Apply* click silently left `#summary` at its first value. Both would have shipped
+on unit tests alone. That is the argument for the CI job, restated as evidence.
+
+Branch `phase/m3-capture-v2` → PR → merged to `main`. Design consequences recorded as
+**D23–D25**.
+
+---
+
+## Current phase: M4 — Presentation v2  *(P0/P1)*
+
+**Purpose.** Stop the output from looking wrong. M3 fixed what the camera *points at*; M4
+fixes what the audience *sees*.
+
+**Requirements.** R-D3 (date-proportional axis), R-D4 (overlays), **R-D5 (aspect-preserving
+crop — this is a bug fix)**, R-D1/D2 (panels), R-D6 (transitions).
+
+**Exit criterion.**
+
+> Full-page captures are never stretched; a time series is spaced by real dates; an overlay
+> renders.
+
 ### Ordered work
 
-1. **`wait_for` action (R-C5).** Smallest and most load-bearing: a capture that races the UI
-   is the root cause of most flaky recordings. `wait_for_selector` with an optional timeout,
-   and a refusal that names the selector.
-2. **`download` action (R-C3).** `click` → `expect_download` → save the real bytes to
-   `_capture/artifacts/`, and record the path so a later shot can show it. The bytes are the
-   evidence — never a mocked filename.
-3. **`content`/`artifact` capture (R-C4).** Render the saved bytes in a page and screenshot
-   them. That is how a generated PDF, CSV or image becomes a shot.
-4. **Assertions before the shot (R-C1, already done) extended to the new actions.** Every new
-   action must be able to carry the same `assert` the URL capture has.
-5. **Take selection (R-C6).** `take: 2` or a predicate, so a recorded flow can be re-run and a
-   better take kept without re-authoring.
-6. **Auth/session (R-C7).** Reuse a stored `storage_state`, and refuse to record a login form
-   unless the spec says the login *is* the story.
-7. **Deterministic rendering (R-C8).** Freeze the clock, the locale, the viewport and
-   `prefers-reduced-motion` so two captures of the same flow are byte-comparable.
-8. **Capture guide.** Document each action with its refusals; a capture action that cannot
-   fail honestly is not finished.
+1. **`still_to_clip` must preserve aspect (R-D5).** It currently emits a bare `scale=W:H`,
+   which **stretches** a full-page capture to 16:9. A distorted screenshot misrepresents the
+   product, so this is a truthfulness bug, not a polish item — and it is first because every
+   other M4 change is measured against it.
+2. **Date-proportional axis (R-D3).** A time series must be spaced by real dates, not by
+   index, so a gap in the data reads as a gap.
+3. **Overlays / lower-thirds (R-D4).** A compositing seam so a title, a callout, or a
+   branding strip can sit over a shot without being baked into the capture.
+4. **More panel kinds (R-D1/D2).** Grow the registry where a real story needs it; no
+   speculative kinds.
+5. **Transitions (R-D6).** Cut, fade, and a wipe, applied at `concat` — deterministic, and
+   never a substitute for a real state change.
+6. **Guides.** Update `docs/authoring/spec-reference.md`, the panels reference, and the
+   pipeline stage map for the new fields and stages.
 
 ### Tasks
 
 | # | Task | Status | Depends on |
 |---|---|---|---|
-| 1 | `wait_for` action + tests | `[ ]` | — |
-| 2 | `download` action → real bytes in `_capture/artifacts/` | `[ ]` | 1 |
-| 3 | `content`/`artifact` capture that shoots the saved bytes | `[ ]` | 2 |
-| 4 | `assert` support on every new action | `[ ]` | 2, 3 |
-| 5 | Take selection | `[ ]` | 2 |
-| 6 | Auth/session reuse | `[ ]` | 1 |
-| 7 | Determinism: frozen clock/locale/viewport/reduced-motion | `[ ]` | — |
-| 8 | `docs/authoring/capture-guide.md` | `[ ]` | 1–7 |
-| 9 | Branch `phase/m3-capture-v2` → commits → PR → merge | `[ ]` | 8 |
+| 1 | `still_to_clip` aspect-preserving scale/crop + tests | `[ ]` | — |
+| 2 | Date-proportional x-axis | `[ ]` | — |
+| 3 | Overlay/lower-third compositing | `[ ]` | 1 |
+| 4 | Additional panel kinds | `[ ]` | — |
+| 5 | Transitions at `concat` | `[ ]` | 1 |
+| 6 | Docs: spec-reference, panels, pipeline | `[ ]` | 1–5 |
+| 7 | Branch `phase/m4-presentation-v2` → commits → PR → merge | `[ ]` | 6 |
 
-**Evidence requirement.** 2 and 3 must be demonstrated against a **local HTTP server** the
-test starts itself — no external network, and no browser needed for the parts that can be
-unit-tested with a fake page object. Playwright is absent on this machine, so every path that
-needs it is written to a narrow seam and unit-tested through a fake; the CI runner installs it.
-
----
-
-## After M2 — the rest of the sequence
-
-One branch, one PR, one merge per phase; `FEATURE-ROADMAP.md` §5–§14 is the authority for
-scope and exit criteria.
-
-| Phase | Purpose | Exit in one line |
-|---|---|---|
-| M3 Capture v2 | record real *behaviour*, not just screens | a spec captures a real download and films it |
-| M4 Presentation v2 | stop the output looking wrong | full-page captures never stretched (the `still_to_clip` aspect bug) |
-| M5 Agent surface | make it drivable | `init → build → verify` from tool calls and from `--json` |
-| M6 Hardening & v1.0 | ship it | tagged `v1.0.0` — **flag to the owner before tagging** |
-| M7 Executor & sandbox | terminal, files, isolation | a recorded real terminal session, never animated |
-| M8 Docker & environment lab | real containers on camera | a container is started, filmed, and torn down |
-| M9 Movie mode | narrative, not just demo | additive; no tenth stage |
-| M10 Studio surface v2 | session-oriented MCP tools | an agent holds a session, not a job |
-
----
-
-## Deliberately not doing yet
-
-| Deferred | Why | Decision |
-|---|---|---|
-| Sandboxed terminal + Docker executor | Needs a story and a window to exist first; M1/M2 supply them. | [DECISIONS.md](DECISIONS.md) D13 |
-| Movie/narrative mode | Additive, not a rescue — and only meaningful once capture is real (M3/M7). | [DECISIONS.md](DECISIONS.md) D14 |
-| Adopting any OpenMontage code | AGPL-3.0 boundary — concepts only, no code reuse, no vendoring. | [DECISIONS.md](DECISIONS.md) D9 |
-| A linter (`ruff`) | Belongs with "ship it", not with feature work. | M6 |
-
----
-
-## Answered questions (previously open)
-
-| # | Question | Answer |
-|---|---|---|
-| Q1 | Where does this repo ultimately live? | **GitHub** — `anindyasundarbera/vidkit`. |
-| Q2 | Is `examples/oneaquahealth/` staying or moving out? | **Moves out.** Removed 2026-10-06, backed up to `~/Projects/oneaquahealth-story-backup/`. |
-| Q3 | Story manifest shape (D1)? | **Both** — folder convention + optional `story.yaml`. |
-| Q4 | Timeframe shape (D3)? | **Both** — `{days, as_of}` and `{start, end}`. |
-| Q5 | Repo owner and visibility? | **`anindyasundarbera/vidkit`, public** (created 2026-10-06). |
-| Q6 | Commit the rendered example output? | **Gitignore.** `*.mp4`/`*.srt` are write-only and rebuilt in CI. |
-| Q7 | Traceability of the phase plan? | **One branch + PR + merge per phase** (`phase/mN-<slug>`). |
-
-## Still-open questions for the owner
-
-None blocking M3. The next genuinely open questions belong to M5 (job contract shape) and M9
-(movie mode scope); the one item that needs an explicit go-ahead is the **public `v1.0.0`
-tag at M6**.
-
-Playwright is not installed on the development machine, so M3 is written against a narrow
-seam and unit-tested with a fake page; the CI runner installs the real thing. Any capture
-claim that cannot be demonstrated locally is marked as such until CI proves it.
+**Evidence requirement.** Every aspect-ratio and transition claim must be checked by
+**probing the produced video** (`ffmpeg`-derived frame geometry), not by reading the filter
+string. A filter that *looks* right is not evidence.

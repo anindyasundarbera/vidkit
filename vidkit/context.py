@@ -98,6 +98,11 @@ class Context:
         return self.out_dir / "_capture"
 
     @property
+    def capture_artifacts(self) -> Path:
+        """Where a capture's real downloaded bytes are kept (R-C3)."""
+        return self.captures / "artifacts"
+
+    @property
     def stills(self) -> Path:
         return self.build / "stills"
 
@@ -126,8 +131,8 @@ class Context:
         return Rsvg(self.shell)
 
     def ensure_dirs(self) -> None:
-        for d in (self.out_dir, self.build, self.captures, self.stills,
-                  self.panels_dir, self.clips, self.wavs, self.data_dir):
+        for d in (self.out_dir, self.build, self.captures, self.capture_artifacts,
+                  self.stills, self.panels_dir, self.clips, self.wavs, self.data_dir):
             d.mkdir(parents=True, exist_ok=True)
 
     def facts(self) -> dict[str, Any]:

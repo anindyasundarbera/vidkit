@@ -59,10 +59,31 @@ build stops — it does **not** save the wrong frame.
 assert: {selector: "#mode-indicator", contains: "Live adapter"}
 ```
 
-- Module: `capture.py::_check_assert`.
+- Module: `capture.py::check`.
 - This is how "never film mock mode" becomes structural instead of aspirational.
 
-### 3. Data flows one way: provider → dataset → panel → still
+The same rule covers the awkward waits. `wait_for` waits for a *named state* and refuses if it
+never arrives, instead of a `wait: 5` that silently films whatever the page happened to be
+showing. An action may carry its own `assert:`, so "click Apply, then prove the table has five
+rows" is one atomic step.
+
+### 3. An artifact is filmed as itself, or not at all
+
+Some things cannot be screenshotted from the DOM — a downloaded CSV, a PDF, an export. A
+capture may therefore declare `artifact:` instead of `url:` and film a file a `download`
+action produced. The file must exist, must be non-empty, and must be *recognisably* what it
+claims: vidkit sniffs the bytes, and a PDF is rasterised through `pdftoppm` (or `gs`). If
+neither rasteriser is installed, or a file's bytes do not match its extension, the build
+refuses. It never films a placeholder.
+
+- Modules: `capture.py::sniff`, `capture.py::rasterize_pdf`, `capture.py::shoot_artifact`.
+- `verify.py::filmed artifacts are real files` is the last line of that defence.
+
+Signing in is deliberately **not** a capture action. `vidkit auth` records a storage state
+once, by hand; a capture reuses it. Filming a login form is possible but must be declared,
+with `allow_login: true`.
+
+### 4. Data flows one way: provider → dataset → panel → still
 
 The spec never contains data. It names a dataset; the provider computes it. Renderers are
 pure functions of `(data, options, doc)`. This keeps specs small, keeps numbers live, and
@@ -71,7 +92,7 @@ means a typo in the spec is caught at load time (before any expensive render).
 - Modules: `provider.py`, `panels.py`, `svg.py`.
 - The spec's cross-reference validation lives in `spec.py::_validate`.
 
-### 4. Every claim that can be checked is checked
+### 5. Every claim that can be checked is checked
 
 The spec's `timeframe:` and the narration are two independent records of the same fact. Rather
 than trusting the author to keep them in sync, `verify` reads the window back out of the
@@ -116,6 +137,7 @@ OUT/
   _build/wavs/scene-NN.wav per-scene audio
   _build/clips/*.mp4      one clip per shot
   _capture/*.png          raw captures
+  _capture/artifacts/*    files a download produced, for `artifact:` captures
   _build/verify.json      the acceptance report
 ```
 
