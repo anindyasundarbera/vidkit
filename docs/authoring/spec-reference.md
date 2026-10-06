@@ -181,10 +181,15 @@ See [`provider-guide.md`](provider-guide.md).
 
 ## `captures[]`
 
+A capture is a scripted Playwright visit that produces one PNG. It may be guarded by an
+`assert:` that runs **before** the screenshot, so a build can never film the wrong state.
+See the [capture guide](../capture/capture-guide.md) for tactics and worked examples.
+
 | Field | Required | Type | Default | Meaning |
 |---|---|---|---|---|
 | `name` | ✅ | string | — | referenced by `shots[].capture` |
-| `url` | ✅ | string | — | page to open |
+| `url` | one of | string | — | page to open |
+| `artifact` | one of | string | — | name of a file a `download` produced; film *it* |
 | `actions` | — | list | `[]` | interaction script (below) |
 | `assert` | — | mapping | — | state check before screenshot |
 | `viewport` | — | `[w, h]` | `project.size` | browser viewport |
@@ -192,6 +197,18 @@ See [`provider-guide.md`](provider-guide.md).
 | `wait_until` | — | string | `"networkidle"` | Playwright load state |
 | `wait_after` | — | number | `0.0` | extra settle time after actions |
 | `full_page` | — | bool | `false` | full-page vs. viewport screenshot |
+| `storage_state` | — | path | — | a session recorded with `vidkit auth` |
+| `allow_login` | — | bool | `false` | declare that filming a login form *is* the scene |
+| `deterministic` | — | bool | `true` | pin clock, locale, timezone, motion, randomness |
+| `take` | — | int | `1` | which take to record, and promote |
+
+**Exactly one** of `url:` / `artifact:` is required; they are mutually exclusive.
+
+**Load-time refusals.** All of these are reported by `vidkit plan` before a browser opens:
+two captures with the same name; `take < 1`; `artifact:` together with `url:`; neither
+`url:` nor `artifact:`; an `artifact:` that no `download` in the spec produces; a
+`storage_state:` file that does not exist; a `save_as:` containing a path separator; and a
+capture that fills a password-shaped field without a `storage_state:` or `allow_login: true`.
 
 ### `assert`
 Exactly one of the following is honoured (checked in this order):
@@ -206,16 +223,36 @@ Exactly one of the following is honoured (checked in this order):
 ### `actions[]` — canonical form
 
 ```yaml
-- {type: wait,   seconds: 2.5}
-- {type: select, selector: "#site-selector", value: "yam-ito"}
-- {type: click,  selector: "[data-local-tab=evidence]"}
-- {type: fill,   selector: "#q", value: "text"}
-- {type: press,  selector: "#q", value: "Enter"}
-- {type: scroll, selector: "#site-workspace"}       # or omit selector to scroll to top
-- {type: eval,   script: "window.scrollTo(0, 0)"}
+- {type: wait,     seconds: 2.5}
+- {type: wait_for, selector: "#usage tbody tr", state: visible, timeout: 15}
+- {type: select,   selector: "#site-selector", value: "yam-ito"}
+- {type: click,    selector: "[data-local-tab=evidence]"}
+- {type: fill,     selector: "#q", value: "text"}
+- {type: press,    selector: "#q", value: "Enter"}
+- {type: scroll,   selector: "#site-workspace"}     # or omit selector to scroll to top
+- {type: eval,     script: "window.scrollTo(0, 0)"}
+- {type: download, selector: "#csv", save_as: usage.csv, timeout: 20}
 ```
 
-A single-key form is also accepted: `- {select: {selector: "#x", value: "y"}}`.
+| Field | Applies to | Meaning |
+|---|---|---|
+| `seconds` | `wait` | how long to sleep |
+| `selector` | all but `wait`/`eval` | the element to act on |
+| `value` | `select`, `fill`, `press` | the option text, text, or key |
+| `script` | `eval` | JavaScript to run |
+| `state` | `wait_for` | `visible` (default), `attached`, `hidden`, `detached` |
+| `timeout` | `wait_for`, `download` | seconds before refusing (default 30) |
+| `save_as` | `download` | plain filename under `OUT/_capture/artifacts/` |
+| `assert` | any | check that runs **immediately after** this action |
+
+Any action may carry its own `assert:`, which is how a change is made and proven in one step:
+
+```yaml
+- {type: click, selector: "#apply", assert: {selector: "#summary", contains: "5 rows"}}
+```
+
+A single-key form is also accepted: `- {select: {selector: "#x", value: "y"}}`. Its value must
+be a mapping — `- {wait_for: "#x"}` is refused.
 
 ```yaml
 captures:
@@ -228,6 +265,14 @@ captures:
       - {type: select, selector: "#site-selector", value: "yam-ito"}
       - {type: eval,   script: "window.scrollTo(0, 0)"}
     assert: {selector: "#mode-indicator", contains: "Live adapter"}
+
+  - name: usage_csv                        # the bytes a download produced …
+    url: "http://127.0.0.1:8090/"
+    actions:
+      - {type: download, selector: "#csv", save_as: usage.csv}
+
+  - name: csv_page                         # … filmed as themselves
+    artifact: usage.csv
 ```
 
 ---

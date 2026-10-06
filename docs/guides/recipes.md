@@ -205,3 +205,51 @@ cp -r examples/hello-world my-video
 Keep `provider.py` aliasing the panels import (`from vidkit import panels as panel_lib`).
 `examples/hello-world` is host-free and self-contained, so it is the safest starting point:
 it declares no `captures[]` and needs no browser, network, or TTS model.
+
+## 16. Film a real download, then film the file
+
+Two captures: one pulls the bytes down, the other films *them* as a page. The artifact
+capture runs last automatically, so the file is always there.
+
+```yaml
+captures:
+  - name: usage_csv
+    url: "http://127.0.0.1:8090/"
+    actions:
+      - {type: download, selector: "#csv", save_as: usage.csv}
+      - {type: eval, script: "fetch('/downloads/summary.pdf').then(r => r.blob())"}
+        # …or just let the click above produce both files
+  - name: csv_page
+    artifact: usage.csv          # filmed as a table, sniffed first
+  - name: pdf_page
+    artifact: summary.pdf        # rasterised through pdftoppm or gs
+scenes:
+  - n: 0
+    shots: [{capture: usage_csv}, {capture: csv_page, weight: 0.5}]
+  - n: 1
+    shots: [{capture: pdf_page}]
+```
+
+`vidkit plan` refuses the spec if `csv_page` names a file no `download` produces. The build
+refuses if the bytes are not recognisable as the kind claimed. `verify` reports
+`filmed artifacts are real files`.
+
+## 17. Sign in once, film many times
+
+Never put a password in a spec. Record the browser session by hand:
+
+```bash
+vidkit auth https://staging.example.com/login --spec video.yaml
+# sign in the window that opens, then close it
+```
+
+```yaml
+captures:
+  - name: dashboard
+    url: "https://staging.example.com/dashboard"
+    storage_state: .auth/session.json
+    actions: [{type: wait_for, selector: "[data-ready]", timeout: 20}]
+```
+
+`vidkit init` already gitignores `.auth/`. If filming the login form *is* the scene, say so
+with `allow_login: true` instead — a capture that fills a password field is refused otherwise.

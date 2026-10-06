@@ -25,7 +25,7 @@ returns JSON.
 | `vidkit_plan` | `spec?` | scenes, shots, guards, estimated runtime (no render) |
 | `vidkit_build` | `spec?`, `out?`, `only?`, `from_stage?`, `refresh?` | output path, captions, clip count, verification report |
 | `vidkit_tts` | `spec?`, `out?` | per-scene narration audio + measured timings |
-| `vidkit_capture` | `spec?`, `out?` | the captured PNGs (real UI, with assertions) |
+| `vidkit_capture` | `spec?`, `out?` | the recorded takes and artifact stills (real UI, real files, with assertions) |
 | `vidkit_verify` | `spec?`, `out?` | re-run the acceptance checks on the last render |
 | `vidkit_verify_report` | `spec?`, `out?` | the persisted `verify.json` (no re-check) |
 | `vidkit_panel_kinds` | — | the built-in panel kinds a chart may use |

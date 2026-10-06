@@ -84,11 +84,32 @@ class Assert:
 
 @dataclass
 class Action:
-    kind: str                             # select|click|fill|press|wait|scroll|eval
+    kind: str                             # see ACTION_KINDS
     selector: str | None = None
     value: str | None = None
     seconds: float | None = None
     script: str | None = None
+    timeout: float | None = None          # wait_for: how long to wait before refusing
+    state: str | None = None              # wait_for: visible|attached|hidden|detached
+    save_as: str | None = None            # download: artifact name inside _capture/artifacts
+    assert_: Assert | None = None         # per-action check, run before the next action
+
+
+ACTION_KINDS = frozenset({
+    "select", "click", "fill", "press", "wait", "wait_for", "scroll", "eval",
+    "download",
+})
+
+WAIT_STATES = frozenset({"visible", "attached", "hidden", "detached"})
+
+
+@dataclass
+class Artifact:
+    """A file a capture produced — the *bytes*, not a filename on a slide."""
+    name: str
+    path: Path
+    kind: str                             # "download" | "screenshot"
+    bytes: int = 0
 
 
 @dataclass
@@ -102,6 +123,11 @@ class Capture:
     wait_until: str = "networkidle"
     wait_after: float = 0.0
     full_page: bool = False
+    storage_state: str | None = None      # R-C7: reuse a session instead of logging in
+    deterministic: bool = True            # R-C8: freeze clock/locale/motion
+    take: int = 1                         # R-C6: which take this capture is
+    artifact: str | None = None           # R-C4: shoot the saved bytes instead of the URL
+    allow_login: bool = False             # R-C7: a login form is only filmed on purpose
 
 
 @dataclass
@@ -282,28 +308,63 @@ def _shots(raw: dict[str, Any], where: str) -> Shot:
                 weight=float(raw.get("weight", 1.0)))
 
 
+def _assert(raw: dict[str, Any], where: str) -> Assert:
+    if "selector" not in raw:
+        raise SpecError(f"{where}: an assertion needs a selector")
+    return Assert(selector=str(raw["selector"]),
+                  contains=None if raw.get("contains") is None else str(raw["contains"]),
+                  equals=None if raw.get("equals") is None else str(raw["equals"]),
+                  exists=bool(raw.get("exists", False)))
+
+
 def _action(raw: dict[str, Any], where: str) -> Action:
     if "type" in raw:
         kind, body = str(raw["type"]), raw
     elif len(raw) == 1:
-        kind, body = next(iter(raw.items()))[0], raw
-        body = {**raw, **(raw[kind] if isinstance(raw[kind], dict) else {})} if isinstance(raw.get(kind), dict) else raw
+        kind = next(iter(raw))
+        inner = raw[kind]
+        body = {**raw, **inner} if isinstance(inner, dict) else raw
     else:
         raise SpecError(f"{where}: action must be {{type: ...}} or a single key")
     sel = body.get("selector")
     val = body.get("value")
     secs = body.get("seconds")
     script = body.get("script")
+    timeout = body.get("timeout")
+    check = (_assert(body["assert"], f"{where}: action {kind!r}")
+             if body.get("assert") else None)
     if kind == "select":
-        return Action("select", selector=sel, value=str(val))
+        return Action("select", selector=sel, value=str(val), assert_=check)
     if kind in {"click", "fill", "press"}:
-        return Action(kind, selector=sel, value=None if val is None else str(val))
+        return Action(kind, selector=sel,
+                      value=None if val is None else str(val), assert_=check)
     if kind == "wait":
-        return Action("wait", seconds=float(secs if secs is not None else val or 1.0))
+        return Action("wait", seconds=float(secs if secs is not None else val or 1.0),
+                      assert_=check)
+    if kind == "wait_for":
+        state = str(body.get("state", "visible"))
+        if state not in WAIT_STATES:
+            raise SpecError(
+                f"{where}: wait_for state must be one of "
+                + ", ".join(sorted(WAIT_STATES)) + f" (got {state!r})")
+        if not sel:
+            raise SpecError(f"{where}: wait_for needs a selector")
+        return Action("wait_for", selector=str(sel), state=state,
+                      timeout=float(timeout if timeout is not None else 30.0),
+                      assert_=check)
     if kind == "scroll":
-        return Action("scroll", selector=sel, value=None if val is None else str(val))
+        return Action("scroll", selector=sel,
+                      value=None if val is None else str(val), assert_=check)
     if kind == "eval":
-        return Action("eval", script=str(script or val))
+        return Action("eval", script=str(script or val), assert_=check)
+    if kind == "download":
+        if not sel:
+            raise SpecError(f"{where}: download needs a selector to click")
+        return Action("download", selector=str(sel),
+                      value=None if val is None else str(val),
+                      save_as=None if body.get("save_as") is None else str(body["save_as"]),
+                      timeout=float(timeout if timeout is not None else 30.0),
+                      assert_=check)
     raise SpecError(f"{where}: unknown action type {kind!r}")
 
 
@@ -350,21 +411,23 @@ def load_spec(path: Path | str, *,
 
     captures: list[Capture] = []
     for c in raw.get("captures") or []:
+        where = f"capture {c.get('name')!r}"
         ap = c.get("assert") or {}
-        assert_ = None
-        if ap:
-            assert_ = Assert(selector=str(ap["selector"]),
-                             contains=ap.get("contains"), equals=ap.get("equals"),
-                             exists=bool(ap.get("exists", False)))
         captures.append(Capture(
-            name=str(c["name"]), url=str(c["url"]),
-            actions=[_action(a, f"capture {c['name']}") for a in (c.get("actions") or [])],
-            assert_=assert_,
+            name=str(c["name"]),
+            url=str(c.get("url", "")),
+            actions=[_action(a, where) for a in (c.get("actions") or [])],
+            assert_=_assert(ap, where) if ap else None,
             viewport=tuple(c["viewport"]) if c.get("viewport") else None,
             device_scale=float(c.get("device_scale", 2.0)),
             wait_until=str(c.get("wait_until", "networkidle")),
             wait_after=float(c.get("wait_after", 0.0)),
             full_page=bool(c.get("full_page", False)),
+            storage_state=None if c.get("storage_state") is None else str(c["storage_state"]),
+            deterministic=bool(c.get("deterministic", True)),
+            take=int(c.get("take", 1)),
+            artifact=None if c.get("artifact") is None else str(c["artifact"]),
+            allow_login=bool(c.get("allow_login", False)),
         ))
 
     charts = [Chart(name=str(c["name"]), kind=str(c["kind"]),
@@ -478,7 +541,77 @@ def _validate(spec: Spec) -> None:
     if spec.narration.source is None and not spec.narration.inline:
         raise SpecError("spec needs narration.source or narration.inline")
 
+    _validate_captures(spec)
     _validate_timeframe(spec)
+
+
+def _validate_captures(spec: Spec) -> None:
+    """Refuse captures that could only fail after a browser had been opened.
+
+    A capture that *cannot* succeed is a spec error, and the operator should learn
+    that from loading the file, not from a stack trace forty seconds into a run.
+    """
+    # A download may be filmed by a *later* capture: the capture that has a page
+    # open produces the bytes, and a separate artifact capture films them. So the
+    # set of filmable names is collected across the whole spec, not per capture.
+    downloads = {a.save_as for c in spec.captures for a in c.actions
+                 if a.kind == "download" and a.save_as}
+    seen: dict[str, int] = {}
+    for cap in spec.captures:
+        where = f"capture {cap.name!r}"
+        if cap.name in seen:
+            raise SpecError(
+                f"{where}: a second capture with the same name — the screenshot "
+                "path would be overwritten by whichever ran last")
+        seen[cap.name] = 1
+        if cap.take < 1:
+            raise SpecError(f"{where}: take must be >= 1 (got {cap.take})")
+        if cap.artifact and cap.url:
+            raise SpecError(
+                f"{where}: `artifact:` and `url:` are mutually exclusive — an "
+                "artifact capture films a file this same capture downloaded, so "
+                "it has nothing to navigate to. Drop `url:`.")
+        if cap.artifact and cap.artifact not in downloads:
+            raise SpecError(
+                f"{where}: artifact {cap.artifact!r} is not the `save_as` of any "
+                "`download` action in this spec, so no capture could ever produce it "
+                f"(this spec downloads: {_downloads_phrase(downloads)})")
+        if not cap.url and not cap.artifact:
+            raise SpecError(f"{where}: needs a `url:` or an `artifact:`")
+        if cap.storage_state and not (spec.root / cap.storage_state).exists():
+            raise SpecError(
+                f"{where}: storage_state {cap.storage_state!r} not found — capture "
+                "it once with `vidkit auth` and commit nothing (see the capture guide)")
+        for a in cap.actions:
+            if a.kind == "download" and a.save_as:
+                if "/" in a.save_as or "\\" in a.save_as or a.save_as in {".", ".."}:
+                    raise SpecError(
+                        f"{where}: save_as {a.save_as!r} must be a plain filename — "
+                        "artifacts are written under _capture/artifacts/")
+        if _looks_like_login(cap) and not cap.allow_login and not cap.storage_state:
+            raise SpecError(
+                f"{where}: this capture types into a password field but declares no "
+                "`storage_state:`, so it would film a login form — and a login form "
+                "is only part of the story when you say it is. Reuse a session "
+                "(record one with `vidkit auth`), or set `allow_login: true` to "
+                "declare that signing in *is* this scene.")
+
+
+def _downloads_phrase(names: set[str]) -> str:
+    if not names:
+        return "nothing"
+    return ", ".join(sorted(n for n in names if n))
+
+
+def _looks_like_login(cap: Capture) -> bool:
+    """A capture that types into something password-shaped."""
+    for a in cap.actions:
+        if a.kind != "fill":
+            continue
+        sel = (a.selector or "").lower()
+        if "password" in sel or "passwd" in sel or 'type="password"' in sel:
+            return True
+    return False
 
 
 def _validate_timeframe(spec: Spec) -> None:

@@ -19,6 +19,8 @@ _frames/
 # `_scaffold` = `vidkit init` output); recreate with the commands in ci.yml
 _alt/
 _scaffold/
+# scratch story the capture probe builds with a deliberately false assertion
+_capture_refusal/
 
 # packaging
 dist/

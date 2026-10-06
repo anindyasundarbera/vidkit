@@ -469,3 +469,78 @@ Also updated: `spec-reference.md` (the long-form `provider:` block, `require_liv
 **D20** secrets are declared, environment-resolved, and masked everywhere. **D21** a snapshot
 records the request it answers, not just the data. **D22** degradation is declared in advance,
 recorded, and only fatal by request.
+
+---
+
+## 2026-10-07 — M3: Capture v2 — **COMPLETE**
+
+**Goal.** Make real product *behaviour* recordable, not just real product *screens*. The exit
+criterion: a spec can capture a real downloaded file and film it, with no bespoke script.
+
+Branch `phase/m3-capture-v2` → PR → merged to `main`. Requirements R-C3…R-C8.
+
+### What was built
+
+| Area | Change |
+|---|---|
+| Spec | `Action` gained `timeout`, `state`, `save_as`, `assert_`; new `action` kinds `wait_for` and `download`; `Capture` gained `artifact`, `storage_state`, `allow_login`, `deterministic`, `take`, and a now-optional `url` |
+| Spec validation | `_validate_captures()` — duplicate names, `take < 1`, `url`/`artifact` exclusivity, an `artifact:` no `download` produces, a missing `storage_state`, a `save_as` containing a path separator, and a password-shaped fill with no declared session |
+| Capture | rewritten: `freeze_script`, `wait_for`, `apply`, `download`, `artifact_name` (traversal defence), `sniff`, `artifact_page`, `_body_for`, `_parse_row`, `rasterize_pdf` (pdftoppm → gs → refuse), `artifact_source`, `shoot_artifact`, `take_name`/`choose_take`, `digest`, `capture_one`, `capture_all` |
+| Ordering | artifact captures run **after** every URL capture, so a producer always precedes its consumer |
+| Context / CLI | `Context.capture_artifacts`; a new `vidkit auth` subcommand that records a Playwright storage state by hand, with `_warn_if_secret` and a repo-relative hint |
+| Scaffold | `vidkit init` now writes `.auth/` into the story's `.gitignore` |
+| Assembler | `Assets.artifacts` records what each capture filmed |
+| Verify | new check `filmed artifacts are real files`, emitted only for a spec that declares an artifact |
+| Fixture | `examples/capture-kit/` — a stdlib-only server whose table fills after first paint, with a real CSV and a real one-page PDF download, plus a 5-capture spec and a 3-scene narration |
+| Tests | `tests/test_capture.py`, **74 tests**; suite **198 passed in 1.71 s** (P6 holds) |
+| CI | a third job, `capture-probe`: installs poppler + Chromium, films the kit, asserts the artifacts are real, and asserts a deliberately-wrong assertion fails the build |
+
+### Exit criterion — proven against a real Chromium
+
+Playwright was installed into a scratch virtualenv (`/tmp/venv-pw`) so this was verified by
+actually driving a browser, not by a fake page object.
+
+| Claim | Evidence |
+|---|---|
+| The whole flow records | `vidkit build examples/capture-kit/video.yaml` → exit 0, `capture-kit.mp4` 227 374 B |
+| A real download is real bytes | `_capture/artifacts/usage.csv` 158 B, header + exactly 5 rows |
+| A downloaded PDF is a real PDF | `summary.pdf` 1104 B starting `%PDF-`; `pdftotext` shows the real summary |
+| An artifact is filmed as itself | `csv_page.png` 66 496 B; `pdf_page.png` **1275×1650**, the PDF's own text rasterised |
+| A wrong state stops the build | a spec asserting `#summary contains 'nine hundred rows'` → exit 1, `… (saw '5 rows · 7016 visits · 395 signups')` |
+| The suite is green | `python3 -m pytest tests -q` → **198 passed in 1.71 s** |
+| CI asserts all of it | every `capture-probe` `run:` block extracted and executed locally: `CAPTURE OK` |
+
+### Defects found and fixed while building it
+
+1. **8 failures in the new test file itself, found on its first run.** A `_page()` helper
+   signature, a `shoot_artifact` arity, a `rasterize_pdf` test monkeypatching `shutil.which`
+   when the code branches on `pdftoppm`, and a `capture_all(object())` that passed an object
+   where a real spec was needed. All fixed; and the rasteriser now has an explicit
+   ghostscript-fallback test rather than an assumed one.
+2. **The fixture's HTML constant used `{{`/`}}` escaping with no `f` prefix**, so the browser
+   received a literal `${{r.day}}` and raised `Uncaught SyntaxError: Unexpected token '.'`;
+   the table never filled. Found **only** by running a real browser — the fake-page unit tests
+   could not see it.
+3. **The fixture's `load()` removed an element that was already gone**, so the second *Apply*
+   click threw `TypeError: Cannot read properties of null` and silently left `#summary` at its
+   first value. Also invisible to unit tests.
+
+Defects 2 and 3 are the argument for the new CI job, restated as evidence: unit tests with a
+fake page object were **green** while the real page was broken twice.
+
+### Documentation
+
+`docs/capture/capture-guide.md` rewritten (119 → 292 lines): the full capture field table, the
+action table with `wait_for` and `download`, per-action `assert`, the downloads and artifacts
+guarantees, signing in without filming a login, the determinism table, takes, browser
+discovery, resolution, reliability tactics, debugging, and the worked example. Also updated:
+`spec-reference.md` (`captures[]` rewritten), `cli-reference.md` (`vidkit auth`),
+`verification.md` (the new check), `troubleshooting.md` (six new failure rows and three
+scenarios), `concepts.md` (a new principle, "an artifact is filmed as itself, or not at all"),
+`architecture.md`, `pipeline.md` (the capture stage and its guarantees), `mcp-server.md`,
+`recipes.md` (two new recipes), `modules.yaml`, `README.md`, and `CHANGELOG.md`.
+
+### Decisions taken
+
+**D23** an artifact is filmed as itself, or not at all. **D24** a take is named, and promoting
+one is explicit. **D25** a login form is filmed only on purpose.

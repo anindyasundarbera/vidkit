@@ -1,0 +1,96 @@
+# vidkit spec — capture-kit (filming a real product, for real)
+#
+# This example is the *evidence* that capture v2 works end to end: a page whose
+# table is empty at first paint and fills in after a beat, an action script that
+# changes the data on screen, two real downloads, and an artifact shot that films
+# the bytes that were actually downloaded.
+#
+# The site is part of the repo and needs no network:
+#   python3 examples/capture-kit/server.py --port 8765 &
+#   vidkit build examples/capture-kit/video.yaml
+#
+# It is deliberately *not* wired into the CI build step that must stay offline —
+# see .github/workflows/ci.yml, which runs this kit only in the capture probe,
+# after installing Playwright.
+
+project:
+  title: "vidkit capture-kit — filming a real download"
+  slug: capture-kit
+  output: capture-kit.mp4
+  size: [1280, 720]
+  fps: 30
+  min_seconds: 6
+  max_seconds: 40
+
+timeframe:
+  start: 2026-09-07
+  end: 2026-10-06
+
+voice:
+  engine: none                # offline: lengths are estimated from the wording
+
+narration:
+  source: narration.md
+
+guard:
+  require_live_mode: true     # every capture below must land, or the build fails
+  require_audio: false
+  require_live_data: false
+
+# ---------------------------------------------------------------------------
+# Captures. Read top to bottom, this is the whole feature:
+#   1. wait for something that is not there yet, on purpose;
+#   2. act on a real control, and assert the change happened;
+#   3. download real bytes, then film those bytes as themselves.
+# ---------------------------------------------------------------------------
+captures:
+  - name: usage
+    url: http://127.0.0.1:8765/
+    wait_until: domcontentloaded
+    full_page: false
+    actions:
+      # The table is empty when the page paints; this waits for the row that
+      # only exists once the fetch has landed.
+      - {type: wait_for, selector: "#usage tbody tr", state: visible, timeout: 15}
+      # Change the period and prove the numbers followed, before photographing.
+      - {type: select, selector: "#period", value: "60"}
+      - {type: click, selector: "#apply"}
+      - {type: wait_for, selector: "#usage tbody tr:nth-child(5)", state: visible, timeout: 15}
+      - {type: wait, seconds: 0.3}
+    assert: {selector: "#summary", contains: "5 rows"}
+
+  - name: usage_csv
+    url: http://127.0.0.1:8765/
+    wait_until: domcontentloaded
+    actions:
+      - {type: wait_for, selector: "#csv", state: visible, timeout: 15}
+      - {type: download, selector: "#csv", save_as: usage.csv, timeout: 20}
+
+  - name: usage_pdf
+    url: http://127.0.0.1:8765/
+    wait_until: domcontentloaded
+    actions:
+      - {type: wait_for, selector: "#pdf", state: visible, timeout: 15}
+      - {type: download, selector: "#pdf", save_as: summary.pdf, timeout: 20}
+
+  # An artifact capture has no URL: it films the bytes a `download` produced.
+  - name: csv_page
+    artifact: usage.csv
+    assert: {selector: "table", contains: "channel"}
+  - name: pdf_page
+    artifact: summary.pdf
+    full_page: false
+
+scenes:
+  - n: 0
+    title: The product
+    shots:
+      - {capture: usage, effect: hold}
+  - n: 1
+    title: The CSV it gave us
+    shots:
+      - {capture: csv_page, effect: hold}
+  - n: 2
+    title: The PDF it gave us
+    shots:
+      - {capture: pdf_page, effect: hold}

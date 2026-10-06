@@ -201,6 +201,71 @@ def _init(target: Path, *, title: str | None, slug: str | None,
     return 0
 
 
+def default_state_path(spec: Path | None = None) -> Path:
+    """Where a recorded session lives when nobody says otherwise."""
+    return (spec.parent if spec else Path.cwd()) / ".auth" / "state.json"
+
+
+def _auth(url: str, *, save: str | None, wait: float, spec: Path | None) -> int:
+    """Record a browser session once, so no capture ever films a login form.
+
+    A headed browser is opened *for the human*, not for the video: they sign in
+    however the product requires — SSO, MFA, a magic link — and the resulting
+    cookies are written to a storage state the captures reuse. vidkit never sees
+    the password, and the recording never contains one.
+    """
+    from .capture import _find_chrome, _playwright_available
+
+    if not _playwright_available():
+        raise VidkitError(
+            "recording a session needs Playwright — install it with "
+            "`pip install playwright && playwright install chromium`")
+
+    dest = Path(save) if save else default_state_path(spec)
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    dest = dest.resolve()
+
+    from playwright.sync_api import sync_playwright
+
+    print(f"opening {url}")
+    print("sign in in the window that opens; vidkit writes nothing until you finish.")
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=False, executable_path=_find_chrome(),
+                                    args=["--no-sandbox"])
+        context = browser.new_context()
+        page = context.new_page()
+        page.goto(url, wait_until="domcontentloaded", timeout=60000)
+        print(f"waiting up to {wait:g}s for the page to settle at a different URL, "
+              "or for you to close the window …")
+        try:
+            page.wait_for_timeout(int(wait * 1000))
+        except Exception:  # noqa: BLE001 - a closed window ends the wait
+            pass
+        context.storage_state(path=str(dest))
+        browser.close()
+
+    if not dest.exists():
+        raise VidkitError(f"no session was written to {dest}")
+    _warn_if_secret(dest)
+    print(f"wrote {dest}")
+    print(f"  capture it without filming a login:  storage_state: {_relative_hint(dest, spec)}")
+    return 0
+
+
+def _warn_if_secret(path: Path) -> None:
+    """A storage state is a credential; say so out loud, every single time."""
+    print("NOTE: this file holds live session cookies — treat it as a password.")
+    print("      Keep it out of git (`vidkit init` already ignores .auth/).")
+
+
+def _relative_hint(dest: Path, spec: Path | None) -> str:
+    base = spec.parent if spec else Path.cwd()
+    try:
+        return str(dest.relative_to(base))
+    except ValueError:
+        return str(dest)
+
+
 def _assets_to_json(assets: Assets) -> dict:
     return {
         "output": str(assets.output) if assets.output else None,
@@ -248,6 +313,17 @@ def main(argv: list[str] | None = None) -> int:
     p_init.add_argument("--slug", default=None, help="project slug (default: from the dir name)")
     _add_timeframe_args(p_init)
 
+    p_auth = sub.add_parser(
+        "auth", help="record a browser session once, so captures never film a login")
+    p_auth.add_argument("url", help="the page to sign in at")
+    p_auth.add_argument("--save", default=None, metavar="PATH",
+                        help="where to write the storage state "
+                             "(default: <spec folder>/.auth/state.json)")
+    p_auth.add_argument("--wait", type=float, default=180.0, metavar="SECONDS",
+                        help="how long to wait for the sign-in to finish (default: 180)")
+    p_auth.add_argument("--spec", default=None,
+                        help="a spec, to put the default state file beside it")
+
     p_docs = sub.add_parser("docs", help="print the docs router or a named document")
     p_docs.add_argument("name", nargs="?", help="doc name (bare stem or module/name)")
     p_docs.add_argument("--index", action="store_true",
@@ -264,6 +340,9 @@ def main(argv: list[str] | None = None) -> int:
         if args.cmd == "init":
             return _init(Path(args.dir).resolve(), title=args.title, slug=args.slug,
                          timeframe=_override(args))
+        if args.cmd == "auth":
+            return _auth(args.url, save=args.save, wait=args.wait,
+                         spec=Path(args.spec).resolve() if args.spec else None)
         if args.cmd == "docs":
             from .mcp_server import tool_docs, tool_docs_index
             if args.index:

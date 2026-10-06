@@ -148,6 +148,7 @@ def scaffold_story(target: Path | str, *, title: str | None = None,
     folder that already has work in it.
     """
     target = Path(target).resolve()
+    _ensure_auth_ignored(target)
     if target.exists() and not target.is_dir():
         raise SpecError(f"cannot scaffold a story into a file: {target}")
     name = target.name or "story"
@@ -189,3 +190,23 @@ def scaffold_story(target: Path | str, *, title: str | None = None,
         path.write_text(text, encoding="utf-8")
         written.append(path)
     return written
+
+
+_AUTH_IGNORE = (
+    "# a recorded browser session is a live credential; never commit it\n"
+    "# (create one with `vidkit auth <url> --spec video.yaml`)\n"
+    ".auth/\n"
+)
+
+
+def _ensure_auth_ignored(target: Path) -> None:
+    """Make sure a recorded session can never be committed by accident."""
+    ignore = target / ".gitignore"
+    if not ignore.exists():
+        target.mkdir(parents=True, exist_ok=True)
+        ignore.write_text(_AUTH_IGNORE, encoding="utf-8")
+        return
+    body = ignore.read_text(encoding="utf-8")
+    if ".auth" in body:
+        return
+    ignore.write_text(body.rstrip("\n") + "\n" + _AUTH_IGNORE, encoding="utf-8")

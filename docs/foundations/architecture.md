@@ -13,7 +13,8 @@ vidkit/
                   Guard, Spec; load_spec(); _validate()
   context.py      Context — paths, Shell, Ffmpeg, Rsvg, logging
   provider.py     load_provider(); collect_datasets/panels/stills()
-  capture.py      Playwright capture with assertions; _find_chrome()
+  capture.py      Playwright capture: wait_for/download actions, artifact filming,
+                  PDF rasterising, takes, assertions; _find_chrome()
   narration.py    parse_scene_script(); build_srt(); wrap_caption(); SceneScript
   panels.py       renderer registry + 8 built-in kinds; register(); kinds(); render()
   svg.py          Theme, THEME, primitives (text/rect/line/polyline/circle/text_block),
@@ -53,7 +54,7 @@ panels → svg ;  tts → {ffmpeg, narration} ;  capture → spec
 | To add… | Do this | Read |
 |---|---|---|
 | A panel kind | `panels.register(name, fn)` from a provider | [`panels-reference.md`](../authoring/panels-reference.md) |
-| A capture action | a branch in `capture._apply` | [`capture-guide.md`](../capture/capture-guide.md) |
+| A capture action | a branch in `capture.apply` | [`capture-guide.md`](../capture/capture-guide.md) |
 | A TTS engine | a branch in `tts._engine_available` / `_piper_cmd` | this doc |
 | A pipeline stage | append to `assembler.STAGES`, guard with `only`, add a block in `run()` | [`pipeline.md`](pipeline.md) |
 | A CLI command | a subparser in `cli.main` (+ a helper) | [`cli-reference.md`](../operations/cli-reference.md) |

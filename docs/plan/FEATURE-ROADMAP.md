@@ -57,9 +57,8 @@ A phase that violates one of these is not done, however many checkboxes it ticks
 ```
 M0  Extract & baseline          ← DONE             make it safe to work on
 M1  Story & timeframe contract  ← DONE, P0         make it aimable
-M2  Provider & data hardening    ← DONE, P1         make the data trustworthy
-M2  Provider & data hardening         P1           make providers trustworthy
-M3  Capture v2                        P0           make real UI recordable
+M2  Provider & data hardening   ← DONE, P1         make the data trustworthy
+M3  Capture v2                  ← DONE, P0         make real UI recordable
 M4  Presentation v2                   P0/P1        make output look right
 M5  Agent surface                     P0           make it drivable
 M6  Hardening & v1.0                  P0/P1        make it shippable
@@ -168,18 +167,44 @@ Snapshot the one thing that is not reproducible — what the source said.
 
 ---
 
-## 6. M3 — Capture v2  *(P0)*
+## 6. M3 — Capture v2  *(P0)* — **DONE**
 
 **Purpose.** Record real product behaviour, not just real product *screens*.
 
 **Requirements.** R-C3 (downloads), R-C4 (artifact rendering), R-C5 (element waits),
 R-C6 (take selection), R-C7 (auth), R-C8 (deterministic rendering).
 
-**Delivers.** A `download` action (click → `expect_download` → save real bytes), a
-`content`/`artifact` capture that renders real bytes in a page and shoots them, a
-`wait_for` action, optional take-selection, and auth/session support.
+**Delivers.**
+
+1. **`wait_for` action.** Waits for a *named* state — `visible`, `attached`, `hidden`,
+   `detached` — with a timeout, and refuses with a sentence naming what never arrived. A
+   fixed `wait` races the UI; this does not.
+2. **`download` action.** `click` → `expect_download` → the real bytes land in
+   `_capture/artifacts/`. The filename is a plain name, never a path.
+3. **`artifact:` capture.** Films a downloaded file *as itself*, instead of a URL. The bytes
+   are sniffed and the kind must match; a PDF is rasterised through `pdftoppm` or `gs`; a
+   file that cannot be shown is refused rather than depicted. Artifact captures are ordered
+   **after** every URL capture, so a producer always runs before its consumer.
+4. **`assert:` on every action.** A change can be made and proven in one step; the assertion
+   runs before the frame.
+5. **Takes.** `take: N` records a named take; promoting one is an explicit act.
+6. **Auth.** `vidkit auth URL` records a session once, by hand, into a Playwright storage
+   state; `storage_state:` reuses it. A capture that fills a password field is refused
+   unless `allow_login: true` declares that the login *is* the scene.
+7. **Determinism.** `deterministic: true` (default) pins clock, locale, timezone,
+   `prefers-reduced-motion` and randomness before the first byte of the page runs.
+8. **A new verify check** — `filmed artifacts are real files`, emitted only when a spec
+   declares an artifact capture.
 
 **Exit.** A spec can capture a real downloaded file and film it, with no bespoke script.
+**Met against a real browser, not a mock.** `examples/capture-kit/` serves a page whose table
+fills after first paint and offers a genuine CSV and a genuine one-page PDF; five captures
+run, both files land, the CSV is filmed as a table, the PDF is rasterised to 1275×1650, and
+`capture-kit.mp4` renders. Evidence: `docs/plan/HISTORY.md`.
+
+**Risks.** The temptation is to let an unfilmable artifact fall back to a placeholder frame
+or a filename caption. That would defeat the whole point: an artifact must be *shown* or the
+build must stop. Resolved as **D23–D25** in [DECISIONS.md](DECISIONS.md).
 
 ---
 
