@@ -25,6 +25,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `examples/oneaquahealth/` removed from this repository; it is host-coupled and
   belongs with the OneAquaHealth project.
 
+### Repository
+
+- Published to <https://github.com/anindyasundarbera/vidkit> (MIT). CI runs the unit
+  suite on Python 3.10 and 3.12, plus an end-to-end build of `examples/hello-world`
+  on a clean runner that installs only `ffmpeg` and `librsvg2-bin`.
+
 ## [0.1.0] - 2026-10-06
 
 ### Added

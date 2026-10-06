@@ -56,14 +56,15 @@ optional but improve the standalone story.
 
 | Change | Where | Why |
 |---|---|---|
-| Grep the library for host strings (`oneaquahealth`, `oah`, `yam`, `fhir`, `video/_capture`) | `vidkit/vidkit/**` | the library should contain none; move any you find into the example |
+| Grep the library for host strings (`oneaquahealth`, `oah`, `fhir`, `video/_capture`) | `vidkit/**` | the library should contain none; move any you find into the story provider |
 | Make the example's voice path configurable | `examples/oneaquahealth/video.yaml` | it currently points into the host's `video/_capture/voices` |
 | Add `examples/hello-world/` | new | a zero-dependency smoke test for new users |
 
-Verify the library is clean:
+Verify the library is clean *(path updated post-extraction — there is no nested `vidkit/vidkit/`
+in this repo; that nesting was the pre-split layout)*:
 
 ```bash
-grep -rniE "oneaquahealth|oah_|yam-|fhir" vidkit/vidkit/ || echo "library is host-free"
+grep -rniE "oneaquahealth|oah_|fhir" vidkit/ tests/ examples/ || echo "library is host-free"
 ```
 
 ## Step 4 — initialise the repo *(done, 2026-10-06)*

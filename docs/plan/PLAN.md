@@ -18,8 +18,20 @@ Exit criterion ([FEATURE-ROADMAP.md](FEATURE-ROADMAP.md) §M0):
 > `vidkit build examples/hello-world/video.yaml` succeeds with **only** `ffmpeg` +
 > `rsvg-convert`; `grep` shows no host terms.
 
-**Status: the engine half is met and independently verified.** The only outstanding M0 item
-is publishing — creating the GitHub repo and pushing the first commit.
+**Status: the engine half is met and independently verified, and M0 is now fully closed** —
+the repo is published and CI is green on the remote.
+
+Exit criterion ([FEATURE-ROADMAP.md](FEATURE-ROADMAP.md) §M0):
+
+> A fresh clone → `pip install -e ".[dev]"` → `pytest` green →
+> `vidkit build examples/hello-world/video.yaml` succeeds with **only** `ffmpeg` +
+> `rsvg-convert`; `grep` shows no host terms.
+
+**Met on a clean runner, not just locally.** Published to
+<https://github.com/anindyasundarbera/vidkit> (public), first commit `87b7435`; GitHub Actions
+run [`37513459095`](https://github.com/anindyasundarbera/vidkit/actions/runs/37513459095) is
+green across `pytest (3.10)`, `pytest (3.12)`, and `build hello-world end to end`. See
+[HISTORY.md](HISTORY.md) for the full record.
 
 ### Verified evidence
 
@@ -90,21 +102,35 @@ measured silent-cut duration (217 spoken words at `_FALLBACK_WPS = 2.5` → **87
 | 14 | Remove host references from engine comments/docstrings and from tests/docs | `[x]` | — |
 | 15 | Re-run `pytest tests -q` → **44 passed** | `[x]` | 12, 13 |
 
-### M0.4 — publish *(the only open work)*
+### M0.4 — publish — **COMPLETE 2026-10-06**
 
 | # | Task | Status | Depends on |
 |---|---|---|---|
-| 16 | Create the GitHub repo (owner/visibility confirmed by the owner) | `[!]` | Q5 answer |
-| 17 | `git remote add origin …` | `[!]` | 16 |
-| 18 | `git add -A` and create the **first commit** on `main` | `[ ]` | 1–15, Q6 answer |
-| 19 | Commit trailer `Co-authored-by: Copilot <223556219+Copilot@users.noreply.github.com>` | `[ ]` | 18 |
+| 16 | Create the GitHub repo — `anindyasundarbera/vidkit`, **public** | `[x]` | Q5 answer |
+| 17 | `git remote add origin …` (via `gh repo create --source=. --remote=origin`) | `[x]` | 16 |
+| 18 | `git add -A` and create the **first commit** on `main` — 54 files | `[x]` | 1–15, Q6 answer |
+| 19 | Commit trailer `Co-authored-by: Copilot <223556219+Copilot@users.noreply.github.com>` | `[x]` | 18 |
+| 20 | `git push -u origin main` — **`87b7435`** | `[x]` | 18 |
 
-**Open sub-decision (Q6):** rendered artefacts (`examples/hello-world/hello-world.mp4`,
-`narration.srt`) are currently **not** gitignored and would be committed. They are 1.5 MB of
-reproducible output that CI regenerates — the recommendation is to **gitignore** them
-(alongside the already-ignored `_build/`).
+**Q6 resolved → gitignore.** `*.mp4` and `*.srt` were added to the generated-output block in
+`.gitignore`. This was checked rather than assumed: both are only ever *written*
+(`assembler.py:301,305`) and never read as input, they are reproducible, and CI regenerates
+and asserts them on every push. The staged tree is 54 files with no artefacts or caches.
 
-**Blocked / deferred in M0:** nothing technical; tasks 16–19 await Q5/Q6.
+**CI confirmed green on the remote** — run [`37513459095`](https://github.com/anindyasundarbera/vidkit/actions/runs/37513459095):
+
+| Job | Result | Time |
+|---|---|---|
+| `pytest (3.10)` | ✅ success | 19s |
+| `pytest (3.12)` | ✅ success | 16s |
+| `build hello-world end to end` | ✅ success | 1m33s |
+
+The `build-example` job is the meaningful one: a clean Ubuntu runner with only `ffmpeg` and
+`librsvg2-bin` runs `vidkit doctor` → `plan` → `build examples/hello-world/video.yaml` →
+asserts `verify.json` is `"ok": true`. That is the first independent proof the engine works on
+a machine with no prior state.
+
+**Blocked / deferred in M0:** none. M0 is closed.
 
 ---
 
@@ -153,10 +179,9 @@ labelled videos; a mismatched narration window **fails `verify`**.
 | Q2 | Is `examples/oneaquahealth/` staying or moving out? | **Moves out.** Removed from this repo 2026-10-06 and **backed up** to `~/Projects/oneaquahealth-story-backup/` — with zero commits, deletion would have been irreversible. |
 | Q3 | Story manifest shape (D1)? | **Both** — folder convention + optional `story.yaml`. |
 | Q4 | Timeframe shape (D3)? | **Both** — `{days, as_of}` and `{start, end}`. |
+| Q5 | **Repo owner and visibility?** | **`anindyasundarbera/vidkit`, public.** Created 2026-10-06 → <https://github.com/anindyasundarbera/vidkit> |
+| Q6 | **Commit the rendered example output?** | **Gitignore.** `*.mp4` and `*.srt` added to `.gitignore`; both are write-only outputs and CI regenerates them. |
 
 ## Still-open questions for the owner
 
-| # | Question | Blocks |
-|---|---|---|
-| Q5 | **Repo owner and visibility** — is the owner `anindyasundarbera` (the authenticated `gh` account), and should the repo be **public** or **private**? | M0.4 task 16 |
-| Q6 | **Commit the rendered example output?** `examples/hello-world/hello-world.mp4` + `narration.srt` are reproducible and CI regenerates them. Recommendation: gitignore. | M0.4 task 18 |
+None. The next open questions belong to M1 and are listed in its section.

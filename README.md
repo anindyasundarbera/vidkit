@@ -8,6 +8,9 @@ hard-won parts of that work — real screen capture that cannot silently film th
 state, captions that never drop a word, per-scene audio that keeps video in sync, and
 acceptance checks that fail the build when a video breaks its own promises.
 
+**Status:** the engine is stable and independently verified — CI builds the bundled
+example end to end on a clean runner.
+
 > **Docs are modular.** Start at [`docs/README.md`](docs/README.md) — the module router — or
 > read the machine-readable route table at [`docs/modules.yaml`](docs/modules.yaml).
 > An agent can fetch any doc by name over MCP (`vidkit_docs`).

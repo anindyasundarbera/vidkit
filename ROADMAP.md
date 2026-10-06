@@ -1,6 +1,6 @@
 # vidkit — Requirements, Current State & Roadmap
 
-**Status:** baseline complete · updated 2026-10-06 (was 2026-10-04)
+**Status:** baseline complete · M0 published · updated 2026-10-06 · <https://github.com/anindyasundarbera/vidkit>
 **Decision of record:**
 
 1. vidkit is a **standalone project in its own repository**. No vidkit source lives inside
@@ -185,7 +185,7 @@ authoritative "what is done now" record is
 | CI | **present** — `.github/workflows/ci.yml` (`test` + `build-example`) |
 | Host coupling in engine | **0** — `grep -rniE "oneaquahealth\|oah_\|fhir" vidkit/*.py` → 0 |
 | OAH story | **removed** from this repo; preserved at `~/Projects/oneaquahealth-story-backup/` pending its move into the OAH repo |
-| Git history | **no commits yet** — the first commit is the last M0 step |
+| Git history | **published** — first commit `87b7435` on `main`, pushed to <https://github.com/anindyasundarbera/vidkit> (public) |
 
 ### 3.1 Inventory (pre-extraction snapshot, 2026-10-04)
 
@@ -285,14 +285,16 @@ MCP consumer.
 
 **In the new vidkit repo**
 
-- [x] Create the repo. *(GitHub repo creation + first commit are the final two steps of this phase.)*
+- [x] Create the repo. *(Done: `gh repo create anindyasundarbera/vidkit --public`.)*
 - [x] Add `LICENSE` (MIT), `CHANGELOG.md`, `.github/workflows/ci.yml`, `py.typed`.
 - [x] Add `examples/hello-world/` (engine `none`; only `ffmpeg` + `rsvg-convert`) and wire it as the CI fixture.
 - [x] Make `verify` and `doctor` pass on hello-world with no browser/voice installed.
 - [x] Remove host references from comments/docstrings — `grep` now returns **0** across `vidkit/`, `tests/`, and `examples/`.
 - [x] **Do not copy `examples/oneaquahealth/`** — removed from this repo and preserved at
       `~/Projects/oneaquahealth-story-backup/` for the OAH repo.
-- [ ] Create the GitHub repo and push the first commit. *(blocked on the owner/visibility answer)*
+- [x] Create the GitHub repo and push the first commit — 54 files, commit `87b7435`.
+- [x] Confirm CI green on the remote — run `37513459095`: `pytest (3.10)`, `pytest (3.12)`,
+      `build hello-world end to end` all succeeded.
 
 **In the OneAquaHealth repo** *(tracked here for completeness; executed in that repo)*
 
@@ -302,9 +304,10 @@ MCP consumer.
 
 **Exit:** a fresh clone of the vidkit repo → `pip install -e ".[dev]"` → `pytest` green →
 `vidkit build examples/hello-world/video.yaml` succeeds with only ffmpeg + rsvg-convert;
-`grep` shows no host terms. **Verified:** 44 tests pass; hello-world builds **ALL PASS**
-(8 panels, 12 stills, 87.20 s); the wheel ships `py.typed` + `LICENSE`; CI's assertion script
-exits 0.
+`grep` shows no host terms. **Verified locally:** 44 tests pass; hello-world builds **ALL
+PASS** (8 panels, 12 stills, 87.20 s); the wheel ships `py.typed` + `LICENSE`. **Verified on a
+clean GitHub runner** (run `37513459095`): all three jobs green, including `build hello-world
+end to end`, which installs only `ffmpeg` + `librsvg2-bin` and asserts `verify.json` is ok.
 
 ### M1 — Story & timeframe contract *(P0)* — ~3–5 days
 

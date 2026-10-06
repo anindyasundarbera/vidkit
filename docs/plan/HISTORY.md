@@ -213,3 +213,59 @@ rewritten.
 **Still open at end of session:** the GitHub repo itself (owner + visibility unconfirmed) and
 whether rendered `hello-world.mp4`/`narration.srt` should be committed or gitignored. No git
 commit has been made.
+
+---
+
+## 2026-10-06 — Repo published; M0 fully closed
+
+**Owner answered the last two questions.** Q5: repo on `anindyasundarbera`, **public**. Q6:
+**gitignore** the rendered `.mp4`/`.narration.srt`.
+
+**Rendered-output policy settled in `.gitignore`.** Added `*.mp4` and `*.srt` to the generated
+render-output block. Verified this is safe rather than a guess: both are always *outputs* —
+`assembler.py:305` writes `spec.project.output` into `ctx.out_dir` and `assembler.py:301` sets
+`assets.srt = ctx.out_dir / "narration.srt"`; nothing anywhere reads an `.mp4` or `.srt` as
+input. They are reproducible, and CI regenerates and asserts them on every push.
+
+**Genericization finished.** The sweep of illustrative snippets that still carried host
+flavour: `spec-reference.md` (`oah_trend` → the real built-in `line_series`),
+`provider-guide.md` (`oah_trend` → `myapp_trend`, an explicitly user-owned kind, and
+`_trend`/`_sparkline` aligned), `narration-and-captions.md` ("FHIR server" → "an upstream
+API"), `cli-reference.md` (`OAH_GATEWAY` → `MYAPP_API_URL`). Note the first attempt invented a
+kind `sparkline` that does not exist in `_REGISTRY`; caught and corrected to a real kind
+before committing, because a doc code-block that a reader would copy must actually run.
+
+`extracting-to-new-repo.md` was reframed from a forward-looking checklist into a status
+document: a banner states the extraction has happened, steps 1–6 are marked done, the
+post-extraction checklist is ticked (44 tests, 0 broken links, LICENSE, CI), step 2 records
+the example removal + backup, and step 7 plus "Known couplings" are marked as the remaining
+**OAH-side** work.
+
+**Published.**
+
+```bash
+gh repo create anindyasundarbera/vidkit --public --source=. --remote=origin
+# → https://github.com/anindyasundarbera/vidkit
+git add -A                       # 54 files (rendered outputs correctly ignored)
+git commit -m "Initial import of vidkit as a standalone project"
+git push -u origin main          # 87b7435
+```
+
+**CI verified green on GitHub, not just locally** — run `37513459095`:
+
+| Job | Result |
+|---|---|
+| `pytest (3.10)` | ✅ 19s |
+| `pytest (3.12)` | ✅ 16s |
+| `build hello-world end to end` | ✅ 1m33s |
+
+The third job is the one that matters: a bare Ubuntu runner installs only `ffmpeg` and
+`librsvg2-bin`, then runs `vidkit doctor` → `vidkit plan` → `vidkit build examples/hello-world/video.yaml`
+→ asserts `verify.json` reports `"ok": true`. This is the first **independent** confirmation
+that the engine works on a machine that has never seen this repo. Local execution of the same
+script had only proven the script; this proves the product.
+
+Working tree clean, `main` tracking `origin/main`, remote tree carries all 54 files.
+`/tmp/1791*.txt` OpenMontage research scratch removed.
+
+**M0 is complete. All 13 session todos are done.**

@@ -3,6 +3,10 @@
 > **Read this file first, every session.** It is the durable operating contract for
 > `vidkit`. It survives context compaction; the conversation does not.
 >
+> **Repo:** <https://github.com/anindyasundarbera/vidkit> (public, MIT) · default branch `main`
+> · first commit `87b7435`. CI (`.github/workflows/ci.yml`) runs the unit suite on Python
+> 3.10/3.12 and builds `examples/hello-world` end to end.
+>
 > For *what to build next* read [docs/plan/PLAN.md](docs/plan/PLAN.md).
 > For *what already happened* read [docs/plan/HISTORY.md](docs/plan/HISTORY.md).
 > For *the phase-wise plan* read [docs/plan/FEATURE-ROADMAP.md](docs/plan/FEATURE-ROADMAP.md).
