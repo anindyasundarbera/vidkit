@@ -269,3 +269,94 @@ Working tree clean, `main` tracking `origin/main`, remote tree carries all 54 fi
 `/tmp/1791*.txt` OpenMontage research scratch removed.
 
 **M0 is complete. All 13 session todos are done.**
+
+---
+
+## 2026-10-06 — M1: the story & timeframe contract
+
+**Branch:** `phase/m1-story-timeframe` → PR → `main`.
+
+The blocker is closed. vidkit can now be *aimed*: a story has an identity, and a build has a
+window of time it is about — a window that `verify` independently checks the video against.
+
+### What was built
+
+**`vidkit/timeframe.py` (new).** The whole contract in one module. A frozen `Timeframe`
+(`start`, `end`, `as_of`, `source` ∈ `override|spec|story`, `floating`) with `days`
+(inclusive), `label()`, `prose()`, `as_prompt()`, `matches()`. It accepts both spellings the
+owner asked for — `{days, as_of}` and `{start, end}` — plus `weeks`/`months`/`years`, the
+shorthand strings (`28d`, `4w`, `6m`, `2026-09-09..2026-10-06`,
+`9 September 2026 to 6 October 2026`) and a bare date. It also reads windows *back out* of
+prose (`find_window_claims`) and compares them (`timeframe_matches`).
+
+**Story identity (D1, option C).** `Story` + `load_story` in `spec.py`. A story is a folder;
+`story.yaml` is optional and, when present, validated strictly. When it is absent the identity
+is synthesised from the folder name — deliberately *one* code path, because D1's rejected
+alternative was exactly the "two code paths that rot" hazard.
+
+**`vidkit/scaffold.py` (new) + `vidkit init <dir>`.** Writes a four-file runnable story —
+`story.yaml`, `video.yaml`, `narration.md`, `provider.py` — that builds and verifies clean
+with no edits. Refuses to overwrite anything that exists.
+
+**Precedence, recorded rather than inferred.** `override > video.yaml > story.yaml`. The
+winner is on `spec.timeframe.source` and printed by `plan`, `doctor`, and the build banner, so
+a `--timeframe` run never leaves you guessing which window you got.
+
+**R-F7 in `verify.py`.** The narration and captions are read for statements about time and
+compared with the resolved window. Narration silent about time passes with a note; narration
+that disagrees fails, naming both windows.
+
+**Two distinct failure points, deliberately split.** Narration that states a window the spec
+cannot *guarantee* (dates while the window floats) is refused at **load**, before any
+expensive rendering. Narration that merely *disagrees* fails at **verify**. Both are errors —
+the split just means each is caught by whichever stage can prove it.
+
+### Evidence, not assertion
+
+The exit criteria are now CI steps, so they cannot rot:
+
+| CI step | Asserts |
+|---|---|
+| `Second build with a different window` | one story, two windows → two correctly-labelled videos |
+| `Reject a narration window that disagrees with the spec` | exits 2, and the timeframe check is the **only** failure |
+| `Scaffold a story and verify it` | `vidkit init` → `plan` shows the resolved window → `build` exits 0 |
+
+Locally: full build `ALL PASS` including
+`[PASS] timeframe consistent with spec — matches 2026-10-07 to 2026-10-06 (30 days)`;
+`--timeframe 2026-08-01..2026-09-30` exits **2** with the single failing check
+`timeframe consistent with spec`; editing one date in `narration.md` and re-running `verify`
+exits **2**; restoring it returns to `ALL PASS`; `vidkit build _scaffold/video.yaml` exits 0
+with `[PASS] runtime within window — 14.00s within [8, 30]`.
+
+Tests went from 44 to **84**, still in **~1.5 s** (P6 holds).
+
+### Defects found and fixed while building it
+
+M1 was not just additive; writing the tests surfaced four real bugs.
+
+1. **The `verify`-alone verdict disagreed with the build verdict.** `cli.py`'s standalone
+   `verify` set `assets.audio_track` unconditionally, so re-verifying a *silent cut* reported
+   `[FAIL] audio present` where the build it was re-verifying had said PASS. A render must not
+   have two verdicts. Now `wav if wav.exists() else None`. **Pre-existing**, found by M1.
+2. **`parse_timeframe` crashed on `default_as_of`.** `'str' object has no attribute
+   'toordinal'` — the fallback date was never coerced. Any relative window without an `as_of`
+   reached this.
+3. **A lone `start:` in a timeframe silently produced a one-day window.** A half-written range
+   rendered a one-day video. Now refused: `start and end must be given together`.
+4. **`days: 0` and `days: "soon"` produced the wrong error / a raw `ValueError`.** `days: 0`
+   claimed the key was missing (because `if raw.get("days")` is falsy for `0`), and a
+   non-numeric value escaped as an unhandled `int()` error. Both now name the field and the
+   reason. Fixed by a `_present()` helper that distinguishes *absent* from *falsy* — the same
+   bug class as (3).
+
+A fifth, caught before committing: the scaffold's narration headers used ASCII `-`/`.` and
+its runtime window was guessed from `tf.days`, so the scaffold failed its own parser and its
+own runtime check. Now it emits real `—`/`·`/`–` and sizes the window from the narration's own
+word count at 2.5 words/sec — the same constant the silent-cut path actually uses.
+
+### Documentation
+
+New `docs/authoring/stories-and-timeframes.md` (registered in `docs/modules.yaml`), and
+updates to `spec-reference.md`, `narration-and-captions.md`, `concepts.md`, `cli-reference.md`,
+`verification.md`. The `timeframe` key, the precedence rules, and the three things narration
+may say about time are all documented where an author or an agent will look for them.

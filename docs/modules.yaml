@@ -29,13 +29,14 @@ modules:
 
   - id: authoring
     title: Authoring a story
-    summary: How to write the spec, provider, panels, and narration.
+    summary: How to write the spec, story, provider, panels, and narration.
     audience: both
     route: docs/authoring/<doc>
     docs:
       - {file: authoring/spec-reference.md, title: Spec reference, summary: Every video.yaml field, type, and default.}
       - {file: authoring/provider-guide.md, title: Provider guide, summary: The bridge between vidkit and your data.}
       - {file: authoring/panels-reference.md, title: Panels reference, summary: Every built-in panel kind and its dataset shape.}
+      - {file: authoring/stories-and-timeframes.md, title: Stories and timeframes, summary: Story folders, the timeframe contract, and what narration may state about time.}
       - {file: authoring/narration-and-captions.md, title: Narration and captions, summary: Script grammar, caption rules, voice tuning.}
 
   - id: capture

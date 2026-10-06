@@ -17,6 +17,7 @@ from .errors import VidkitError
 from .narration import parse_scene_script, word_count
 from .panels import kinds as panel_kinds
 from .spec import load_spec
+from .timeframe import Timeframe, parse_timeframe
 
 #: Words-per-second used to estimate runtime when no audio has been measured.
 #: ~= piper length_scale 1.08 x 2.5 wps.
@@ -24,7 +25,8 @@ WORDS_PER_SECOND = 2.78
 
 
 # --------------------------------------------------------------------------- #
-def doctor_report(spec_path: Path | None = None) -> dict[str, Any]:
+def doctor_report(spec_path: Path | None = None, *,
+                  timeframe: Any = None, as_of: Any = None) -> dict[str, Any]:
     """Environment + optional spec sanity, as data."""
     from .capture import _find_chrome, _playwright_available
     from .ffmpeg import Shell
@@ -58,7 +60,7 @@ def doctor_report(spec_path: Path | None = None) -> dict[str, Any]:
 
     if spec_path:
         try:
-            spec = load_spec(spec_path)
+            spec = load_spec(spec_path, timeframe=_override(timeframe, as_of), as_of=as_of)
         except VidkitError as exc:
             report["spec_error"] = str(exc)
             report["ok"] = False
@@ -74,6 +76,8 @@ def doctor_report(spec_path: Path | None = None) -> dict[str, Any]:
             "captures": len(spec.captures),
             "charts": len(spec.charts),
             "provider": spec.provider or None,
+            "story": spec.story.to_dict() if spec.story else None,
+            "timeframe": spec.timeframe.to_dict() if spec.timeframe else None,
         }
     return report
 
@@ -96,15 +100,38 @@ def format_doctor(report: dict[str, Any]) -> str:
             f"        captures        {s['captures']}",
             f"        charts          {s['charts']}",
             f"        provider        {s['provider'] or '(none)'}",
+            f"        story           {_story_line(s.get('story'))}",
+            f"        timeframe       {_timeframe_line(s.get('timeframe'))}",
             f"        panel kinds     {', '.join(report['panel_kinds'])}",
         ]
     return "\n".join(lines)
 
 
+def _override(timeframe: Any, as_of: Any):
+    """Resolve a caller's timeframe override, tolerating ``None``."""
+    if timeframe is None or isinstance(timeframe, Timeframe):
+        return timeframe
+    return parse_timeframe(timeframe, where="--timeframe", source="override",
+                           default_as_of=as_of)
+
+
+def _story_line(story: dict[str, Any] | None) -> str:
+    if not story:
+        return "(not resolved)"
+    return f"{story['slug']}" + ("" if story["declared"] else " (folder convention)")
+
+
+def _timeframe_line(tf: dict[str, Any] | None) -> str:
+    if not tf:
+        return "(not declared)"
+    return f"{tf['label']}  [{tf['source']}]"
+
+
 # --------------------------------------------------------------------------- #
-def plan_report(spec_path: Path) -> dict[str, Any]:
+def plan_report(spec_path: Path, *, timeframe: Any = None,
+                as_of: Any = None) -> dict[str, Any]:
     """The scene plan and estimated runtime, as data."""
-    spec = load_spec(spec_path)
+    spec = load_spec(spec_path, timeframe=_override(timeframe, as_of), as_of=as_of)
     source: dict[int, str] = {}
     if spec.narration.source:
         p = (spec_path.parent / spec.narration.source)
@@ -143,6 +170,8 @@ def plan_report(spec_path: Path) -> dict[str, Any]:
         "banned": list(spec.guard.banned),
         "required": list(spec.guard.required),
         "require_live_mode": spec.guard.require_live_mode,
+        "story": spec.story.to_dict() if spec.story else None,
+        "timeframe": spec.timeframe.to_dict() if spec.timeframe else None,
     }
 
 
@@ -152,6 +181,8 @@ def format_plan(report: dict[str, Any]) -> str:
         f"  output: {report['output']}  {report['size'][0]}x{report['size'][1]} "
         f"@{report['fps']}",
         f"  runtime window: {report['window'][0]:.0f}-{report['window'][1]:.0f}s",
+        f"  story: {_story_line(report.get('story'))}",
+        f"  timeframe: {_timeframe_line(report.get('timeframe'))}",
         "  scenes:",
     ]
     for s in report["scenes"]:

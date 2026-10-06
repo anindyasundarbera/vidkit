@@ -15,6 +15,11 @@ _frames/
 # scratch / logs
 *.log
 
+# scratch directories used by the CI assertions (`_alt` = second window,
+# `_scaffold` = `vidkit init` output); recreate with the commands in ci.yml
+_alt/
+_scaffold/
+
 # packaging
 dist/
 build/

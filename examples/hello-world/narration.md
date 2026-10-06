@@ -21,7 +21,7 @@ range here can never desynchronise the render.
 
 [Prose panel.]
 
-**A provider is a module beside the spec. It supplies the numbers each panel is drawn from. This one counts the vidkit source tree, so every figure you are about to see is measured, not invented.**
+**A provider is a module beside the spec. It supplies the numbers each panel is drawn from. This cut is about the window 7 September 2026 to 6 October 2026, and this provider counts the vidkit source tree at build time, so every figure you are about to see is measured, not invented.**
 
 ## Scene 3 — The shape of the code · 0:31–0:42
 
@@ -39,7 +39,7 @@ range here can never desynchronise the render.
 
 [Environment and provenance facts.]
 
-**After the render, verify reopens the video and checks it. Runtime inside the window, no banned phrases, captions readable, audio present. The result is written to verify json, and a failure exits non zero.**
+**After the render, verify reopens the video and checks it. Runtime inside the window, no banned phrases, captions readable, the dates in this script matching 7 September 2026 to 6 October 2026, audio present. The result is written to verify json, and a failure exits non zero.**
 
 ## Scene 6 — Running it · 1:09–1:20
 

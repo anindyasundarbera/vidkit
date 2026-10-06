@@ -71,6 +71,132 @@ jobs:
 
       # `vidkit build` already runs verify and exits non-zero on any failing
       # check, so this is a belt-and-braces assertion on the written report.
+      # D17 / D15: a window that floats cannot be honestly described with dates,
+      # and half a range is not a one-day window. Both are load-time refusals, so
+      # neither costs a render to discover.
+      - name: Refuse windows that cannot be stated honestly
+        run: |
+          set -eu
+          python - <<'PY'
+          import os, pathlib, re, subprocess, sys, tempfile
+
+          EXAMPLE = pathlib.Path("examples/hello-world")
+          spec = (EXAMPLE / "video.yaml").read_text(encoding="utf-8")
+          # drop the pinned window so nothing but the variant under test declares one
+          body = re.sub(r"^timeframe:\n(?:[ \t].*\n)*", "", spec, flags=re.M)
+          assert "timeframe:" not in body, "the spec still declares a window"
+
+          def try_plan(text: str, label: str) -> str:
+              """Load `text` as the spec, with narration present, and expect a refusal."""
+              with tempfile.TemporaryDirectory() as td:
+                  d = pathlib.Path(td)
+                  # mirror the example so narration and assets resolve exactly as
+                  # they do in a real run; only video.yaml is a real file
+                  for child in EXAMPLE.iterdir():
+                      if child.name != "video.yaml":
+                          os.symlink(child.resolve(), d / child.name)
+                  (d / "video.yaml").write_text(text, encoding="utf-8")
+                  cp = subprocess.run(
+                      [sys.executable, "-m", "vidkit", "plan", str(d / "video.yaml")],
+                      capture_output=True, text=True)
+                  if cp.returncode == 0:
+                      sys.exit(f"{label}: expected a refusal, got exit 0")
+                  return (cp.stderr + cp.stdout).strip()
+
+          # (a) a floating window, described in the narration with real dates
+          out = try_plan(body.replace("voice:", "timeframe:\n  days: 30\n\nvoice:"),
+                         "floating window")
+          if "as_of" not in out:
+              sys.exit(f"the floating-window refusal did not explain itself:\n{out}")
+          print("floating window refused:", out.splitlines()[-1])
+
+          # (b) half a range — an end with no start is not a one-day window
+          out = try_plan(body.rstrip() + "\ntimeframe:\n  end: 2026-10-06\n",
+                         "half a range")
+          if "together" not in out:
+              sys.exit(f"the half-range refusal did not explain itself:\n{out}")
+          print("half a range refused:", out.splitlines()[-1])
+          PY
+
+      # R-A3 / R-F7 / M1 exit criterion, asserted in CI.
+      - name: A different window is labelled, and a stale narration is rejected
+        run: |
+          set -eu
+          # (a) `plan` resolves the override and prints it, so an agent can see
+          #     what it is about to build before paying for a render.
+          vidkit plan examples/hello-world/video.yaml \
+            --timeframe 2026-08-01..2026-09-30 | grep -q "2026-08-01 to 2026-09-30"
+
+          # (b) Building against that window FAILS verify, and the ONLY failing
+          #     check is the timeframe one. This is the honesty engine doing its
+          #     job: the narration still states 2026-09-07..2026-10-06, so the cut
+          #     would be a lie. The window really is threaded, and it really is
+          #     checked — the two halves of M1 are the same mechanism.
+          if vidkit build examples/hello-world/video.yaml \
+               --timeframe 2026-08-01..2026-09-30 --out _alt; then
+            echo "expected the timeframe check to fail" >&2
+            exit 1
+          fi
+          python - <<'PY'
+          import json, pathlib, sys
+          data = json.loads(pathlib.Path("_alt/_build/verify.json").read_text())
+          bad = [c for c in data["checks"] if not c["ok"]]
+          if [c["name"] for c in bad] != ["timeframe consistent with spec"]:
+              sys.exit(f"unexpected failures: {bad}")
+          print("caught:", bad[0]["detail"])
+          PY
+
+          # The same window re-verified standalone must reach the same verdict,
+          # not a milder one — a render may not have two truths.
+          if vidkit verify examples/hello-world/video.yaml \
+               --timeframe 2026-08-01..2026-09-30 --out _alt; then
+            echo "standalone verify disagreed with the build" >&2
+            exit 1
+          fi
+
+          # (c) The narration is part of the story, so re-aiming the window means
+          #     rewriting it. With the dates brought into line, the identical
+          #     build succeeds and the re-aimed cut is correctly labelled.
+          python - <<'PY'
+          import pathlib
+          p = pathlib.Path("examples/hello-world/narration.md")
+          text = p.read_text(encoding="utf-8")
+          text = text.replace("7 September 2026 to 6 October 2026",
+                              "1 August 2026 to 30 September 2026")
+          text = text.replace("2026-09-07 to 2026-10-06",
+                              "2026-08-01 to 2026-09-30")
+          p.write_text(text, encoding="utf-8")
+          PY
+          vidkit build examples/hello-world/video.yaml \
+            --timeframe 2026-08-01..2026-09-30 --out _alt
+          test -s _alt/hello-world.mp4
+
+          # ...and the two builds really are two different cuts, described by
+          # two different windows. The original build's report survives in the
+          # spec folder, so it is still the record of the *first* window.
+          python - <<'PY'
+          import json, pathlib, sys
+          a = json.loads(pathlib.Path(
+              "examples/hello-world/_build/verify.json").read_text())
+          b = json.loads(pathlib.Path("_alt/_build/verify.json").read_text())
+          wa, wb = a["facts"]["timeframe"], b["facts"]["timeframe"]
+          print("original:", wa["label"], f"[{wa['source']}]")
+          print("re-aimed:", wb["label"], f"[{wb['source']}]")
+          if (wa["start"], wa["end"]) == (wb["start"], wb["end"]):
+              sys.exit("the override did not reach the build")
+          if (wb["start"], wb["end"]) != ("2026-08-01", "2026-09-30"):
+              sys.exit(f"wrong window in the re-aimed report: {wb}")
+          if wb["source"] != "override":
+              sys.exit(f"window provenance should say override: {wb['source']}")
+          PY
+
+      # R-A2: a scaffolded story is runnable, and its own window check passes.
+      - name: Scaffold a story and verify it
+        run: |
+          vidkit init _scaffold --title "CI scaffold" --days 14 --as-of 2026-10-06
+          vidkit plan _scaffold/video.yaml | tee /dev/stderr | grep -q "2026-09-23 to 2026-10-06"
+          vidkit build _scaffold/video.yaml
+
       - name: Assert verification passed
         run: |
           python - <<'PY'

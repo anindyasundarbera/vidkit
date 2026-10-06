@@ -97,6 +97,16 @@ guard:
 
 See [`verification.md`](../verification/verification.md).
 
+### Any window you mention is a claim
+
+Narration and captions are also read for statements **about time**, and checked against the
+spec's `timeframe:` (R-F7). "The last 28 days", "9 September 2026 to 6 October 2026", and
+"the last 28 days to 2026-10-06" are all understood and all compared with the declared window.
+
+If the spec's window is relative and pins no `as_of`, narration may state its **day count**
+but not its dates — a date there is refused at load, because the window would mean something
+different tomorrow. → [Stories and timeframes](./stories-and-timeframes.md)
+
 ## Tuning the voice
 
 | Knob | Effect |
@@ -124,8 +134,11 @@ vidkit build SPEC --only narration,clips,concat,render
 | `caption fidelity check failed` | text mismatch (rare, bug) | report it; do not disable `strict` |
 | Runtime outside window | words vs. pace | adjust `length_scale` or trim text |
 | `TTS failed … estimating duration` | voice model missing/broken | fix `voice.model` |
+| `narration states the window … but the spec's timeframe … pins no as_of` | dates written while the window floats | add `as_of:` to the spec, or state only the day count |
+| `narration states a … window … but the spec declares no timeframe` | the script mentions a window the spec never declared | add `timeframe:` to the spec, or drop the dates |
 
 ## See also
 
 - [`verification.md`](../verification/verification.md) — the checks that read this text
 - [`spec-reference.md`](spec-reference.md) — `voice`, `narration`, `guard`
+- [`stories-and-timeframes.md`](stories-and-timeframes.md) — the window contract and what narration may state

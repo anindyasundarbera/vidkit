@@ -10,7 +10,7 @@
 >
 > For what is happening now see [PLAN.md](PLAN.md). For what happened see [HISTORY.md](HISTORY.md).
 
-**Last revised:** 2026-10-06 · **Status:** M0 in progress
+**Last revised:** 2026-10-06 · **Status:** M0 done · M1 done · M2 next
 
 ---
 
@@ -55,8 +55,8 @@ A phase that violates one of these is not done, however many checkboxes it ticks
 ## 2. Phase map
 
 ```
-M0  Extract & baseline          ← IN PROGRESS      make it safe to work on
-M1  Story & timeframe contract  ← NEXT, P0         make it aimable          ◀ the blocker
+M0  Extract & baseline          ← DONE             make it safe to work on
+M1  Story & timeframe contract  ← DONE, P0         make it aimable
 M2  Provider & data hardening         P1           make providers trustworthy
 M3  Capture v2                        P0           make real UI recordable
 M4  Presentation v2                   P0/P1        make output look right
@@ -90,7 +90,7 @@ the host-term grep is empty.
 
 ---
 
-## 4. M1 — Story & timeframe contract  *(P0)* — **the blocker**
+## 4. M1 — Story & timeframe contract  *(P0)* — **DONE**
 
 **Purpose.** Give the agent something to aim. This is the single gap that invalidates the
 north star.
@@ -117,6 +117,12 @@ matches timeframe), R-B2 (timeframe threaded to providers), R-F7 (timeframe veri
 
 **Exit.** Two builds of one story with different timeframes produce different, correctly
 labelled videos. A story whose narration window disagrees with its spec **fails `verify`**.
+
+**Delivered** (branch `phase/m1-story-timeframe`, merged by PR). All six items landed as one
+coherent change. `exit` criteria are now asserted in CI, not just documented: a second build with a
+different window, a deliberately mismatched narration that must fail with the timeframe check
+as its *only* failure, and a `vidkit init` scaffold that must build and verify clean.
+Evidence: `docs/plan/HISTORY.md`.
 
 **Risks.** Timeframe is a deceptively large change: it touches `spec.py`, `context.py`,
 `provider.py`, `assembler.py`, `verify.py`, and the CLI. Do it as one coherent change, not

@@ -23,6 +23,36 @@ class Context:
         return self.spec.project
 
     @property
+    def story(self):
+        return self.spec.story
+
+    @property
+    def stories_dir(self) -> Path:
+        """The folder holding the sibling stories of this one (usually the repo)."""
+        return self.root.parent
+
+    @property
+    def repo_stories(self) -> list[Path]:
+        """Sibling story folders — one per ``video.y*ml`` under the parent folder.
+
+        What makes this a *studio* rather than a one-off script: a provider can
+        scope itself to "all the stories in this repo", not just itself.
+        """
+        try:
+            return sorted({p.parent for p in self.stories_dir.glob("*/video.y*ml")})
+        except OSError:
+            return []
+
+    @property
+    def timeframe(self):
+        """The one resolved window this build is about (``None`` if undeclared).
+
+        Providers hand ``ctx.timeframe.as_prompt()`` to their data source instead
+        of hard-coding ``?days=28`` — see `docs/authoring/stories-and-timeframes.md`.
+        """
+        return self.spec.timeframe
+
+    @property
     def build(self) -> Path:
         return self.out_dir / "_build"
 
@@ -62,6 +92,21 @@ class Context:
         for d in (self.out_dir, self.build, self.captures, self.stills,
                   self.panels_dir, self.clips, self.wavs, self.data_dir):
             d.mkdir(parents=True, exist_ok=True)
+
+    def facts(self) -> dict[str, Any]:
+        """The identity of this build — what it is about, and when.
+
+        Providers merge this into their datasets so a video's own data can quote
+        the window it covers without re-deriving it.
+        """
+        out: dict[str, Any] = {
+            "title": self.spec.project.title,
+            "slug": self.spec.project.slug,
+            "story": self.spec.story.slug if self.spec.story else self.spec.project.slug,
+        }
+        if self.spec.timeframe is not None:
+            out["timeframe"] = self.spec.timeframe.to_dict()
+        return out
 
     def info(self, message: str) -> None:
         self.log.append(message)

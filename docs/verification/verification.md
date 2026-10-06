@@ -17,9 +17,27 @@ render. The report is written to `OUT/_build/verify.json`.
 | `all live captures present` | every declared capture produced a PNG | `assets.capture_stills` |
 | `speech rate plausible` | 1.6–3.6 words/sec | script + duration |
 | `no mock mode referenced` | `mode=mock` absent, or only as a prohibition | narration + captions |
+| `timeframe consistent with spec` | every window the narration states matches the resolved timeframe | script + SRT + spec |
 
-The last check exists because a script may legitimately *say* "we never open `?mode=mock`";
-so the check allows the phrase near the word "never".
+The `no mock mode referenced` check exists because a script may legitimately *say* "we never
+open `?mode=mock`"; so it allows the phrase near the word "never".
+
+### `timeframe consistent with spec` (R-F7)
+
+`verify` reads the window out of the narration *and* the captions and compares it with the
+window the spec resolved. It understands an absolute range (`9 September 2026 to 6 October
+2026`), a relative window (`the last 28 days`, `over the past six months`), a relative window
+with a named end (`the last 28 days to 2026-10-06` — checked on both count and end date), and
+a bare day count (`a 28-day window`).
+
+- narration silent about time → **passes**, with a note (`narration states no window; spec
+  says …`). Silence is checkable and is not a failure.
+- narration states a window that disagrees with the spec → **fails**, naming both windows.
+- spec declares **no** timeframe while narration states a window → **fails**.
+
+A window narration states that the spec *cannot guarantee* — dates while the window floats —
+is refused earlier, at `load_spec`, rather than reaching verify. → [Stories and
+timeframes](../authoring/stories-and-timeframes.md)
 
 ## `verify.json` shape
 
@@ -31,11 +49,17 @@ so the check allows the phrase near the word "never".
     "duration_human": "4:20.70",
     "output": "/abs/path/demo.mp4",
     "mean_volume_db": -16.9,
-    "narration_words": 729
+    "narration_words": 729,
+    "timeframe": {"start": "2026-09-09", "end": "2026-10-06", "days": 28,
+                  "as_of": "2026-10-06", "source": "spec", "floating": false},
+    "window_claims": [{"raw": "the last 28 days", "days": 28, "exact": false,
+                       "start": null, "end": null, "end_anchor": null}]
   },
   "checks": [
     {"name": "runtime within window", "ok": true, "detail": "260.70s within [180, 300]"},
-    {"name": "banned phrase absent: 'legal limit'", "ok": true, "detail": "0 hit(s)"}
+    {"name": "banned phrase absent: 'legal limit'", "ok": true, "detail": "0 hit(s)"},
+    {"name": "timeframe consistent with spec", "ok": true,
+     "detail": "matches 2026-09-09 to 2026-10-06 (28 days)"}
   ]
 }
 ```
@@ -102,4 +126,5 @@ vidkit build SPEC || { echo "video failed verification"; exit 1; }
 ## See also
 
 - [`narration-and-captions.md`](../authoring/narration-and-captions.md) — where the text comes from
+- [`stories-and-timeframes.md`](../authoring/stories-and-timeframes.md) — the window contract behind R-F7
 - [`capture-guide.md`](../capture/capture-guide.md) — why a capture may not have run

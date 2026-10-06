@@ -1,7 +1,7 @@
 # Spec reference
 
 A spec is a plain-data document in **YAML** (`.yaml`/`.yml`, needs PyYAML) or **JSON**
-(`.json`, always works). It has five sections plus two optionals. Nothing in a spec
+(`.json`, always works). It has five sections plus three optionals. Nothing in a spec
 executes code.
 
 **Validation happens at load time** (`spec.load_spec` → `_validate`). Malformed specs fail
@@ -21,6 +21,7 @@ then `ROOT/..`, then the current directory.
 | `narration` | ✅* | mapping | *required unless every scene has `narration.inline` |
 | `voice` | — | mapping | defaults to Piper, engine on |
 | `provider` | — | string | module name; enables custom data/renderers |
+| `timeframe` | — | mapping | the window of time the story is about; see below |
 | `captures` | — | list | screen recordings |
 | `charts` | — | list | data panels |
 | `guard` | — | mapping | acceptance checks |
@@ -107,6 +108,36 @@ narration:
   source: narration.md
   # inline: { 0: "A short replacement for scene 0." }
 ```
+
+---
+
+## `timeframe`
+
+The window of time the video claims to be about. `verify` reads the window back out of the
+narration and fails if the two disagree — so declaring it is what allows narration to say
+"the last 28 days" honestly.
+
+```yaml
+timeframe: {days: 28, as_of: 2026-10-06}       # 28 days ending on as_of, inclusive
+```
+
+```yaml
+timeframe: {start: 2026-09-09, end: 2026-10-06}
+```
+
+| Field | Type | Meaning |
+|---|---|---|
+| `days` | int ≥ 1 | window length in days, inclusive of both ends |
+| `weeks` / `months` | int ≥ 1 | same, in weeks or **calendared** months |
+| `as_of` | date | the window's end date; defaults to today (**floating**) |
+| `start` / `end` | date | an explicit interval; must be given together |
+
+A relative window with no `as_of` is **floating**: it means a different window tomorrow, so
+narration may state its day count but not its dates (rejected at load). An explicit
+`--timeframe` / `--days` / `--as-of` overrides whatever the spec or `story.yaml` declared.
+
+→ [Stories and timeframes](./stories-and-timeframes.md) for the full contract, precedence,
+and the accepted spellings.
 
 ---
 

@@ -342,6 +342,78 @@ matters.
 **Consequences:** invariants I2, I3, I6, I7. This is the reason vidkit exists next to
 OpenMontage; if it is ever relaxed, vidkit becomes a worse OpenMontage.
 
+## D17 — A floating window may be described but never dated
+
+**Status:** DECIDED 2026-10-06 (M1).
+**Context:** A relative timeframe (`{days: 28}`) with no `as_of` resolves against whatever
+"today" is when the build runs. The resolved dates are therefore *not* knowable at authoring
+time — and if the narration states them anyway, the video is wrong the day it is rebuilt.
+
+**Options.**
+
+| Option | Pro | Con |
+|---|---|---|
+| **A. Require `as_of`, always** | Nothing floats, so nothing is ambiguous. | Every hand-written spec must carry a date it may not care about; `{days: 7}` is a perfectly honest request. |
+| **B. Allow floating windows; let narration say whatever** | Simplest. | The video silently becomes wrong when the window moves. This is the dishonesty vidkit exists to prevent. |
+| **C. Allow a floating window, but forbid narration from stating dates** | `{days: 7}` stays convenient; the resulting video is *always* true. | One more rule to learn. |
+
+**Decision:** **C**. A relative window with no `as_of` resolves and is flagged `floating`.
+`_validate_timeframe` reads the narration and **refuses at load** any stated window while the
+window floats. The narration may still state the *duration* — "the last 28 days" is a claim
+about a length, and it is checked; "28 days to 6 October" is a claim about dates, and it is
+not available. Pinning `as_of` unfloats the window and dates become permitted.
+
+**Alternatives rejected:** A alone (needless friction for the common `{days: 7}` case); B
+(silently stale output — the exact failure mode P1 forbids).
+
+**Consequences:** `Timeframe.floating` is part of the public contract. `spec-reference.md` and
+`stories-and-timeframes.md` document the rule. The failure is raised at *load*, before any
+capture or render, so a floating window with dated narration costs nothing to discover.
+
+---
+
+## D18 — `vidkit init` writes a story that must build and verify unedited
+
+**Status:** DECIDED 2026-10-06 (M1).
+**Context:** R-A2 and R-G4 want a scaffolded starting point. The failure mode of every
+scaffolder is a template that is *nearly* right — it parses but fails the first real command,
+so the new user's first experience is an error they did not cause.
+
+**Decision:** The scaffold is a **test fixture, not a template**. It writes four files
+(`story.yaml`, `video.yaml`, `narration.md`, `provider.py`) and the contract is that the
+result builds and verifies clean with **no edits**. Anything that would make it fail its own
+checks is a bug in the scaffold, not a step in the user's onboarding. It refuses to overwrite
+existing files, so it can never destroy work.
+
+**Consequences:** CI runs `vidkit init` into a scratch directory and builds it on every push,
+so the scaffold cannot rot silently. This is how three scaffold bugs were caught during M1:
+ASCII punctuation that the narration parser rejects, and a runtime window guessed from
+`tf.days` instead of from the narration's own word count. The scaffold now derives its bounds
+from the same 2.5 words/sec constant the silent-cut path uses, so the file it writes and the
+runtime it gets agree.
+
+---
+
+## D19 — A narration/spec disagreement is `verify`'s job, not `load`'s
+
+**Status:** DECIDED 2026-10-06 (M1).
+**Context:** M1 has two ways narration can be at odds with the spec's window, and it would be
+tidier to catch both in one place.
+
+**Decision:** Split them, by what each stage can *prove*.
+
+| Situation | Caught at | Why there |
+|---|---|---|
+| Narration states dates while the window **floats** | `load_spec` | Provably impossible. No rendering can make it true, so the cheapest correct answer is to refuse before spending time. |
+| Narration states a window that **disagrees** with a pinned window | `verify` | Only provable against the finished artifact. The claim may come from the narration *or* from burned-in captions, and captions come from rendered frames. |
+
+**Alternatives rejected:** everything at `load` — misses caption-borne claims, which the
+engine only knows after it has drawn them. Everything at `verify` — wastes a full build on a
+spec that can never be right.
+
+**Consequences:** two documented error paths, one R-F7 check, and one rule for the reader:
+if it is *impossible*, fix the spec; if it is *inconsistent*, fix the narration.
+
 ---
 
 ## Index
@@ -364,3 +436,6 @@ OpenMontage; if it is ever relaxed, vidkit becomes a worse OpenMontage.
 | D14 | Movie mode is additive, not a fork | DECIDED |
 | D15 | Terminal footage is recorded, never animated | DECIDED |
 | D16 | Nothing is fabricated | DECIDED |
+| D17 | A floating window may be described but never dated | DECIDED |
+| D18 | `vidkit init` writes a story that must build and verify unedited | DECIDED |
+| D19 | A narration/spec disagreement is `verify`'s job, not `load`'s | DECIDED |
