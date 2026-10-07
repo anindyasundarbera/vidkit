@@ -144,7 +144,7 @@ skip honestly when they are not.
 
 ```bash
 pip install -e ".[dev]"          # core + pytest
-python3 -m pytest tests -q       # 518 tests, ~8 min with every toolchain; 445 in ~6 s without
+python3 -m pytest tests -q       # 520 tests, ~8 min with every toolchain; 445 in ~6 s without
 ```
 
 **Three capabilities, three independent markers.** CI runs `pytest` twice on a machine
@@ -171,14 +171,10 @@ Corollary for `doctor`: whether the machine is *complete* is a verdict, not a cr
 `manifest["ok"] == manifest["doctor"]["ok"]`, never `ok is True`, or the test only holds on
 a fully equipped box.
 
-Corollary for `doctor`: whether the machine is *complete* is a verdict, not a crash. Assert
-`manifest["ok"] == manifest["doctor"]["ok"]`, never `ok is True`, or the test only holds on
-a fully equipped box.
-
 ### 4.2 Commands that must keep working
 
 ```bash
-python3 -m pytest tests -q                                 # 518 passed
+python3 -m pytest tests -q                                 # 520 passed
 python3 -m vidkit doctor  examples/hello-world/video.yaml  # exit 0
 python3 -m vidkit plan    examples/hello-world/video.yaml  # scene plan + estimate
 python3 -m vidkit build   examples/hello-world/video.yaml  # mp4 + srt + verify.json
@@ -317,24 +313,26 @@ Use exactly these, so they are greppable:
 
 ## 6. Current position (snapshot)
 
-> Snapshot taken 2026-10-07 (after the M8 merge). If this disagrees with
+> Snapshot taken 2026-10-09 (after the M8 merge). If this disagrees with
 > [docs/plan/PLAN.md](docs/plan/PLAN.md), trust PLAN.md.
 
 - **Repo state:** public on GitHub (`anindyasundarbera/vidkit`), default branch `main`,
-  CI green. **M0–M8 are merged.** Nothing is in flight.
-- **Tests:** `python3 -m pytest tests -q` → **518 passed in ~470 s** with every toolchain
-  present, **445 passed / 73 skipped** without. Run the lean form while iterating — it is
+  CI green. **M0–M8 are merged** (M8 = PR #9 → `63ad046`). Nothing is in flight.
+- **Tests:** `python3 -m pytest tests -q` → **520 passed in ~470 s** with every toolchain
+  present, **445 passed / 75 skipped** without. Run the lean form while iterating — it is
   two orders of magnitude cheaper and it is what CI's `pytest` jobs actually do.
   **Never run two `pytest` processes at once**: they share `.pytest-tmp/` (gitignored) and
   will fail each other spuriously.
+- **CI is six jobs:** `test` (the lean suite on Python 3.10 *and* 3.12 — two jobs), `build-example`,
+  `capture-probe`, `exec-probe`, `docker-probe`.
 - **Three capabilities, three independent markers:** `needs_render`, `needs_sandbox`,
   `needs_docker`. See §4.1 — a marker that asks "is the toolchain complete?" rather than
   "is *this* capability usable?" is the bug the markers exist to prevent (defect G).
 - **Engine:** host-free. **10 stages** (`data, panels, stills, capture, exec, narration,
   clips, concat, render, verify`), **26 modules**, 11 panel kinds, **15 MCP tools**,
-  3 resources, docs across 7 modules. M8 added a backend and a resource lifecycle
-  **without adding a stage** — if a future phase needs an eleventh, that is the signal to
-  rethink the design, not to append (P5).
+  3 resources, docs routed across 7 modules (49 stems). M8 added a backend and a resource
+  lifecycle **without adding a stage** — if a future phase needs an eleventh, that is the
+  signal to rethink the design, not to append (P5).
 - **Active phase:** **M9 — Movie mode**
   ([docs/plan/FEATURE-ROADMAP.md](docs/plan/FEATURE-ROADMAP.md) §12). If this line disagrees
   with [docs/plan/PLAN.md](docs/plan/PLAN.md), trust PLAN.md.

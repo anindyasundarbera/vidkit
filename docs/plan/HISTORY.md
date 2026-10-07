@@ -1142,10 +1142,10 @@ is a claim about one real database. Plus the `env`/`ports`/`volumes`/`ready` con
 | `vidkit/provenance.py` | `commands` gained the image/digest and the environment each command ran in |
 | `tests/` | **`test_docker.py`** (~50 tests); `conftest.py`'s third independent marker `needs_docker`; two `test_exec.py` tests pinning `exec_environment` |
 | `examples/docker-demo/` | Postgres 16-alpine, written to and read back inside **one** container, torn down on every exit path |
-| `.github/workflows/ci.yml` | the **`docker-probe`** job (fifth) — capability ladder, engine gate, build, artifact assertions, leak check |
-| docs | `exec-guide.md` **§11 Environments**; `spec-reference.md`'s `environment[]` section; `verification.md`'s two new fact blocks; this entry; **D42–D48** |
+| `.github/workflows/ci.yml` | the **`docker-probe`** job (the sixth) — capability ladder, engine gate, build, artifact assertions, leak check |
+| docs | `exec-guide.md` **§10 Environments**; `spec-reference.md`'s `environment[]` section; `verification.md`'s two new fact blocks; `AGENTS.md`'s eleven new gotchas; this entry; **D42–D48** |
 
-### The defect list — nine found, all in code written during this phase
+### The defect list — fourteen found
 
 This phase's most valuable output is not the feature; it is the list of ways the feature was
 wrong before it was right. Each was found by running the thing, not by reading it.
@@ -1157,21 +1157,38 @@ wrong before it was right. Each was found by running the thing, not by reading i
 | **J** | `verify`'s sandbox check hard-coded `bubblewrap` | the docker fixture failed its own check | `CONFINING_BACKENDS` in the engine → **D42** |
 | **K** | A crash between `docker run` and `bind_step` **leaked a container**; teardown covered only the happy path | inspected `docker ps -a` after a refusal | nested `try/finally`; `started` recorded pre-readiness → **D45** |
 | **L** | `_start_environments` ignored its own new `started` parameter | the teardown test | `state.__dict__.update(got.__dict__)` |
+| **M** | The binding was keyed by *environment name*, so a step's declared `env:` was not what its container actually got, and the image never reached provenance | wiring `_write_provenance` | `bind_step(label, state)`, keyed by **command label** → **D46** |
+| **N** | `Environment.logs_panel` and `Environment.at` were parsed, accepted and honoured **nowhere** | reading the dataclass against the stage | removed from the dataclass, the `known` set and the constructor |
 | **S** | `backend: docker` ran **`docker docker exec …`** — the argv builder already began with `docker` and the runner prepended another | the docker suite: exit 125, `unknown shorthand flag: 'w'` | probe through `_launch_argv` → **D44** |
 | **T** | The container **never received the declared environment** — `docker exec` does not inherit the client's, and only `req.env` was forwarded | `test_..._does_not_inherit_the_hosts_home_or_paths` | `_docker_argv` emits `-e` per `_env_for(...)` entry → **D47** |
 | **U** | A **single** readiness failure both cleared `ready_since` *and* overwrote `ready_detail`, making the "answered but never held" branch unreachable | reasoning about the branch while writing its test | key the branch on `answered_at` → **D43** |
-| **O/P/Q/R** | `docker exec -t` needs a terminal on *Docker's* stdin (`_docker_run` passes `DEVNULL`) → every probe exit 125; plus three test-harness faults (`textwrap.dedent` silently nesting YAML; `narration.inline` must be a mapping; `cwd: "."` → `/work/.`) | the docker suite | `tty=False` keyword on `_launch_argv`/`_docker_argv`; harness rewritten; `posixpath.normpath` |
+| **O** | `docker exec -t` needs a terminal on *Docker's* stdin (`_docker_run` passes `DEVNULL`) → every probe exit 125, `cannot attach stdin to a TTY-enabled container` | the docker suite | `tty=False` keyword on `_launch_argv`/`_docker_argv` |
+| **P/Q/R** | Three **test-harness** faults: `textwrap.dedent` measured the common indent across *every* non-blank line and silently nested `environment:` inside `scenes:`; `narration.inline` must be a mapping, not a list; `cwd: "."` produced `/work/.` | the docker suite | fragments dedented and concatenated separately; a `_MINIMAL` template; `posixpath.normpath` + a `startswith` guard |
 
 **Two of these were invisible to the unit tests by construction.** S was masked because the
 filmed path uses `Popen` directly and only the *probe* went through the broken builder; O was
 masked because the probe is the only place a TTY was requested on a non-terminal stdin. Both
 were caught only by the end-to-end fixture — which is the argument for keeping one.
 
+**Three of the fourteen were pre-existing M7 bugs that only a second backend could expose**
+— **J** (a hard-coded backend name in the verifier), **S** (a builder whose output was
+double-prefixed) and **T** (an environment contract that only worked because bubblewrap
+happens to inherit its parent's). A one-backend design hides its own assumptions; the value
+of adding a second was less the backend than the revelation.
+
+**And two of the fourteen are the same class as M7's E and F — *a check that passes must be
+written down*.** **N** accepted a field nobody read; **U** let a single failure erase the
+evidence that the gate had *ever* answered. That rule was then applied deliberately to all
+three of M8's new fact classes, which is why a passing build now records *why* it passed.
+
 **A fifth issue, found in CI, not in the code:** `doctor` with **no spec** did not report the
 sandbox at all, and on a sandbox-less host printed "bwrap cannot run" **once per command**.
 Fixed, and pinned by tests.
 
-### Evidence at the end of the phase
+### Evidence at the end of development
+
+*(Superseded later in this phase by the two `exec_environment` tests, which raised the counts
+to 520 / 75; the final figures are in the merge entry below.)*
 
 ```
 python3 -m pytest tests -q                          → 518 passed in 470.54 s
@@ -1233,3 +1250,126 @@ CI: the failure names the missing rung.
   the docker tests are evidence of correctness *where Docker exists*, not of portability.
 - **`ubuntu-latest` moves to Ubuntu 26 on 2026-10-19.** The docker job's rungs are stated for
   the current image; the job prints them, so the log will say what changed.
+
+---
+
+## 2026-10-09 — M8 merged: a service can be declared, proven, filmed and removed
+
+**PR [#9](https://github.com/anindyasundarbera/vidkit/pull/9)** →
+`main` @ **`63ad046`** (merge commit, parents `7e46276` + `d2c1930`).
+
+Unlike M7, this phase went green on its **first** CI run. Run
+[`37593535531`](https://github.com/anindyasundarbera/vidkit/actions/runs/37593535531), all
+**six** jobs passing:
+
+| Job | Result |
+|---|---|
+| `pytest (3.10)` | pass, 1 m 43 s |
+| `pytest (3.12)` | pass, 1 m 40 s |
+| `build hello-world end to end` (`build-example`) | pass, 4 m 24 s |
+| `film a real page and a real download` (`capture-probe`) | pass, 1 m 20 s |
+| `run a real command and film it` (`exec-probe`) | pass, 59 s |
+| **`run a real container, film it, and remove it` (`docker-probe`)** | **pass, 49 s — the new job** |
+
+The new job is what M8 is for: it climbs a capability ladder, lets the **engine's own probe**
+decide, builds `examples/docker-demo/` against a real `postgres:16-alpine`, and then asserts
+the thing the phase claims — that three commands shared **one** container, that its readiness
+**held**, that it was removed, and that the row written by command 1 appears in command 2's
+own recording.
+
+### The abstraction held
+
+M8 added a backend and a resource lifecycle inside the **same ten stages** M7 left. No new
+`ExecRequest` field; no widened `stream()` signature. That is the fact the phase was designed
+to test, and P5 ("versatility without dilution") is now a *demonstrated* constraint rather
+than an aspiration for M9 to inherit. The cost was paid in `exec.py` alone (+869 lines) — a
+module that grew a lifecycle without growing a second vocabulary for it.
+
+### Fourteen defects, and the two classes they fall into
+
+Fourteen were found in total, across development, the end-to-end fixtures, and the CI
+job's own dry run. They are worth grouping because the groups are what to watch for next:
+
+**Class 1 — a gate that observes rather than demonstrates.** Defects **H** (an attribute
+error that would have made bring-up fail silently), **I** (readiness sampled once), **O**
+(`docker exec -t` demanding a TTY on *Docker's own* stdin, exit 125), **S** (`docker docker`
+double prefix), **T** (the container never received `BASE_ENV`, and the client's `HOME`
+leaked its config warning onto the filmed PTY). Each is a case of the code asking *"is the
+tool here?"* or *"did anything happen?"* instead of *"did the thing the user is paying for
+actually occur?"* **D41/D48** are the rules extracted from these.
+
+**Class 2 — a check that passes must be written down.** **E** and **F** (from M7) were already
+this class; **N** (fields parsed but honoured nowhere), **U** (a single readiness failure
+erasing the "answered but never held" evidence) and **J** (the verifier's sandbox check naming
+one backend) are M8's additions. The rule was then applied deliberately to all three of M8's
+new fact classes — `environments`, the per-command `container` key, and the readiness *hold*
+— so a passing build records *why* it passed, not merely that nothing complained.
+
+Five more fit neither class cleanly: **K** (a leaked container, and a teardown contract that
+covered only the happy path), **L** (`_start_environments` ignoring its own `started` list),
+**M** (the binding keyed by environment name rather than command label) and **P/Q/R**
+(test-design faults plus a `cwd` normalisation bug in `_docker_workdir`, fixed with
+`posixpath.normpath`).
+
+**Three of the fourteen were pre-existing M7 bugs that only a second backend could expose** —
+**J**, **S** and **T**. A one-backend design hides its own assumptions; the value of adding
+a second backend was less the backend than the revelation.
+
+### The evidence, as observed
+
+```
+python3 -m pytest tests -q                      ->  520 passed in 467.70s
+PATH=/tmp/leanbin python3 -m pytest tests -q   ->  445 passed, 75 skipped in 5.47s
+```
+
+The lean run is the portability claim: **75** tests skip on a host with neither a render
+toolchain, a usable sandbox, nor Docker, and the remaining 445 pass in under six seconds. No
+marker implies another; `needs_docker` is probed by *actually running a container*, so a host
+with a Docker client that cannot confine anything skips the same tests a host with no client
+skips — which is the correct answer and the one M7 got wrong.
+
+The extracted `docker-probe` steps, run locally against this host's Docker:
+
+```
+rung client: ok  /usr/bin/docker
+rung daemon: ok  daemon answers (server 29.7.2)
+rung container: ok  `docker run --rm hello-world` succeeded
+DOCKER OK — 3 commands in container vidkit-db-123f8c0efde, all sandboxed, service removed
+no vidkit container remains
+artifacts ok
+```
+
+`examples/docker-demo/_build/verify.json` carries `image_digest sha256:721873c3…` and a
+`ready_detail` reading *"answered for 0.98s without a single failure: /var/run/postgresql:5432
+- accepting connections"*. **Zero leaked containers.**
+
+### What this phase deliberately did **not** build
+
+- **No `--rm`.** Containers are removed by the build, on every path, so "removed" is
+  attributable to vidkit — and a crashed build leaves something to inspect. **D45.**
+- **No `docker compose`, no Dockerfiles.** An `environment` is one image and one command.
+  Anything more is a build system, and the story would move out of the spec.
+- **No `ports:` publishing to the host.** Ports exist so a browser capture could later reach a
+  service *inside* one network; publishing to the host would make the video depend on what
+  else is bound on the machine.
+- **No eleventh pipeline stage.** Per FEATURE-ROADMAP §12 constraint **P5**.
+
+### Still owed to the owner
+
+- **The `v1.0.0` tag has still not been pushed**, and M7+M8 now both sit under
+  `## [Unreleased]`. Whether that becomes `1.1.0` is the owner's call; folding them back into
+  `1.0.0` would make the tag and the release notes disagree.
+- **Docker is not required to pass the suite.** `needs_docker` skips on a host without it, so
+  the docker tests are evidence of correctness *where Docker exists*, not of portability.
+- **`ubuntu-latest` moves to Ubuntu 26 on 2026-10-19.** The docker job's rungs are stated for
+  the current image; the job prints them, so the log will say what changed.
+- **`doctor`'s happy path calls the full `docker_available()` probe** (~450–510 ms) rather
+  than the cheap `docker_daemon()` (~60 ms) and deferring the container demonstration. The
+  seam is recorded in **D48**; whether the wall time is worth the certainty is undecided.
+
+### Next
+
+**M9 — Movie mode** ([PLAN.md](PLAN.md), [FEATURE-ROADMAP.md](FEATURE-ROADMAP.md) §12). The
+gap is three separable things: stills that do not move, audio that is narration or nothing,
+and shot length that is arithmetic. All three land as **additions to the spec surface**
+inside the same ten stages.

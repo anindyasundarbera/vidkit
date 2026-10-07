@@ -23,7 +23,7 @@ flight.**
 | **M5** Agent surface | The job contract: `--json`, `--progress`, `run ACTION`, four MCP tools, a timeout guard. | `7c548de` |
 | **M6** Hardening & v1.0 | Provenance as a first-class action; portability; `1.0.0`. | `6987090` |
 | **M7** Executor & sandbox | A spec can declare commands that run in a real PTY inside a declared sandbox, and the film is proven to contain the recording. | `40cf724` |
-| **M8** Docker & environment lab | A spec can declare a service, **prove** it is serving, film real commands inside the *same* container, and tear it down unconditionally — with the image recorded by digest. | (this merge) |
+| **M8** Docker & environment lab | A spec can declare a service, **prove** it is serving, film real commands inside the *same* container, and tear it down unconditionally — with the image recorded by digest. | `63ad046` |
 
 Full evidence for each is in [HISTORY.md](HISTORY.md); each phase's reasoning is in
 [DECISIONS.md](DECISIONS.md) (D1–D48).
@@ -55,8 +55,9 @@ Two things M8 taught, in the form they will be reused:
 > 0.75 s", and the report distinguishes *never answered* from *answered and stopped* (D43,
 > defect U).
 
-Nine defects were found and fixed on the way (H–L, S, T, U, plus O/P/Q/R); six were in M8's
-own new code and three were pre-existing M7 bugs that only a second backend could expose.
+Fourteen defects were found and fixed on the way (H–R, S, T, U); eleven were in M8's own new
+code and three were pre-existing M7 bugs — J, S and T — that only a second backend could
+expose.
 
 ---
 

@@ -461,9 +461,12 @@ teardown lifecycle that runs in a `finally`; `facts.environments` (image **by di
 readiness detail, lifetime, teardown record) plus a `container` key on every `facts.exec`
 entry; a third probed capability marker `needs_docker`; `examples/docker-demo/`; and a sixth
 CI job. **The pipeline stayed at ten stages** — the abstraction M7 built held, which was the
-phase's real test. Nine defects were found and fixed on the way (H–L, S, T, U, plus O/P/Q/R);
-six of them were in *this* phase's new code and three were pre-existing M7 bugs that only a
-second backend could expose. Evidence: [HISTORY.md](HISTORY.md).
+phase's real test. Fourteen defects were found and fixed on the way (H–R, S, T, U);
+eleven of them were in *this* phase's new code and three were pre-existing M7 bugs that only
+a second backend could expose.
+
+**Merged:** PR [#9](https://github.com/anindyasundarbera/vidkit/pull/9) → `main` `63ad046`.
+All six CI jobs green on the **first** run, unlike M7. Evidence: [HISTORY.md](HISTORY.md).
 
 ---
 
@@ -532,7 +535,7 @@ all by tool calls, with no shell and no spec editing.
 | Sandbox built before it can be aimed | Medium | M7 is gated behind M1. [DECISIONS.md](DECISIONS.md) D13. |
 | Sandbox becomes an unaudited escape hatch | Medium | P4: declared in spec, bounded by policy, attested in `verify.json`. |
 | Vendor lock-in to any external tool (incl. OpenMontage) | Medium | P3 + the AGPL boundary in [OPENMONTAGE.md](OPENMONTAGE.md). |
-| Movie mode forks the pipeline | Medium | P5: no tenth stage. |
+| Movie mode forks the pipeline | Medium | P5: no eleventh stage. |
 | `default_spec()` silently changes which example is built | Medium | M0 task 12 — pin or assert it. |
 | Single-maintainer bus factor | Medium | Docs set + CI + these plan documents. |
 
