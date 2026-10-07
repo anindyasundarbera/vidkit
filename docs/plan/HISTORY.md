@@ -1516,3 +1516,120 @@ that a silent cut must **not** publish `narration_spans`.
 composition across shots: M9 made a single shot able to move, be drawn and be timed; nothing yet
 lets a film be *assembled* from shots that overlap, transition, or come from more than one take
 of the same scene.
+
+---
+
+## 2026-10-10 — M9 merged: a film with no browser, and a check that can fail
+
+**PR [#11](https://github.com/anindyasundarbera/vidkit/pull/11)** →
+`main` @ **`1894ec9`** (merge commit, parents `9d3385b` + `010afde`).
+
+Every job went green on the **first** CI run. Run
+[`37607163740`](https://github.com/anindyasundarbera/vidkit/actions/runs/37607163740), all
+**seven** jobs passing:
+
+| Job | Result |
+|---|---|
+| `pytest (3.10)` | pass, 1 m 51 s |
+| `pytest (3.12)` | pass, 1 m 42 s |
+| `build hello-world end to end` (`build-example`) | pass, 3 m 11 s |
+| `film a real page and a real download` (`capture-probe`) | pass, 1 m 19 s |
+| `run a real command and film it` (`exec-probe`) | pass, 1 m 1 s |
+| `run a real container, film it, and remove it` (`docker-probe`) | pass, 49 s |
+| **`cut a film from declared artwork alone` (`movie-probe`)** | **pass, 46 s — the new job** |
+
+The new job is the phase's claim stated as a gate: install **only** `ffmpeg` and
+`librsvg2-bin`, build `examples/movie-demo/`, and then assert that every shot names a declared
+asset, that the engine really drew some of them, that the clock came from the spec, and that a
+silent cut publishes an estimate rather than claiming word positions it does not have. The two
+tools it installs are the two the feature exists to need.
+
+### The one thing that had to be *added* to the job
+
+The job shipped with a motion assertion that was itself the M9 defect it was meant to catch: it
+only asked whether a `motion:` row existed. A gate that restates the spec cannot fail. It now
+reads `mae` off every row, requires at least three moves to have actually changed the picture,
+requires the one move over a flat field to be exactly `0.0`, and requires changed + flat to
+account for every row — so a measurement that silently stopped reading the picture would fail
+the job on three separate counts.
+
+This is the phase's own lesson applied to the phase's own CI, and it is the second time M9's
+honesty class turned up *inside work that was written to enforce honesty*. D52 exists because of
+it: **a check that cannot fail is worse than no check, because it reads as assurance.**
+
+### The fixture defect was kept, deliberately
+
+The new measurement found, on its first run, that scene 2 of `examples/movie-demo/video.yaml`
+declares a pan over a flat `solid: "navy"` — a move over a field with nothing in it to reveal,
+which measures exactly `0.0`. The options were to make the fixture work or to leave it failing.
+It was left, and the spec now carries a comment explaining what it is for: it is the *evidence*
+that the measurement reads the picture rather than the request. A fixture that always measures
+"moved" cannot demonstrate that the check can report "did not move". The `movie-probe` job
+asserts on that row by name.
+
+### Eight defects, and the class three of them share
+
+Five were found by measuring pixels; three by writing a test that was allowed to fail. The
+class that matters is **a fact that was never established** — three of the eight:
+
+- a check that compared a list against a filter of itself (`len(moved) == len([r for r in
+  artwork if r.get("motion")])`, where `moved` *was* that filter);
+- `narration_spans` publishing scene-wav durations as though they were positions in a 16.01 s
+  film whose scenes' words would take 35.6 s;
+- `duck_seconds` printed as a number the mix never produced whenever a silent cut took the
+  score-only path.
+
+Each read as assurance and none could fail. D49 and D52 are the two rules that came out of it:
+**an absent measurement is not a negative measurement**, and **a check about what a picture did
+decodes the picture**.
+
+Two further defects were of a nastier mechanical kind, both silent: ffmpeg folds
+`iw-iw/zoom*p` to a constant while `(iw-iw/zoom)*p` travels — **the parentheses are
+load-bearing and a still picture renders with no error at all**; and `rsvg` resolves an
+**absolute** `xlink:href` but renders an **empty frame** for a relative one, again with no
+error. Both were found only because the output was measured, not because anything complained.
+
+### The evidence, as observed
+
+```bash
+$ python3 -m pytest tests/test_movie.py -q
+90 passed in 33.30s
+
+$ python3 -m pytest tests -q                       # full
+610 passed in 534.19s (0:08:54)
+
+$ PATH=/tmp/leanbin python3 -m pytest tests -q     # no ffmpeg/rsvg/bwrap/docker
+531 passed, 79 skipped in 5.62s
+
+$ python3 -m vidkit build examples/movie-demo/video.yaml   # ffmpeg + rsvg only
+# verify: all checks pass — 16.01 s
+```
+
+The `movie-probe` steps were re-extracted from the workflow and run locally before the PR was
+opened (`MOVIE OK — 6 shot(s) from declared asset (4 drawn by the engine), 5 moving (4 changed
+the picture, 1 over a flat field measured 0.0), 16.01s, score ducked=False`; `artifacts ok`).
+
+### What this phase deliberately did **not** build
+
+- **No transitions.** Cuts only. Composition across shots is M10's subject, not M9's.
+- **No motion over a provider panel.** The contract is on the shot, but only declared artwork
+  and engine-drawn pictures are proven with it.
+- **No eleventh stage.** Per FEATURE-ROADMAP §12 constraint **P5**, and it held a second time.
+- **No `1.1.0` bump.** The version stays `1.0.0` and the phase sits under `## [Unreleased]`.
+
+### Still owed to the owner
+
+- **The `v1.0.0` tag has still not been pushed**, and M7, M8 and M9 all sit under
+  `## [Unreleased]`. Whether that becomes `1.1.0` or `1.2.0` is the owner's call.
+- **A moving camera over a live capture is implemented but untested.** The report would not
+  lie about it — `mae` is measured, so it would show whatever it measured — but no fixture
+  covers it.
+- **`doctor`'s happy path still calls the full `docker_available()` probe.** D48 records the
+  question; the fast `docker_daemon()` path is the standing alternative.
+
+### Next
+
+**M10** ([PLAN.md](PLAN.md), [FEATURE-ROADMAP.md](FEATURE-ROADMAP.md) §13). The gap M9 leaves is
+composition across shots: M9 made a single shot able to move, be drawn and be timed; nothing yet
+lets a film be *assembled* from shots that overlap, transition, or come from more than one take
+of the same scene.

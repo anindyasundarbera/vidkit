@@ -514,6 +514,10 @@ itself and could not fail. Replacing it with a real pixel measurement found a de
 exit proof itself, which is kept on purpose so the report has something to distinguish.
 **D49**, **D52**. Every future check is written under that rule.
 
+**Merged:** PR [#11](https://github.com/anindyasundarbera/vidkit/pull/11) → `main` `1894ec9`.
+All **seven** CI jobs green on the **first** run — the new `movie-probe` job in 46 s.
+Evidence: [HISTORY.md](HISTORY.md).
+
 ---
 
 ## 13. M10 — Studio surface v2  *(P1)*
