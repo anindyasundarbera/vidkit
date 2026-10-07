@@ -12,8 +12,9 @@ import json
 import time
 from pathlib import Path
 
-import anyio
 import pytest
+
+from conftest import arun
 
 from vidkit.errors import ToolError
 from vidkit import mcp_server as m
@@ -32,7 +33,7 @@ def call(fn, /, *args, **kwargs):
     out = fn(*args, **kwargs)
     if not inspect.isawaitable(out):
         return out
-    return anyio.run(lambda: out)
+    return arun(out)
 
 
 def refuses(fn, /, *args, **kwargs):
@@ -44,7 +45,7 @@ def refuses(fn, /, *args, **kwargs):
     """
     out = fn(*args, **kwargs)
     if inspect.isawaitable(out):
-        anyio.run(lambda: out)
+        arun(out)
 
 
 @pytest.fixture(autouse=True)
@@ -155,6 +156,22 @@ def test_doctor_tool_environment():
     names = {t["name"] for t in rep["tools"]}
     assert {"ffmpeg", "rsvg-convert", "piper (TTS)"} <= names
     assert isinstance(rep["ok"], bool)
+
+
+def test_doctor_names_the_mcp_package():
+    """The one row an agent needs before it can reach any other.
+
+    `mcp` is a declared extra, not a `[dev]` one, so a healthy engine on a machine
+    that has not installed it has *every* tool unreachable — and until this row
+    existed, `doctor` said nothing about it at all. The check is deliberately about
+    presence in the report, not about presence on this machine, so it means the same
+    thing on a host that has the extra and one that does not.
+    """
+    rep = m.tool_doctor(None)
+    rows = {t["name"]: t for t in rep["tools"]}
+    assert "mcp" in rows
+    assert rows["mcp"]["required"] is False
+    assert isinstance(rows["mcp"]["present"], bool)
 
 
 @pytest.mark.skipif(not EXAMPLE.exists(), reason="example spec missing")
@@ -269,9 +286,9 @@ def test_stdout_to_stderr_redirects_prints():
     assert "should-not-be-on-stdout" in fake_err.getvalue()
 
 
+@pytest.mark.needs_mcp
 def test_build_server_registers_toolset():
     pytest.importorskip("mcp")
-    import anyio
 
     server = m.build_server()
 
@@ -279,7 +296,7 @@ def test_build_server_registers_toolset():
         tools = await server.list_tools()
         return [t.name for t in tools]
 
-    names = anyio.run(go)
+    names = arun(go)
     assert {"vidkit_run", "vidkit_actions", "vidkit_init", "vidkit_capture_plan",
             "vidkit_doctor", "vidkit_plan", "vidkit_build", "vidkit_verify",
             "vidkit_provenance", "vidkit_docs", "vidkit_docs_index",
@@ -295,9 +312,9 @@ def test_build_server_registers_toolset():
     assert len(names) == 34
 
 
+@pytest.mark.needs_mcp
 def test_build_server_resources():
     pytest.importorskip("mcp")
-    import anyio
 
     server = m.build_server()
 
@@ -306,7 +323,7 @@ def test_build_server_resources():
         tmpl = await server.list_resource_templates()
         return [str(r.uri) for r in res], [t.uriTemplate for t in tmpl]
 
-    resources, templates = anyio.run(go)
+    resources, templates = arun(go)
     assert "vidkit://actions" in resources
     assert "vidkit://docs/index" in resources
     assert "vidkit://docs/modules" in resources
@@ -319,6 +336,7 @@ def test_build_server_resources():
     assert "vidkit://sessions/{session}/report" in templates
 
 
+@pytest.mark.needs_mcp
 def test_session_resources_serve_the_same_answer_as_the_tools(tmp_path):
     """The resource and the tool are one reading of one record, not two.
 
@@ -329,7 +347,6 @@ def test_session_resources_serve_the_same_answer_as_the_tools(tmp_path):
     fact.
     """
     pytest.importorskip("mcp")
-    import anyio
 
     spec = tmp_path / "story"
     spec.mkdir()
@@ -367,15 +384,15 @@ def test_session_resources_serve_the_same_answer_as_the_tools(tmp_path):
         return (await server.read_resource(
             f"vidkit://sessions/{session_id}/status"))[0].content
 
-    served = json.loads(anyio.run(go))
+    served = json.loads(arun(go))
     direct = call(m.tool_session_status, session_id, str(out))
     assert served["next"] == direct["next"]
     assert served["id"] == direct["id"]
 
 
+@pytest.mark.needs_mcp
 def test_server_tool_call_roundtrip():
     pytest.importorskip("mcp")
-    import anyio
 
     server = m.build_server()
 
@@ -383,7 +400,7 @@ def test_server_tool_call_roundtrip():
         out = await server.call_tool("vidkit_panel_kinds", {})
         return out[0].text
 
-    text = anyio.run(go)
+    text = arun(go)
     assert "line_series" in text
 
 
@@ -470,24 +487,24 @@ def test_capture_plan_announces_nothing_on_stdout(capsys):
     assert capsys.readouterr().out == ""
 
 
+@pytest.mark.needs_mcp
 def test_run_resource_is_the_action_list():
     pytest.importorskip("mcp")
-    import anyio
 
     server = m.build_server()
 
     async def go():
         return await server.read_resource("vidkit://actions")
 
-    out = anyio.run(go)
+    out = arun(go)
     part = out[0] if isinstance(out, tuple) else next(iter(out))
     text = getattr(part, "content", None) or part.text
     assert "init" in text and "verify" in text
 
 
+@pytest.mark.needs_mcp
 def test_run_tool_is_callable_over_the_server():
     pytest.importorskip("mcp")
-    import anyio
 
     server = m.build_server()
 
@@ -495,7 +512,7 @@ def test_run_tool_is_callable_over_the_server():
         out = await server.call_tool("vidkit_run", {"action": "doctor"})
         return out[0].text
 
-    text = anyio.run(go)
+    text = arun(go)
     assert '"ok"' in text
 
 

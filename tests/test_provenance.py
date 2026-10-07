@@ -13,7 +13,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-import anyio
+from conftest import arun
 
 import pytest
 
@@ -215,7 +215,7 @@ def test_the_verb_and_the_json_and_the_tool_all_name_the_same_build(tmp_path):
     # tools, so it is a coroutine now: calling it without awaiting yields a
     # coroutine object, and every assertion below would then be comparing a
     # coroutine to a dict — a test that cannot fail.
-    tool = anyio.run(
+    tool = arun(
         mcp_server.tool_provenance, str(EXAMPLE / "video.yaml"), str(tmp_path))
     from vidkit.reports import format_provenance
 

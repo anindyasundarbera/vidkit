@@ -6,7 +6,6 @@ a two-line module written into ``tmp_path``, and nothing is rendered.
 
 from __future__ import annotations
 
-import anyio
 import json
 from datetime import date
 from pathlib import Path
@@ -30,6 +29,8 @@ from vidkit.snapshot import (
 )
 from vidkit.spec import load_spec
 from vidkit.timeframe import from_relative
+
+from conftest import arun
 
 # --------------------------------------------------------------------------- #
 # Building a minimal spec + provider on disk
@@ -405,10 +406,10 @@ def test_the_mcp_build_tool_refuses_only_together_with_from():
 
     # `tool_build` runs off the event loop, so it is a coroutine. Calling it bare
     # leaves a coroutine object behind and `pytest.raises` sees nothing — the test
-    # would pass whether or not the refusal existed. Note `anyio.run` does *not*
+    # would pass whether or not the refusal existed. Note `arun` does *not*
     # forward keyword arguments to the callable, so the call goes in a lambda.
     with pytest.raises(ToolError):
-        anyio.run(lambda: m.tool_build(only=["panels"], from_stage="render"))
+        arun(lambda: m.tool_build(only=["panels"], from_stage="render"))
 
 
 def test_the_mcp_build_tool_passes_the_stage_contract_through(monkeypatch, tmp_path):
@@ -422,7 +423,7 @@ def test_the_mcp_build_tool_passes_the_stage_contract_through(monkeypatch, tmp_p
         return assembler.Assets()
 
     monkeypatch.setattr(assembler, "run", fake_run)
-    anyio.run(lambda: m.tool_build(str(spec), from_stage="render", refresh=True))
+    arun(lambda: m.tool_build(str(spec), from_stage="render", refresh=True))
 
     assert seen["from_stage"] == "render"
     assert seen["refresh"] is True

@@ -937,9 +937,10 @@ def browser_open(session: Session, spec, url: str = "", *,
             "playwright is not installed, so no browser can be driven — "
             "`pip install playwright` and `playwright install chromium`")
     if session._live.get("browser") is not None:
+        where = session._live.get("url")
+        at = f" at {where!r}" if where else ""
         raise ToolError(
-            f"this session already has a browser open"
-            f"{f' at {session._live.get('url')!r}' if session._live.get('url') else ''}; "
+            f"this session already has a browser open{at}; "
             "call browser_close first — one session, one page")
     why = session.budgets.check()
     if why:

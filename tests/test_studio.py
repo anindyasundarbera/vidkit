@@ -37,13 +37,14 @@ import pytest
 from vidkit import studio as st
 from vidkit.errors import SpecError, ToolError
 
-from conftest import _HAVE_DOCKER
+from conftest import _HAVE_DOCKER, arun
 
 
 needs_sandbox = pytest.mark.needs_sandbox
 needs_docker = pytest.mark.needs_docker
 needs_playwright = pytest.mark.needs_playwright
 needs_render = pytest.mark.needs_render
+needs_mcp = pytest.mark.needs_mcp
 
 
 # --------------------------------------------------------------------------- #
@@ -1127,6 +1128,7 @@ def test_an_environment_reference_can_rebuild_the_runtime_state_it_stands_for(tm
 # --------------------------------------------------------------------------- #
 @needs_playwright
 @needs_render
+@needs_mcp
 def test_an_mcp_client_can_take_a_sitting_end_to_end(tmp_path):
     """The exit criterion, driven the way a real agent drives it.
 
@@ -1139,7 +1141,6 @@ def test_an_mcp_client_can_take_a_sitting_end_to_end(tmp_path):
     in Python, this is where it shows.
     """
     from mcp.shared.memory import create_connected_server_and_client_session
-    import anyio
     from vidkit import mcp_server as m
 
     spec_path = _spec(tmp_path, extra="""
@@ -1244,7 +1245,7 @@ def test_an_mcp_client_can_take_a_sitting_end_to_end(tmp_path):
             await call(client, "session_close", {"session": sid})
             return report["report"], film
 
-    report, film = anyio.run(go)
+    report, film = arun(go)
     assert report["ok"] is True, [c for c in report["checks"] if not c["ok"]]
 
     # The claim this test exists to make: what was *delivered* is the take that was
@@ -1270,6 +1271,7 @@ def test_an_mcp_client_can_take_a_sitting_end_to_end(tmp_path):
 # the registry, over the wire
 # --------------------------------------------------------------------------- #
 @needs_playwright
+@needs_mcp
 def test_a_second_tool_call_finds_the_page_the_first_one_opened(tmp_path):
     """The registry has to be reachable *through a tool*, or a sitting is one call long.
 
@@ -1281,7 +1283,6 @@ def test_a_second_tool_call_finds_the_page_the_first_one_opened(tmp_path):
     photograph. Both facts are asserted here, because either one alone can pass by luck.
     """
     from mcp.shared.memory import create_connected_server_and_client_session
-    import anyio
     from vidkit import mcp_server as m
 
     spec_path = _spec(tmp_path, extra="""
@@ -1348,7 +1349,7 @@ def test_a_second_tool_call_finds_the_page_the_first_one_opened(tmp_path):
             assert after["open"] is False, after
         return True
 
-    assert anyio.run(go) is True
+    assert arun(go) is True
 
 
 # --------------------------------------------------------------------------- #

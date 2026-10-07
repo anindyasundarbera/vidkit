@@ -156,10 +156,10 @@ skip honestly when they are not.
 ```bash
 pip install -e ".[dev]"          # core + pytest
 pip install -e ".[capture]"      # + Playwright (needs `playwright install chromium`)
-python3 -m pytest tests -q       # 716 tests, ~11 min with every toolchain; 615 in ~15 s without
+python3 -m pytest tests -q       # 750 tests, ~11 min with every toolchain; 649 in ~16 s without
 ```
 
-**Four capabilities, four independent markers.** CI runs `pytest` twice on a machine
+**Five capabilities, five independent markers.** CI runs `pytest` twice on a machine
 with no `ffmpeg`, no `rsvg-convert`, and — measured, not assumed — no usable `bubblewrap`,
 and separately builds `examples/hello-world` on a machine that has the render tools. A
 test that needs a capability must carry the *matching* marker; `tests/conftest.py` probes
@@ -171,6 +171,7 @@ each one and skips independently:
 | `needs_sandbox` | *running* `bwrap` around `/bin/true` | `exec` steps on the default backend |
 | `needs_docker` | *running* `docker run --rm hello-world` | loading or building a `backend: docker` spec |
 | `needs_playwright` | importing `playwright.sync_api` and *launching* Chromium | driving a real browser (`session_browser`, `capture`) |
+| `needs_mcp` | `importlib.util.find_spec("mcp")` | anything that imports `mcp` itself — the server, its transports, `build_server()` |
 
 **The markers must stay independent.** Three of these were added after a CI failure, and
 every time the failure was the same shape: a test passed locally because *this* machine
@@ -184,9 +185,19 @@ without Docker** — the load-time policy check calls `resolve_backend("docker")
 `async def` (see §4.4). A bare call returns a coroutine, so `pytest.raises` sees no
 exception and `result == {...}` is comparing a dict to a coroutine — **green, and
 meaningless**. `tests/test_mcp.py::test_no_test_calls_an_async_tool_without_awaiting_it`
-scans every `tests/test_*.py` for this and fails if it appears. Note that
-**`anyio.run(fn, *args)` does not forward keyword arguments** — use
-`anyio.run(lambda: fn(..., kw=...))`.
+scans every `tests/test_*.py` for this and fails if it appears. Await a tool through the
+**stdlib-only** `arun()` helper in `tests/conftest.py` — **not** `anyio`, which vidkit does
+not declare as a dependency at all (it only arrives with the optional `mcp` extra, and CI's
+lean `pytest` job installs `.[dev]` alone, so a top-level `import anyio` in a test module
+kills that module at *collection*). And note that `anyio.run(fn, *args)` does not forward
+keyword arguments — which is one more reason `arun` (a plain lambda wrapper) is the right
+call.
+
+**`needs_mcp` is not optional either.** The same lean job has no `mcp`, so any test that
+actually reaches the server — `build_server()`, a memory-transport round trip, a resource
+read — must carry `@pytest.mark.needs_mcp`. Tests that only inspect `mcp_server.py`'s *own*
+AST do not import `mcp` and deliberately are **not** marked; marking them would lose real
+coverage for no reason.
 
 Corollary for `doctor`: whether the machine is *complete* is a verdict, not a crash. Assert
 `manifest["ok"] == manifest["doctor"]["ok"]`, never `ok is True`, or the test only holds on

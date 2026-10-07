@@ -46,6 +46,12 @@ def doctor_report(spec_path: Path | None = None, *,
     add("chrome/chromium", chrome is not None, "needed for capture", False, chrome or "")
     add("piper (TTS)", importlib.util.find_spec("piper") is not None,
         "narration audio", False)
+    # Reported because it is the one tool an agent needs *before* it can reach any
+    # other: if `mcp` is absent, the server cannot start and no tool is reachable —
+    # yet nothing else on this list would say so. Not `required`, because a machine
+    # used only for `vidkit build` is perfectly healthy without it.
+    add("mcp", importlib.util.find_spec("mcp") is not None,
+        "the MCP server and its tools", False)
 
     ok = all(t["present"] for t in tools if t["required"])
     report: dict[str, Any] = {

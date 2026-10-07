@@ -42,12 +42,41 @@ capability markers do not compose by implication.
 
 from __future__ import annotations
 
+import asyncio
+import inspect
 import shutil
 from pathlib import Path
 
 import pytest
 
 _SCRATCH = Path(__file__).resolve().parent.parent / ".pytest-tmp"
+
+
+def arun(awaitable_or_fn, *args, **kwargs):
+    """Drive a coroutine (or coroutine function) to completion, with no extra dependency.
+
+    A tool whose body hops off the event loop is an ``async def``, and a coroutine
+    called from a sync test is a coroutine object, not an answer — so the test
+    "passes" an assertion about an exception that was never raised. Awaiting it is
+    what makes the test a test (defect 57 / D57).
+
+    ``anyio`` would do this too, but it is not a declared dependency of anything
+    vidkit installs: it arrives with ``mcp``, and the lean core installs neither.
+    The suite therefore cannot import it, and four modules did, so the ``pytest``
+    CI jobs died at *collection* on a missing module rather than on an assertion —
+    the tests were green locally purely because ``mcp`` happened to be present.
+    ``asyncio.run`` is stdlib and drives the same callables: ``_loop.offload``
+    fast-paths through when there is no loop, and anyio's own default backend is
+    asyncio, so the ``mcp`` memory transport runs under it unchanged.
+    """
+    call = awaitable_or_fn if inspect.isawaitable(awaitable_or_fn) else None
+    if call is None:
+        coro = awaitable_or_fn(*args, **kwargs)
+    else:
+        coro = awaitable_or_fn
+    if not inspect.isawaitable(coro):
+        return coro
+    return asyncio.run(coro)
 
 #: The external tools a *render* needs. The lean ``pytest`` CI job installs none
 #: of them — it checks Python logic, which is fast and always available — while
@@ -114,6 +143,22 @@ def _probe_playwright() -> bool:
 _HAVE_PLAYWRIGHT = _probe_playwright()
 
 
+#: The MCP package imports, so a test can speak to the server over its own transport.
+#: It is a *declared* extra (``.[mcp]``), but it is not part of ``.[dev]``, and the
+#: lean `pytest` job installs only ``.[dev]``. Without this probe those tests die at
+#: *import* — a collection error, not a failure — on a machine where the engine is
+#: entirely healthy. That is the same shape of blindness as ``needs_playwright``, so
+#: it gets the same treatment rather than an accidental dependency on a developer's
+#: machine having installed the extra.
+def _probe_mcp() -> bool:
+    import importlib.util
+
+    return importlib.util.find_spec("mcp") is not None
+
+
+_HAVE_MCP = _probe_mcp()
+
+
 def pytest_configure(config) -> None:
     _SCRATCH.mkdir(exist_ok=True)
     config.option.basetemp = str(_SCRATCH)
@@ -134,6 +179,11 @@ def pytest_configure(config) -> None:
         "needs_playwright: drives a real browser, so it needs the Playwright "
         "package *and* a downloaded Chromium (probing with launch(), not "
         "merely finding the package)")
+    config.addinivalue_line(
+        "markers",
+        "needs_mcp: speaks MCP to the server over its own transport, so it "
+        "needs the `mcp` extra installed (a declared extra, but not one of "
+        "the ones `.[dev]` pulls in)")
 
 
 def pytest_collection_modifyitems(config, items) -> None:
@@ -145,8 +195,10 @@ def pytest_collection_modifyitems(config, items) -> None:
         reason="no usable docker on this host (client, daemon or runtime)")
     playwright_skip = pytest.mark.skip(
         reason="no usable Playwright on this host (package or Chromium missing)")
+    mcp_skip = pytest.mark.skip(
+        reason="mcp extra not installed (needed to drive the server's transport)")
     for item in items:
-        # four independent conditions, four independent skips: each is a
+        # five independent conditions, five independent skips: each is a
         # separate fact about the host and none implies another
         if not _HAVE_RENDER and "needs_render" in item.keywords:
             item.add_marker(render_skip)
@@ -156,6 +208,8 @@ def pytest_collection_modifyitems(config, items) -> None:
             item.add_marker(docker_skip)
         if not _HAVE_PLAYWRIGHT and "needs_playwright" in item.keywords:
             item.add_marker(playwright_skip)
+        if not _HAVE_MCP and "needs_mcp" in item.keywords:
+            item.add_marker(mcp_skip)
 
 
 def pytest_unconfigure(config) -> None:
