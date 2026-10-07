@@ -58,6 +58,7 @@ class Assets:
     srt: Path | None = None
     output: Path | None = None
     report: Report | None = None
+    ctx: Context | None = None            # set by run(), so a caller knows where things went
 
 
 # --------------------------------------------------------------------------- #
@@ -268,6 +269,7 @@ def run(spec_path: Path | str, *, only: Iterable[str] | None = None,
             json.dumps(assets.report.to_dict(), indent=1), encoding="utf-8")
         assets.report.print()
 
+    assets.ctx = ctx
     return assets
 
 

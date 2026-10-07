@@ -622,3 +622,104 @@ fact and never substitutes for footage), `verification.md` (the new check row),
 
 **D26** an overlay is drawn over a shot, never instead of one. **D27** a still is fitted,
 never stretched. **D28** a transition is a beat, and it never changes the runtime.
+
+---
+
+## 2026-10-07 — M5: the agent surface
+
+**Phase.** M5 ([FEATURE-ROADMAP.md](FEATURE-ROADMAP.md) §8) — **complete**. Requirements
+R-G1 (MCP), R-G2 (`--json`), R-G3 (job contract), R-G4 (`init`), R-G5 (progress/cancel),
+R-G6 (structured errors).
+
+### What was built
+
+- **`vidkit/job.py` (new).** One call, `{action, story, out}`, returning one manifest whose
+  base keys are always present: `action, ok, story, out, spec, timeframe, artifacts, report,
+  timeline, failure, progress, vidkit`. Actions live in `ACTIONS` (`plan, build, capture,
+  tts, verify, doctor, init`); `needs_spec("init"|"doctor")` is `False`, so a pre-flight check
+  works before a story exists. `refused(...)` builds the same manifest for a call that never
+  reached the pipeline — a timeout, say — so a caller's error handling needs no second branch.
+- **Progress as data (R-G5).** `Progress` collects `{name, kind, ok, detail, seconds}` steps;
+  `_LineTicker` + `reporting()` capture the pipeline's own stdout for the block and classify
+  each `[vidkit] …` line as `stage` / `check` / `warn` / `log`. `on_progress` is the *only*
+  way a run's log leaves `run_job` — so `--json` is pipeable by construction (D30).
+- **CLI (R-G2).** `vidkit run ACTION`; `--json` and `--progress` on every command, accepted
+  before *or* after the verb via a shared `parents=[common]` parser with
+  `default=argparse.SUPPRESS`. `_COMMAND_ACTION` maps verb → action, so `--json` and `run`
+  agree by construction. `_exit_code`: `0` done, `1` refused, `2` ran but did not verify.
+- **MCP (R-G1).** `vidkit_run`, `vidkit_actions`, `vidkit_init`, `vidkit_capture_plan`
+  (14 tools), a `vidkit://actions` resource, `progress=True` on `vidkit_run`/`vidkit_build`,
+  and a bounded `timeout` so a runaway build refuses instead of hanging the client.
+- **`doctor` (R-H2).** Declared **secrets** appear as a tool row — present or missing, never
+  the value — and a missing required secret folds into the verdict.
+- **Docs (R-G6).** New `docs/operations/job-contract.md` (manifest keys, failure vocabulary,
+  exit codes, progress contract), routed through `docs/modules.yaml`; `cli-reference.md` and
+  `mcp-server.md` brought up to date; `CHANGELOG.md`, `PLAN.md`, `FEATURE-ROADMAP.md` §8.
+
+### Evidence
+
+| Claim | How it was checked | Result |
+|---|---|---|
+| `init → build → verify` from a shell, no prose parsed | `--json run init` → `run plan` → `--json --progress run build` → `run verify` | exit codes `0 0 0 0 0`; the story `init` writes builds and verifies unedited |
+| stdout stays pure under `--progress` | the same build, stdout piped to `json.load`, stderr to a file | JSON parsed; 23 log lines on stderr |
+| `doctor` needs no story | `--json doctor` in a story-less directory | `ok: true`, `spec: null` |
+| A refusal is data, not an exception | `run_job("plan", story="does-not-exist")` | `ok: false`, `failure.kind == "tool"`, a `hint` |
+| A refusal still reports the window asked for | `run_job("plan", story=EXAMPLE, timeframe="7d")` on a spec that pins a different window | `ok: false` **and** `timeframe.source == "override"`, `days == 7` |
+| The base keys are the contract | `BASE_KEYS <= set(manifest)` for a success and a refusal | holds |
+| A manifest survives JSON | `json.loads(json.dumps(manifest))` | round-trips |
+| A timeout returns a manifest, not a hang | `tool_run("build", timeout=0.05)` with `run_job` stubbed to sleep | `ok: false`, `failure.kind == "tool"`, `"did not finish within"` |
+| `timeout=0` means unbounded | the same test with `timeout=0` | `ok: true` |
+| Suite green | `python3 -m pytest tests -q` | **337 passed** |
+
+### Defects found while building it — both by the shell walk, neither by a unit test
+
+1. **`--json run init` ran a *build*.** `_job_kwargs` read `args.cmd` (`"run"`) where it meant
+   the *action* (`args.action`), and `_json_main` hard-coded `"build"` for the `run` verb. The
+   unit tests all called the verbs directly, so the one flag combination that carries an
+   action of its own was the one combination untested. Fixed by `_action_for(args)`; pinned
+   by `test_json_run_init_really_inits`.
+2. **`verify` reported an empty `timeline`.** `_do_verify` built its `Assets` by hand and
+   never re-read the per-scene spans, so a verify manifest listed `"timeline": []` — an
+   account of a film it had not looked at. Fixed by reusing `_load_or_estimate`, the same
+   helper the build uses, which is what makes the two accounts of a run agree; pinned by
+   `test_verify_reports_the_spans_it_looked_at`.
+
+The lesson from M3 repeats: a walk through the real exit criterion finds what a suite of
+unit tests arranged around the code's own assumptions cannot.
+
+### Documentation
+
+`docs/operations/job-contract.md` (new), `cli-reference.md`, `mcp-server.md`,
+`docs/modules.yaml`, `CHANGELOG.md`, `PLAN.md`, `FEATURE-ROADMAP.md` §8, `DECISIONS.md`.
+
+### Decisions taken
+
+**D29** a job answers with a manifest, and never raises for an expected refusal.
+**D30** progress is the pipeline's own narration, delivered only through a hook.
+
+### A third defect, found by CI rather than locally — the test environment
+
+The first PR for M5 came back red on both `pytest` jobs and green on `build hello-world end
+to end` and `film a real page and a real download`. Four tests failed:
+
+| Test | Why |
+|---|---|
+| `test_verify_reports_the_spans_it_looked_at` | reaches the pipeline; there is no `rsvg-convert` on the `pytest` runner |
+| `test_doctor_runs_without_a_story` | asserted `ok is True`; a lean machine is allowed to report a missing required tool |
+| `test_json_doctor_needs_no_story` | asserted exit `0`; the same verdict |
+| `test_json_matches_plain_run_for_every_read_only_action` | the same, via `doctor` |
+
+None of these are wrong *assertions about the code*; they are assertions about *the machine
+the test happens to run on*. The `pytest` job deliberately installs only `-e ".[dev]"` —
+fast, and available everywhere — and the render job installs `ffmpeg` and `librsvg2-bin` and
+does the building. Every test that reaches the pipeline has to say so.
+
+Fixed by a `needs_render` marker, registered in `tests/conftest.py` and applied by
+`pytest_collection_modifyitems` when `ffmpeg` or `rsvg-convert` is absent; by comparing the
+two `doctor` paths to each other rather than to zero; and by asserting
+`manifest["ok"] == manifest["doctor"]["ok"]`. Reproduced first with a lean `PATH` holding
+every binary except `ffmpeg`, `ffprobe` and `rsvg-convert` — 4 failed, 318 passed — and then
+fixed until the same command gave 321 passed, 16 skipped.
+
+The lesson is the M5 lesson again, one level up: a green local suite can still be testing
+the wrong machine. `AGENTS.md` §4.1 now states the two environments.

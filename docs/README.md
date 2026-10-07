@@ -28,7 +28,7 @@ docs/
 | **[authoring/](authoring/)** | write or change a `video.yaml`, `provider.py`, panel, or script | [spec-reference](authoring/spec-reference.md) → [provider-guide](authoring/provider-guide.md) → [panels-reference](authoring/panels-reference.md) → [narration-and-captions](authoring/narration-and-captions.md) |
 | **[capture/](capture/)** | script a screen recording and assert the live state | [capture-guide](capture/capture-guide.md) |
 | **[verification/](verification/)** | understand the checks and `verify.json` | [verification](verification/verification.md) |
-| **[operations/](operations/)** | run, diagnose, expose, or extract the tool | [cli-reference](operations/cli-reference.md) → [mcp-server](operations/mcp-server.md) → [troubleshooting](operations/troubleshooting.md) → [extracting-to-new-repo](operations/extracting-to-new-repo.md) |
+| **[operations/](operations/)** | run, diagnose, expose, or extract the tool | [cli-reference](operations/cli-reference.md) → [job-contract](operations/job-contract.md) → [mcp-server](operations/mcp-server.md) → [troubleshooting](operations/troubleshooting.md) → [extracting-to-new-repo](operations/extracting-to-new-repo.md) |
 | **[guides/](guides/)** | copy a known-good pattern | [recipes](guides/recipes.md) |
 | **[plan/](plan/)** | know where the project is going, what already happened, and why a choice was made | [PLAN](plan/PLAN.md) → [FEATURE-ROADMAP](plan/FEATURE-ROADMAP.md) → [HISTORY](plan/HISTORY.md) → [DECISIONS](plan/DECISIONS.md) → [OPENMONTAGE](plan/OPENMONTAGE.md) |
 
@@ -47,6 +47,7 @@ docs/
 | Read a failing `verify.json` | [verification/verification.md](verification/verification.md) |
 | Run it from a shell | [operations/cli-reference.md](operations/cli-reference.md) |
 | Drive it from an IDE/agent (MCP) | [operations/mcp-server.md](operations/mcp-server.md) |
+| Drive it from a script or an agent, whichever | [operations/job-contract.md](operations/job-contract.md) |
 | Fix an error message | [operations/troubleshooting.md](operations/troubleshooting.md) |
 | Lift vidkit into its own repo | [operations/extracting-to-new-repo.md](operations/extracting-to-new-repo.md) |
 | Copy a working pattern | [guides/recipes.md](guides/recipes.md) |
@@ -66,6 +67,7 @@ docs/
 - `concepts` → `foundations/concepts.md`
 - `spec-reference` → `authoring/spec-reference.md`
 - `mcp-server` → `operations/mcp-server.md`
+- `job-contract` → `operations/job-contract.md`
 
 Calling with **no name** returns this index. Module-qualified names
 (`authoring/spec-reference`) and explicit paths also resolve.

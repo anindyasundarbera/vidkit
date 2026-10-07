@@ -9,6 +9,7 @@ Run as `vidkit …` (installed console script) or `python -m vidkit …`.
 
 | Command | Purpose |
 |---|---|
+| `vidkit run ACTION` | run one job and print its manifest — the agent entry point |
 | `vidkit init DIR` | scaffold a new runnable story |
 | `vidkit doctor [SPEC]` | check the environment (and a spec if given) |
 | `vidkit plan SPEC` | print the scene plan, timings, and guards — no rendering |
@@ -20,6 +21,26 @@ Run as `vidkit …` (installed console script) or `python -m vidkit …`.
 | `vidkit docs [NAME] [--index]` | print the docs router, a named doc, or the route table |
 
 `--version` prints the version.
+
+### Machine-readable output
+
+| Flag | Meaning |
+|---|---|
+| `--json` | print one JSON **manifest** on stdout instead of prose — the same document `vidkit run` returns |
+| `--progress` | let the run's own log through to **stderr** as it happens (needs `--json`) |
+
+Both flags are accepted before or after the verb, so `vidkit plan video.yaml --json` and
+`vidkit --json plan video.yaml` are the same call. `--progress` without `--json` is an
+error, not a silent no-op: without `--json` the log already reaches your terminal.
+
+```bash
+vidkit --json plan video.yaml | jq .plan.est_seconds
+vidkit --json --progress build video.yaml 2>build.log | tee manifest.json
+```
+
+`docs` prints documentation and `auth` opens a browser for a human, so neither is a job:
+`--json docs` answers in its own shape, and `--json auth` returns a `usage` refusal rather
+than pretending. → [Job contract](job-contract.md)
 
 Every command that reads a spec also accepts the **timeframe overrides** below.
 
@@ -55,11 +76,12 @@ sized from the narration's own word count. **Existing files are never overwritte
 | Code | Meaning |
 |---|---|
 | `0` | success; verification passed (or was not run) |
-| `1` | hard error: bad spec, tool failure, provider failure, capture failure |
-| `2` | the build ran but a **verification check failed** (or `doctor` found a missing required tool or secret) |
-| `2` | `doctor` found a missing **required** tool |
+| `1` | refused: bad spec, tool failure, provider failure, capture failure, a missing required tool or secret |
+| `2` | the build ran but a **verification check failed** |
 
-CI should treat non-zero as failure.
+`vidkit run` and `--json` use the same three codes, so a shell pipeline can notice a
+failure without parsing JSON — but the **manifest is the answer**: `ok` says whether it
+finished, `failure` says what went wrong. CI should treat non-zero as failure.
 
 ## `doctor`
 
@@ -72,7 +94,9 @@ Reports presence of `ffmpeg` (required), `rsvg-convert` (required), `ffprobe` (o
 `playwright` (optional), `chrome/chromium` (optional), `piper` (optional). With a spec, also
 prints the project, size/fps, scene/capture/chart counts, provider, and available panel kinds.
 
-`doctor` exits `1` if a **required** tool is missing, else `0`.
+`doctor` exits `1` if a **required** tool (or secret) is missing, else `0`. It is the one
+action that needs no story — checking the machine *before* a story exists is the reason to
+run it first.
 
 ## `plan`
 
@@ -119,6 +143,24 @@ re-rendering yesterday's numbers under today's title. See
 
 On success it prints a small JSON summary (`output`, `srt`, `clips`, `report`) so a caller can
 locate the artifacts.
+
+## `run`
+
+One entry point for every job, so an agent does not have to know which verb to use.
+
+```bash
+vidkit run plan  --story ./my-story
+vidkit run build --story ./my-story --out ./video --timeframe 2026-09-01..2026-09-30
+vidkit run init  --story ./new-story --title "Q4 review" --days 28
+vidkit run verify --story ./my-story --out ./video
+```
+
+`ACTION` is one of `plan`, `build`, `capture`, `tts`, `verify`, `doctor`, `init`. `--story`
+takes a story **folder** (its `video.yaml` is found inside) or a spec file. `--only` /
+`--from` / `--refresh` narrow a rendering action exactly as they do for `build`.
+
+It prints the manifest and exits `0` / `1` / `2` as above. Without `--json` the run's log is
+interleaved on the terminal ahead of the manifest; with `--json` the log moves to stderr.
 
 ## `tts` / `capture`
 
@@ -201,5 +243,6 @@ vidkit build SPEC --only narration,clips,concat,render
 
 ## See also
 
+- [Job contract](job-contract.md) — the manifest, the refusals, the exit codes
 - [`pipeline.md`](../foundations/pipeline.md) — what each stage does
 - [`troubleshooting.md`](troubleshooting.md) — when a command fails

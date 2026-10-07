@@ -62,6 +62,7 @@ modules:
     route: docs/operations/<doc>
     docs:
       - {file: operations/cli-reference.md, title: CLI reference, summary: Commands, flags, exit codes.}
+      - {file: operations/job-contract.md, title: Job contract, summary: The action/story/out call, the artifact manifest, refusals, exit codes, progress.}
       - {file: operations/mcp-server.md, title: MCP server, summary: Tools, resources, transports, client wiring.}
       - {file: operations/troubleshooting.md, title: Troubleshooting, summary: Error text to cause to fix.}
       - {file: operations/extracting-to-new-repo.md, title: Extracting to a new repo, summary: Standalone packaging checklist.}

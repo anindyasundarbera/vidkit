@@ -71,7 +71,7 @@ vidkit/
 ├─ CHANGELOG.md           release notes
 ├─ LICENSE                MIT
 ├─ pyproject.toml         packaging, extras, console scripts
-├─ vidkit/                the engine (22 modules)
+├─ vidkit/                the engine (23 modules)
 │    assembler.py         the 9-stage pipeline + Context/Assets wiring
 │    spec.py              dataclasses + loader + cross-reference validation
 │    context.py           Context/Assets: the paths every stage shares
@@ -88,14 +88,17 @@ vidkit/
 │    snapshot.py          dataset snapshots, freshness, degraded replay
 │    scaffold.py          `vidkit new` project skeleton
 │    verify.py            the acceptance checks → Report
-│    reports.py           report rendering helpers
-│    cli.py               doctor/plan/build/tts/capture/auth/new/verify/docs
-│    mcp_server.py        MCP tools + resources + transports
+│    reports.py           report rendering helpers (shared by CLI and MCP)
+│    job.py               the {action, story, out} job contract -> one manifest
+│    cli.py               doctor/plan/build/tts/capture/auth/init/run/verify/docs
+│    mcp_server.py        MCP tools (14) + resources (3) + transports
 │    errors.py            VidkitError / SpecError / ToolError / ProviderError
 │    __init__.py          version + public exports
 │    __main__.py          python -m vidkit
 ├─ tests/
 │    test_core.py         panels, spec, captions, report — pure Python
+│    test_job.py          the job contract: manifest shape, refusals, progress
+│    test_cli.py          --json / --progress / run: exit codes and pipeability
 │    test_mcp.py          the MCP surface
 │    test_timeframe.py    the window contract (R-F)
 │    test_providers.py    snapshots, fallbacks, stage selection (R-B)
@@ -129,17 +132,30 @@ vidkit/
 
 ```bash
 pip install -e ".[dev]"          # core + pytest
-pytest tests -q                  # 39 tests, < 1 s, no external tools needed
+pytest tests -q                  # 337 tests, ~50 s; no external tools needed
 ```
+
+**Two test environments, one suite.** CI runs `pytest` twice on a machine with no
+`ffmpeg` and no `rsvg-convert` at all — that job checks Python logic and nothing else —
+and separately builds `examples/hello-world` on a machine that has both. A test that
+reaches the pipeline must be marked `@pytest.mark.needs_render`; `tests/conftest.py`
+registers the marker and skips those tests when the toolchain is absent. Without the
+marker a test passes here and fails in CI for a reason unrelated to the code — which
+happened, in M5, to four tests.
+
+Corollary for `doctor`: whether the machine is *complete* is a verdict, not a crash. Assert
+`manifest["ok"] == manifest["doctor"]["ok"]`, never `ok is True`, or the test only holds on
+a fully equipped box.
 
 ### 4.2 Commands that must keep working
 
 ```bash
-pytest tests -q                                            # 39 passed
-vidkit doctor  examples/hello-world/video.yaml             # exit 0
-vidkit plan    examples/hello-world/video.yaml             # scene plan + estimate
-vidkit build   examples/hello-world/video.yaml             # mp4 + srt + verify.json
-vidkit docs --index                                        # JSON route table
+pytest tests -q                                            # 337 passed
+python3 -m vidkit doctor  examples/hello-world/video.yaml  # exit 0
+python3 -m vidkit plan    examples/hello-world/video.yaml  # scene plan + estimate
+python3 -m vidkit build   examples/hello-world/video.yaml  # mp4 + srt + verify.json
+python3 -m vidkit --json run plan --story examples/hello-world   # the agent surface
+python3 -m vidkit docs --index                             # JSON route table
 ```
 
 ### 4.3 When you change code
@@ -223,8 +239,8 @@ Use exactly these, so they are greppable:
 
 - **Repo state:** public on GitHub (`anindyasundarbera/vidkit`), default branch `main`,
   CI green. M0–M3 are merged; M4 is the active phase.
-- **Tests:** `python3 -m pytest tests -q` → **278 passed**, no external tools required.
-- **Engine:** host-free. 9 stages, 22 modules, 11 panel kinds, 10 MCP tools.
+- **Tests:** `python3 -m pytest tests -q` → **337 passed**, no external tools required.
+- **Engine:** host-free. 9 stages, 23 modules, 11 panel kinds, 14 MCP tools.
 - **Active phase:** **M4 — Presentation v2** ([docs/plan/FEATURE-ROADMAP.md](docs/plan/FEATURE-ROADMAP.md)).
   If this line disagrees with [docs/plan/PLAN.md](docs/plan/PLAN.md), trust PLAN.md.
 - **Biggest remaining gap:** there is still no **executor/sandbox** and no **Docker lab**,

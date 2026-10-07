@@ -9,6 +9,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **The job contract** — one call, `{action, story, out}`, returning a manifest whose keys
+  never change, so an external agent can drive vidkit without knowing its verbs:
+  `vidkit run ACTION` on the CLI, `vidkit_run` over MCP. A refusal is data (`ok: false`,
+  `failure.kind`, `failure.hint`), not an exception, and the manifest records the window
+  that was *asked for* even when the job then refuses.
+- `--json` on every CLI command — the same manifest on stdout; `--progress` streams the
+  run's own log to stderr, so stdout stays parseable. Both are accepted before or after the
+  verb. `--progress` without `--json` is an error rather than a silent no-op.
+- Four MCP tools: `vidkit_run`, `vidkit_actions`, `vidkit_init`, `vidkit_capture_plan`
+  (14 tools); a `vidkit://actions` resource; `progress=True` on `vidkit_run` and
+  `vidkit_build`. `vidkit_run(timeout=…)` bounds a call (`VIDKIT_RUN_TIMEOUT`), so a long
+  render returns a refusal instead of hanging the client.
+- `progress` as data: `{steps: [{name, kind, ok, detail, seconds}], seconds}`, classified
+  from the pipeline's own narration rather than a second, parallel account of it.
+- `doctor` reports declared **secrets** as a tool row — present or missing, never the value —
+  and folds a missing required secret into its verdict. `vidkit doctor` on a machine with no
+  story at all is now valid, which is what a pre-flight check is for.
+- `docs/operations/job-contract.md` — the manifest keys, the failure vocabulary, the exit
+  codes, and the progress contract.
+
 - `examples/hello-world/` — a self-contained, host-free example that builds with
   nothing but `ffmpeg` and `rsvg-convert`. It doubles as the CI fixture: every
   number it displays is counted from this repository at build time, and its eight

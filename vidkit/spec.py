@@ -256,6 +256,7 @@ class Spec:
     story: Story | None = None
     timeframe: Timeframe | None = None
     root: Path = field(default_factory=Path.cwd)
+    path: Path | None = None              # where this spec was loaded from
     degraded: dict[str, str] = field(default_factory=dict)   # dataset -> why it is not live
 
     # -- lookups ------------------------------------------------------------ #
@@ -547,6 +548,9 @@ def load_spec(path: Path | str, *,
 
     spec.story = load_story(root, default_as_of=as_of)
     spec.timeframe = _resolve_timeframe(raw, spec, timeframe, as_of)
+    # remembered so a job manifest can name the spec it actually ran, and a
+    # caller never has to re-derive it from the output paths
+    spec.path = path.resolve()
 
     _validate(spec)
     return spec

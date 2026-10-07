@@ -267,6 +267,19 @@ root roadmap claiming it was never written — M5 is completion, not greenfield.
 **Exit.** An MCP client can `init → build → verify` a story purely from tool calls; the same
 is possible from a shell with `--json`.
 
+**Met.** 14 MCP tools and 3 resources; `vidkit run` and `--json` on every command. The exit
+criterion was walked in one shell session — `--json doctor` (no story needed) → `--json run
+init` → `--json run plan` → `--json --progress run build` → `--json run verify`, exit codes
+`0 0 0 0 0`, with the run's 23 log lines on stderr and pure JSON on stdout. `python3 -m
+pytest tests -q` → **337 passed**. Two defects were found by that walk, not by the unit
+tests: `--json run init` ran a *build* because the verb `run` was read for the action, and
+`verify` reported an empty `timeline` because it never re-read the per-scene spans.
+
+**Risks.** The temptation is a second, hand-written progress channel that drifts from the
+pipeline's own log, and a `--json` shape per command rather than one manifest. Both are
+refused: progress *is* the pipeline's narration, captured; the manifest base keys are fixed
+and asserted. Recorded as **D29–D30**.
+
 ---
 
 ## 9. M6 — Hardening & v1.0  *(P0/P1)*

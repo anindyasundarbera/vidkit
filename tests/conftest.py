@@ -21,10 +21,31 @@ import pytest
 
 _SCRATCH = Path(__file__).resolve().parent.parent / ".pytest-tmp"
 
+#: The external tools a *render* needs. The lean ``pytest`` CI job installs none
+#: of them — it checks Python logic, which is fast and always available — while
+#: the ``build hello-world end to end`` job installs exactly these and renders
+#: for real. A test that reaches the pipeline says so with ``needs_render``, or
+#: it fails in CI for a reason that has nothing to do with the code under test.
+RENDER_TOOLS = ("ffmpeg", "rsvg-convert")
+
+_HAVE_RENDER = all(shutil.which(t) for t in RENDER_TOOLS)
+
 
 def pytest_configure(config) -> None:
     _SCRATCH.mkdir(exist_ok=True)
     config.option.basetemp = str(_SCRATCH)
+    config.addinivalue_line(
+        "markers",
+        "needs_render: reaches the pipeline, so it needs ffmpeg and rsvg-convert")
+
+
+def pytest_collection_modifyitems(config, items) -> None:
+    if _HAVE_RENDER:
+        return
+    skip = pytest.mark.skip(reason="render toolchain not installed (ffmpeg + rsvg-convert)")
+    for item in items:
+        if "needs_render" in item.keywords:
+            item.add_marker(skip)
 
 
 def pytest_unconfigure(config) -> None:
