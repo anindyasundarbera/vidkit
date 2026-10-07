@@ -4,14 +4,14 @@
 > For the phase-wise plan see [FEATURE-ROADMAP.md](FEATURE-ROADMAP.md). For what already
 > happened see [HISTORY.md](HISTORY.md). For why, see [DECISIONS.md](DECISIONS.md).
 >
-> Last updated: **2026-10-07** (M7 merged; M8 next).
+> Last updated: **2026-10-07** (M8 merged; M9 next).
 
 ---
 
 ## Where we are
 
-One branch, one PR, one merge per phase. **M0–M7 are merged to `main`, which is `40cf724`.
-Nothing is in flight.**
+One branch, one PR, one merge per phase. **M0–M8 are merged to `main`. Nothing is in
+flight.**
 
 | Phase | What it made true | Landed |
 |---|---|---|
@@ -23,25 +23,40 @@ Nothing is in flight.**
 | **M5** Agent surface | The job contract: `--json`, `--progress`, `run ACTION`, four MCP tools, a timeout guard. | `7c548de` |
 | **M6** Hardening & v1.0 | Provenance as a first-class action; portability; `1.0.0`. | `6987090` |
 | **M7** Executor & sandbox | A spec can declare commands that run in a real PTY inside a declared sandbox, and the film is proven to contain the recording. | `40cf724` |
+| **M8** Docker & environment lab | A spec can declare a service, **prove** it is serving, film real commands inside the *same* container, and tear it down unconditionally — with the image recorded by digest. | (this merge) |
 
 Full evidence for each is in [HISTORY.md](HISTORY.md); each phase's reasoning is in
-[DECISIONS.md](DECISIONS.md) (D1–D41).
+[DECISIONS.md](DECISIONS.md) (D1–D48).
 
-### M7 in one paragraph
+### M8 in one paragraph
 
-`vidkit/exec.py` and `vidkit/terminal.py` (26 modules), a tenth pipeline stage `exec`
-between `capture` and `narration`, three new `verify` checks, four new guards, a fourth CI
-job, and a permanent example `examples/terminal-demo/`. **467 tests pass** on a full
-toolchain and **428 pass / 39 skip** on a lean one. Its first CI run failed three of five
-jobs, and the fix produced **D41**, which is the most reusable thing the phase left behind:
+`docker` became the third `exec` backend, a declared `environment:` list gained a
+bring-up → **hold-and-prove** readiness → run → log-capture → teardown lifecycle, and
+`verify.json` grew `facts.environments` (image by **digest**, readiness detail, lifetime,
+teardown record) plus a `container` key on every `facts.exec` entry.
 
-> **When a capability gate decides whether an honest build is possible, it must
-> demonstrate the capability, not observe a precondition of it.**
+**The headline is what did *not* change: the stage list.** M8 added a whole backend and a
+resource lifecycle against the same ten stages M7 left, with no new `ExecRequest` field and
+no widened `stream()` signature. That was M7's abstraction being tested, and it held — which
+makes **P5** ("versatility without dilution") a demonstrated constraint rather than an
+aspiration for M9 to inherit.
 
-`shutil.which("bwrap")` observes a precondition. Running one confined command demonstrates
-the capability. That is why availability is now a ~14 ms probe, and why `doctor` tells a
-Ubuntu 24.04 user the truth *before* a build instead of letting them meet a
-`Permission denied` afterwards.
+Two things M8 taught, in the form they will be reused:
+
+> **A capability gate must demonstrate the capability, not observe a precondition of it**
+> (D41). `which docker` observes a client; `docker run --rm hello-world` demonstrates that
+> something can be confined. Docker has *three* rungs — client, daemon, container — and
+> collapsing them into one boolean sends three different problems to one unhelpful sentence
+> (D48).
+
+> **A readiness gate that samples once is not a gate.** Postgres answers `pg_isready` at
+> ~1.30 s against its *bootstrap* server, which is stopped at ~1.45 s; a real query only
+> succeeds from ~1.84 s. Readiness therefore means "succeeded **and kept succeeding** for
+> 0.75 s", and the report distinguishes *never answered* from *answered and stopped* (D43,
+> defect U).
+
+Nine defects were found and fixed on the way (H–L, S, T, U, plus O/P/Q/R); six were in M8's
+own new code and three were pre-existing M7 bugs that only a second backend could expose.
 
 ---
 
@@ -52,81 +67,93 @@ Ubuntu 24.04 user the truth *before* a build instead of letting them meet a
 The version is `1.0.0` in all three places (`pyproject.toml`, `vidkit/__init__.py`,
 `CHANGELOG.md`). Pushing a tag is the point at which the release becomes a claim to the
 world rather than a commit on a branch, and it is the owner's to make. Nothing downstream is
-blocked by waiting: M8 and M9 read the *code*, not the tag.
+blocked by waiting: M9 reads the *code*, not the tag.
 
-A second owner call sits behind it: **the M7 work is in `CHANGELOG.md` under
-`## [Unreleased]`.** If the owner would rather cut `1.1.0`, that is a one-line change;
-folding it back into `1.0.0` would mean the tag and the release notes disagree, which is the
-one thing a CHANGELOG exists to prevent.
+A second owner call sits behind it: **M7 and M8 both sit under `## [Unreleased]` in
+`CHANGELOG.md`.** Cutting `1.1.0` is a one-line change; folding them back into `1.0.0` would
+mean the tag and the release notes disagree, which is the one thing a CHANGELOG exists to
+prevent.
 
 PyPI publication stays **deferred** ([FEATURE-ROADMAP.md](FEATURE-ROADMAP.md) §9) — tagging
 and publishing are different visible acts and only the first was asked for.
 
 ---
 
-## Next: M8 — Docker & environment lab  *(P1)*
+## Next: M9 — Movie mode  *(P1)*
 
-Branch **`phase/m8-docker-lab`** off `40cf724`. See
-[FEATURE-ROADMAP.md](FEATURE-ROADMAP.md) §11. **Purpose:** film a real environment — a
-service starting, a dependency installing, a container's logs — not a description of one.
+Branch **`phase/m9-movie-mode`** off this merge. See
+[FEATURE-ROADMAP.md](FEATURE-ROADMAP.md) §12. **Purpose:** make vidkit able to *tell* a
+story, not only demonstrate a product.
+
+### What the gap actually is
+
+Three things, separable enough to land one at a time:
+
+1. **Stills do not move, and there are no stills that were never a screenshot.** A movie is
+   mostly *declared artwork* — a title card, a photograph, a plate of texture — held, panned,
+   dissolved into the next. Today a still is a capture or a file, fitted to the frame; there
+   is no pan, no cross-dissolve, no sequence.
+2. **Audio is narration or nothing.** `tts.py` produces per-scene WAVs and
+   `ffmpeg.mux_captioned` muxes them. There is no score, no ambience, no per-scene gain, and
+   nothing that **ducks** music under a spoken line. A film scored by mixing a track at a
+   fixed volume is a film where the voice is buried at the chorus.
+3. **Shot length is arithmetic.** Duration is divided by weight. There is no way to say
+   "hold this for four seconds", "change on the beat", or "let the last frame breathe".
 
 ### The shape, before any code
 
-M7 built the trust boundary; M8 spends it. Everything here is a *demonstrated capability*
-(D41), and everything is a *declaration* added to the spec language, never a flag added to
-the runner (D33). Concretely:
+Everything here is an **addition to the spec surface** and, per **P5**, must reuse the ten
+stages that already exist — `data, panels, stills, capture, exec, narration, clips, concat,
+render, verify`. If a feature appears to need an eleventh, the design is wrong and gets
+rethought before it is built. The M8 precedent says this is achievable: a backend *and* a
+resource lifecycle fitted inside ten.
 
-1. **A `docker` backend for `exec`.** It slots in beside `bwrap` and `local` behind the same
-   `ExecRequest`/`ExecResult` pair, so the pipeline, the frame renderer, and the three exec
-   checks do not change at all. If they do change, the M7 abstraction was wrong and that is
-   the finding — not something to work around.
-2. **A probed Docker capability** — `docker run --rm hello-world`, never `which docker`.
-   This is D41 applied to a daemon. `doctor` and `backends_report()` must say which Docker
-   is present and whether it *answers* before a build starts.
-3. **An environment lifecycle in the spec** — bring up, run, always tear down. Teardown must
-   be unconditional: it runs on success, on a failed check, on an interrupt, and after a
-   crash in a stage that never started a container. A leaked container is a host-side bug in
-   a tool that otherwise only writes files. The teardown path needs tests that
-   *deliberately* crash a stage mid-lifecycle.
-4. **Container logs and service health as panel data**, so "the service came up" is
-   *measured* rather than narrated — the same move M7 made for terminal frames.
-5. **Real versions into provenance** — image **digests**, not image tags. A tag is a name
-   that can move; a film that cites one cannot be re-explained next month.
+In the order they should land — each independently verifiable:
+
+1. **Stills that are composed, not just fitted.** A `still` gains a *motion* (`hold`, `pan`,
+   `zoom`, a direction and a span) and a *kind* that is not a screenshot — a title card, a
+   solid, a declared image with typography. The frame renderer already produces SVG per
+   frame; motion is a transform in that SVG, not a new stage. **The honesty rule does not
+   relax:** a movie still is *declared artwork*, and `verify` must be able to say so, exactly
+   as it says "live capture" or "drawn from data".
+2. **Shot timing expressed, not derived.** An explicit `seconds:` on a scene or a shot wins
+   over duration-by-weight; absent, today's behaviour is unchanged. Beats and musical
+   alignment are a *later* refinement of the same field and should not be designed now.
+3. **A real audio mix.** A second `ffmpeg` path that takes N inputs, applies per-scene gain,
+   and ducks the music bus under each narration span using narration's *measured* spans —
+   which I5 ("measured audio is the master clock") already computes. This is a change to
+   `ffmpeg.py` at the `clips`/`concat` boundary; it is not a stage.
 
 ### The risks, named now
 
-- **This is the first phase where a bug can affect the host rather than the output.** The
-  mitigations are not negotiable and are listed in §11: never mount the Docker socket into
-  the sandbox, run unprivileged, hard timeout, forced teardown on every exit path.
-- **Docker is not bubblewrap.** `bwrap` is a syscall that either works or does not. Docker is
-  a daemon with its own state, its own failure modes, and a startup cost, so "available" has
-  at least three distinct meanings — client installed, daemon reachable, image present.
-  Collapsing them into one boolean is how this phase goes wrong.
-- **The probe is expensive.** Unlike `bwrap`'s measured ~14 ms, a `docker run` costs seconds.
-  It cannot sit on the `doctor` happy path unmemoised: decide the caching policy
-  deliberately and write the reason down.
-- **CI.** GitHub's runners have Docker, so the probe is possible — but it is the slowest job
-  yet, and the lean-`PATH` suite must keep skipping every test that needs it. A third marker
-  is likely required and must be applied **independently** of the other two (defect G).
-- **The runner image is moving.** GitHub announced `ubuntu-latest` migrates to Ubuntu 26
-  beginning **2026-10-19**. Every runner fact M7 recorded is a statement about Ubuntu 24.04;
-  do not assume the Docker story survives the move.
+- **This is the phase where output gets *artistic*, and artwork is where honesty rots.** A
+  Ken Burns pan over a fabricated screenshot is still a fabricated screenshot. Every
+  movie-mode feature must state which of the three honest sources it draws from — live
+  capture, measured data, declared asset — and `verify` must check it. Adding `motion:` must
+  not create a fourth category of "rendered from nothing".
+- **The audio mix is where the master clock can break.** I5 says measured audio is the clock.
+  Ducking introduces a second audio path, and it is very easy to make the mix authoritative
+  over narration's measured spans rather than derived *from* them. The spans come first; the
+  mix follows.
+- **`verify` must keep getting cheaper to trust, not more expensive.** Three new fact classes
+  (motion, timing source, audio mix) means three more chances for a check to be emitted only
+  on failure — the defect already fixed twice (E and F). The rule stands: **a check that
+  passes must be written down.**
+- **No new dependency without a stated reason.** `pyte` was refused in M7; an audio-mix
+  library should be refused here too, because `ffmpeg` already does it.
 
 ### Exit
 
-> A spec can bring up a declared environment, film real activity inside it, tear it down
-> unconditionally, and prove the environment's identity in `verify.json`.
+> A spec with **no captures and no provider at all** renders a scored, captioned short film
+> from declared artwork, with expressed timing, and `verify` passes on it — movie mode is
+> provably additive, and the pipeline is still ten stages.
 
 ---
 
-## After M8
-
-**M9 — Movie mode** (§12): richer still kinds, audio beds with ducking, multi-track audio,
-shot timing, narrative shape. Constraint **P5**: it reuses the same stages — *at most* the
-ten that exist after M7. If it needs an eleventh, the design is wrong and gets rethought
-before it is built.
+## After M9
 
 **M10 — Studio surface v2** (§13): stateless verbs become a session an agent can hold open
-and try several takes against.
+and try several takes against — `session_open/close/list`, `session_exec`, take management,
+environment tools over M8's lifecycle, and progress streaming.
 
-One branch, one PR, one merge each — as M0–M7 were done.
+One branch, one PR, one merge each — as M0–M8 were done.

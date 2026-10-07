@@ -434,15 +434,33 @@ def test_resolve_backend_refuses_a_name_it_has_never_heard_of():
 def test_backends_report_says_what_this_host_can_do():
     report = ex.backends_report()
     names = {b["name"] for b in report}
-    # docker is mentioned as a known-but-absent backend, not by backends_report:
-    # it arrives with the environment lab
-    assert names == {"local", "bubblewrap"}
+    assert names == {"local", "bubblewrap", "docker"}
     assert all("available" in b and "detail" in b for b in report)
     # `available` answers "can it run", so it must agree with the refusal that
     # decides whether a spec declaring this backend loads at all.
     bubblewrap = next(b for b in report if b["name"] == "bubblewrap")
     assert bubblewrap["available"] == ex.bwrap_available()[0]
     assert bubblewrap["detail"] != "bwrap(1) not found (apt install bubblewrap)" or not bubblewrap["available"]
+
+
+def test_the_docker_row_separates_the_three_things_available_means():
+    """Client, daemon and runnable container are different answers with different fixes.
+
+    Collapsing them is the specific mistake M8 exists to avoid: "docker is
+    unavailable" is a true sentence that sends an author to the wrong place when
+    the real problem is that the daemon is not running.
+    """
+    docker = next(b for b in ex.backends_report() if b["name"] == "docker")
+    rungs = docker["rungs"]
+    assert set(rungs) == {"client", "daemon", "container"}
+    if rungs["client"]["ok"]:
+        # a client that is present means the daemon was actually asked
+        assert rungs["daemon"]["detail"] != "not asked — the client is missing"
+    else:
+        # no client: the other two rungs must not pretend to have been measured
+        assert rungs["daemon"]["ok"] is False
+        assert rungs["container"]["ok"] is False
+    assert docker["available"] == rungs["container"]["ok"]
 
 
 # --------------------------------------------------------------------------- #
@@ -929,3 +947,41 @@ def test_a_recording_shown_as_one_screen_does_not_claim_a_playback_speed(tmp_pat
     fact = rep.facts["exec"][0]
     assert fact["cast"] == "a.cast"
     assert fact["frames"] is None and fact["playback"] is None
+
+
+@pytest.mark.needs_sandbox
+def test_a_docker_step_that_was_never_started_reports_no_container(tmp_path):
+    """The container name is read from the live environment, not from the spec.
+
+    A spec declaring `backend: docker` and a container that exists are two
+    different facts, and a report that inferred the second from the first would
+    name a container that never ran — the exact shape of evidence this repo
+    forbids. A host-backed step, and a docker step whose environment never came
+    up, must both report no container rather than a plausible one.
+    """
+    from vidkit.assembler import Assets, _exec_request, make_context
+    from vidkit.verify import verify_output
+
+    steps = [{"label": "a", "cmd": "ls"}]
+    spec = sp.load_spec(_yaml(tmp_path, steps=steps))
+    ctx = make_context(tmp_path / "video.yaml", tmp_path / "out")
+    ctx.spec = spec
+    assets = Assets()
+    assets.exec_results["a"] = ex.ExecResult(
+        request=_exec_request(spec.exec[0], ctx), exit_code=0, backend="local")
+    rep = verify_output(ctx, assets, {0: "hello"})
+    assert rep.facts["exec"][0]["container"] == ""
+
+
+@pytest.mark.needs_sandbox
+def test_a_spec_says_once_which_environment_a_command_runs_in(tmp_path):
+    """The one rule both the verifier and the provenance writer read.
+
+    They each used to walk the step list themselves. Two walks of the same list
+    are two chances to disagree, and a report that disagrees with itself about
+    which database a command touched is worse than one that says nothing.
+    """
+    steps = [{"label": "a", "cmd": "ls"}]
+    spec = sp.load_spec(_yaml(tmp_path, steps=steps))
+    assert spec.exec_environment("a") == ""
+    assert spec.exec_environment("nope") == ""

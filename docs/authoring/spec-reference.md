@@ -25,6 +25,7 @@ then `ROOT/..`, then the current directory.
 | `captures` | — | list | screen recordings |
 | `charts` | — | list | data panels |
 | `exec` | — | mapping | commands to run and film in a real terminal |
+| `environment` | — | list | services that `backend: docker` commands run inside |
 | `guard` | — | mapping | acceptance checks |
 
 ---
@@ -328,7 +329,8 @@ Declares the commands a build may run and film in a real terminal. A shot names 
 | `label` | ✅ | string | — | referenced by `shots[].exec`; must be unique |
 | `cmd` | ✅ | string or list | — | string = a shell script; list = an argv run with no shell |
 | `cwd` | — | string | `"."` | working directory, relative to the spec's directory |
-| `backend` | — | `"bubblewrap"` \| `"local"` | `"bubblewrap"` | isolation; `bwrap(1)` must be on `PATH` |
+| `backend` | — | `"bubblewrap"` \| `"docker"` \| `"local"` | `"bubblewrap"` | isolation; see [exec guide](../capture/exec-guide.md) §4 |
+| `environment` | — | string | — | **required by, and only honoured by, `backend: docker`**: which declared environment the command runs inside |
 | `network` | — | bool | `false` | asks to open the network; needs `exec.allow_network` too |
 | `timeout` | — | number | `60` | seconds; must be `> 0` and `≤ max_timeout` |
 | `expect_exit` | — | int or list[int] | `[0]` | exit codes that count as a passing build |
@@ -339,6 +341,10 @@ Declares the commands a build may run and film in a real terminal. A shot names 
 
 There is no `shell:` field: the string/list form of `cmd` already says whether the command
 is a script, and a third spelling would only allow the question to be answered twice.
+
+A `backend: docker` step must name an `environment:`; a step of any other backend must not.
+Both are refused at load time, because the alternative is a container that starts, runs
+nothing, and is torn down — work done for a frame that never mentions it.
 
 ```yaml
 exec:
@@ -351,7 +357,48 @@ exec:
     - label: broken
       cmd: ["pytest", "--nonsense"]
       expect_exit: [4]
+    - label: migrate
+      cmd: ["python", "-m", "app.migrate"]
+      backend: docker
+      environment: db
 ```
+
+---
+
+## `environment[]`
+
+Declares services that `backend: docker` steps run **inside**. Environments are a property
+of the `exec` stage, not a stage of their own — the pipeline still has ten stages. Full
+guide: [exec guide](../capture/exec-guide.md) §10.
+
+| Field | Required | Type | Default | Meaning |
+|---|---|---|---|---|
+| `name` | ✅ | string | — | referenced by `exec.steps[].environment`; must be unique |
+| `image` | ✅ | string | — | the image to run; a digest is recorded for what actually ran |
+| `command` | — | string or list | the image's default | overrides the image's `CMD` |
+| `env` | — | mapping | `{}` | passed to the container; the container does **not** inherit the host's |
+| `ports` | — | string or list | `[]` | `HOST:CONTAINER` publications. Omit unless the host must reach in |
+| `volumes` | — | string or list | `[]` | `HOST:CONTAINER` mounts, added after the read-only project bind |
+| `ready` | — | string or list | — | an argv run inside the container until it **holds** ready |
+| `ready_timeout` | — | number | `90` | how long `ready` may take to hold |
+| `timeout` | — | number | `180` | how long the container may live in total |
+| `network` | — | bool | `false` | `false` means `--network none` |
+
+`ready:` is an **argv**, never a shell line: `ready: ["sh", "-c", "…"]` is how you say "run a
+shell", and `ready: ["pg_isready", "-U", "postgres"]` is how you say "run this program". The
+report records how long the answer *held*, not merely that it arrived once.
+
+```yaml
+environment:
+  - name: db
+    image: postgres:16-alpine
+    env: {POSTGRES_PASSWORD: demo}
+    ready: [pg_isready, -U, postgres]
+    ready_timeout: 90
+```
+
+An environment that no `exec` step references is refused at load time — it would start a
+container, put it on the machine, and never show it.
 
 ---
 

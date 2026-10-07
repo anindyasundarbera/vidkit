@@ -78,7 +78,7 @@ vidkit/
 │    context.py           Context/Assets: the paths every stage shares
 │    provider.py          provider plugin loading (datasets/panels/stills/register)
 │    capture.py           Playwright capture, action DSL, assert-before-shot
-│    exec.py              declared execution: PTY, bubblewrap sandbox, policy, records
+│    exec.py              declared execution: PTY, bubblewrap/docker sandbox, policy, records
 │    terminal.py          ANSI/CSI screen model + .cast recording -> frames
 │    panels.py            11 built-in panel kinds + register()
 │    svg.py               SVG primitives + the default Theme/PanelDoc
@@ -112,10 +112,12 @@ vidkit/
 │    test_provenance.py   the build record: shape, refusals, read-only (R-F8)
 │    test_exec.py         the exec contract: policy, results, spans (R-E)
 │    test_terminal.py     the screen model: CSI, SGR, cast round-trip, SVG
+│    test_docker.py       the environment lifecycle: readiness, binding, teardown (R-E6)
 ├─ examples/
 │    hello-world/         offline CI fixture (no browser, no voice, no network)
 │    capture-kit/         a local fixture server the capture probe films
 │    terminal-demo/       a recorded, sandboxed terminal session (exec probe)
+│    docker-demo/         a real Postgres, written to and read back in one container
 ├─ docs/
 │    modules.yaml         machine-readable doc route table (agents resolve by stem)
 │    README.md            doc router
@@ -126,7 +128,7 @@ vidkit/
 │    operations/          cli-reference, mcp-server, job-contract, troubleshooting, extracting-to-new-repo
 │    guides/              recipes, first-video
 │    plan/                PLAN.md, HISTORY.md, FEATURE-ROADMAP.md, DECISIONS.md, OPENMONTAGE.md
-└─ .github/workflows/     CI (lint + pytest + hello-world + capture + exec probes)
+└─ .github/workflows/     CI (pytest + hello-world + capture + exec + docker probes)
 ```
 
 ---
@@ -137,19 +139,37 @@ vidkit/
 
 `python3` (not `python`) is what exists here. `ffmpeg`, `rsvg-convert`, and `git` are present.
 `playwright`/`piper` are **optional** extras and are not required for the core test suite.
+`docker` and `bwrap` may or may not be present on this machine; the suite is written to
+skip honestly when they are not.
 
 ```bash
 pip install -e ".[dev]"          # core + pytest
-pytest tests -q                  # 359 tests, ~6 min with a toolchain; 337 in 2 s without one
+python3 -m pytest tests -q       # 518 tests, ~8 min with every toolchain; 445 in ~6 s without
 ```
 
-**Two test environments, one suite.** CI runs `pytest` twice on a machine with no
-`ffmpeg` and no `rsvg-convert` at all — that job checks Python logic and nothing else —
-and separately builds `examples/hello-world` on a machine that has both. A test that
-reaches the pipeline must be marked `@pytest.mark.needs_render`; `tests/conftest.py`
-registers the marker and skips those tests when the toolchain is absent. Without the
-marker a test passes here and fails in CI for a reason unrelated to the code — which
-happened, in M5, to four tests.
+**Three capabilities, three independent markers.** CI runs `pytest` twice on a machine
+with no `ffmpeg`, no `rsvg-convert`, and — measured, not assumed — no usable `bubblewrap`,
+and separately builds `examples/hello-world` on a machine that has the render tools. A
+test that needs a capability must carry the *matching* marker; `tests/conftest.py` probes
+each one and skips independently:
+
+| Marker | Probed by | Needed for |
+|---|---|---|
+| `needs_render` | `ffmpeg`+`rsvg-convert` on `PATH` | anything that reaches the pipeline |
+| `needs_sandbox` | *running* `bwrap` around `/bin/true` | `exec` steps on the default backend |
+| `needs_docker` | *running* `docker run --rm hello-world` | loading or building a `backend: docker` spec |
+
+**The markers must stay independent.** Two of these were added after a CI failure, and both
+times the failure was the same shape: a test passed locally because *this* machine happens to
+have a capability, and failed in CI for a reason unrelated to the code. A marker that asks
+"is the toolchain complete?" instead of "is *this* capability usable?" reintroduces exactly
+that bug. Note also that **a Docker spec cannot even be *loaded* without Docker** — the
+load-time policy check calls `resolve_backend("docker")` — so `@needs_docker` is required on
+tests that only parse one.
+
+Corollary for `doctor`: whether the machine is *complete* is a verdict, not a crash. Assert
+`manifest["ok"] == manifest["doctor"]["ok"]`, never `ok is True`, or the test only holds on
+a fully equipped box.
 
 Corollary for `doctor`: whether the machine is *complete* is a verdict, not a crash. Assert
 `manifest["ok"] == manifest["doctor"]["ok"]`, never `ok is True`, or the test only holds on
@@ -158,7 +178,7 @@ a fully equipped box.
 ### 4.2 Commands that must keep working
 
 ```bash
-pytest tests -q                                            # 359 passed
+python3 -m pytest tests -q                                 # 518 passed
 python3 -m vidkit doctor  examples/hello-world/video.yaml  # exit 0
 python3 -m vidkit plan    examples/hello-world/video.yaml  # scene plan + estimate
 python3 -m vidkit build   examples/hello-world/video.yaml  # mp4 + srt + verify.json
@@ -171,7 +191,9 @@ python3 -m vidkit docs --index                             # JSON route table
 1. **Read the invariant table (§2) before proposing a design.** If a design breaks an
    invariant, say so and propose an alternative instead.
 2. Make surgical, complete changes. Do not refactor unrelated code.
-3. **Run `pytest tests -q`.** It is fast — there is no excuse not to.
+3. **Run `python3 -m pytest tests -q`.** Run the *lean* form while iterating; run the full
+   form before you claim a phase is done. Never run two `pytest` processes at once — they
+   share `.pytest-tmp/` and will fail each other spuriously.
 4. If you touched the pipeline, **build the hello-world fixture**:
    `vidkit build examples/hello-world/video.yaml`. It must produce an `.mp4`, a
    `narration.srt`, and a `verify.json` with **all checks passing**, using only `ffmpeg`
@@ -223,7 +245,40 @@ python3 -m vidkit docs --index                             # JSON route table
   error. Assert *the file is unchanged*, never a specific errno.
 - **`bwrap(1)` may exist where the render toolchain does not** (CI's `pytest` jobs are exactly
   this case), so exec tests are split: pure-Python policy/renderer tests run everywhere,
-  anything that starts a process is `@pytest.mark.needs_render`.
+  anything that *starts* a process is `@pytest.mark.needs_sandbox` (a *probed* sandbox, not a
+  binary on `PATH`).
+- **A Docker spec cannot even be *loaded* without Docker.** `_validate_exec` calls
+  `check_policy` → `resolve_backend("docker")`, which raises when no container can run. Any
+  test that so much as parses a `backend: docker` spec carries `@pytest.mark.needs_docker`.
+- **The project directory is bind-mounted into a container read-only** (`${root}:/work:ro`).
+  A test command that writes must target `/tmp` or a declared volume; writing to `/work`
+  fails for a reason that looks like the engine's fault.
+- **`docker exec -t` demands a TTY on *Docker's own* stdin.** With stdin at `/dev/null` it
+  fails with `cannot attach stdin to a TTY-enabled container because stdin is not a
+  terminal`, exit 125 (defect O). `_docker_argv`/`_launch_argv` take a keyword-only
+  `tty: bool = True`; the filmed path passes `True`, every internal probe passes `False`.
+- **The argv *builders* name the binary; `_docker_run` prefixes it.** Handing a builder's
+  output to `_docker_run` produced `docker docker exec …` (defect S). Builders answer "what
+  is the argv **of** this command" — launch them with `subprocess`/`Popen` directly.
+- **`docker exec` does not inherit the client's environment.** Declared `env:` must be
+  forwarded as `-e` on every `exec`, and the client's own `HOME` must be *unset* or its
+  unreadable `~/.docker/config.json` warning is filmed as though the container said it.
+  A container is told what it needs; the host leaks nothing (defect T).
+- **Readiness must hold, not merely succeed once.** `pg_isready` answers at ~1.30 s against
+  Postgres' bootstrap server, which is stopped at ~1.45 s. `READY_HOLD = 0.75`. And when the
+  gate fails, keep the "it *did* answer" evidence: a failure must not erase it (defect U).
+- **The binding is keyed by the command *label*, never the environment name.**
+  `bind_step(label, state)` is the only writer; `unbind_environments()` is called from
+  `_stop_environments`, once, after the last step.
+- **A container is removed in a `finally`, and teardown is idempotent.** A second pass must
+  `return state` *unchanged* — overwriting the first record or re-emitting the "removed"
+  line makes one container look like two (defect K).
+- **`_docker_workdir` must `normpath` its `posixpath.join`.** `cwd: '.'` otherwise yields
+  `/work/.`, and a `../` escape must still be refused (defect R).
+- **A capability report names the missing rung, not the missing tool.** Docker has three —
+  client, daemon, container — with three different fixes. One boolean sends all three to the
+  same unhelpful sentence (D48). And a gate must *demonstrate*, never observe a precondition
+  (**D41**).
 
 ---
 
@@ -262,37 +317,44 @@ Use exactly these, so they are greppable:
 
 ## 6. Current position (snapshot)
 
-> Snapshot taken 2026-10-07 (after the M7 merge). If this disagrees with
+> Snapshot taken 2026-10-07 (after the M8 merge). If this disagrees with
 > [docs/plan/PLAN.md](docs/plan/PLAN.md), trust PLAN.md.
 
 - **Repo state:** public on GitHub (`anindyasundarbera/vidkit`), default branch `main`,
-  CI green. **M0–M7 are merged**; `main` is `40cf724`. Nothing is in flight.
-- **Tests:** `python3 -m pytest tests -q` → **467 passed in ~377 s** with `ffmpeg` +
-  `rsvg-convert` present, **428 passed / 39 skipped** without them. Run the lean
-  form while iterating — it is two orders of magnitude cheaper and it is what CI's `pytest`
-  jobs actually do. There are **two** skip markers and they are **independent**:
-  `needs_render` (ffmpeg + rsvg-convert) and `needs_sandbox` (a sandbox that really starts).
-  A test that needs one is not skipped by the presence of the other — that mistake is
-  defect G, and it cost a CI run.
+  CI green. **M0–M8 are merged.** Nothing is in flight.
+- **Tests:** `python3 -m pytest tests -q` → **518 passed in ~470 s** with every toolchain
+  present, **445 passed / 73 skipped** without. Run the lean form while iterating — it is
+  two orders of magnitude cheaper and it is what CI's `pytest` jobs actually do.
+  **Never run two `pytest` processes at once**: they share `.pytest-tmp/` (gitignored) and
+  will fail each other spuriously.
+- **Three capabilities, three independent markers:** `needs_render`, `needs_sandbox`,
+  `needs_docker`. See §4.1 — a marker that asks "is the toolchain complete?" rather than
+  "is *this* capability usable?" is the bug the markers exist to prevent (defect G).
 - **Engine:** host-free. **10 stages** (`data, panels, stills, capture, exec, narration,
   clips, concat, render, verify`), **26 modules**, 11 panel kinds, **15 MCP tools**,
-  3 resources, 25 docs across 7 modules.
-- **Active phase:** **M8 — Docker & environment lab**
-  ([docs/plan/FEATURE-ROADMAP.md](docs/plan/FEATURE-ROADMAP.md) §11). If this line disagrees
+  3 resources, docs across 7 modules. M8 added a backend and a resource lifecycle
+  **without adding a stage** — if a future phase needs an eleventh, that is the signal to
+  rethink the design, not to append (P5).
+- **Active phase:** **M9 — Movie mode**
+  ([docs/plan/FEATURE-ROADMAP.md](docs/plan/FEATURE-ROADMAP.md) §12). If this line disagrees
   with [docs/plan/PLAN.md](docs/plan/PLAN.md), trust PLAN.md.
-- **Biggest remaining gap:** there is a **sandboxed terminal** but no **Docker lab**, so a
-  recorded command cannot yet run against a declared container image, and there is no
-  environment lifecycle to bring one up and tear it down. That is M8. Its capability gate
-  must be a `docker run --rm hello-world`, not a `which docker` (**D41**).
+- **Biggest remaining gap:** vidkit can *demonstrate* but not yet *narrate*. Stills are
+  captures or declared images with no motion, audio is narration only — no score, no
+  ambience, no ducking — and shot length is duration-divided-by-weight rather than chosen.
+  That is M9, and it must land as an *addition* to the existing ten stages.
 - **The one item needing an owner decision:** the public **`v1.0.0` tag** — the code is at
-  `1.0.0` and merged, but the tag itself is a visible release and has not been pushed. The
-  M7 work sits under `## [Unreleased]` in the CHANGELOG; whether that becomes `1.1.0` at
-  release time is a second owner call.
+  `1.0.0` and merged, but the tag itself is a visible release and has not been pushed. M7
+  and M8 both sit under `## [Unreleased]` in the CHANGELOG; whether that becomes `1.1.0` or
+  `1.2.0` at release time is a second owner call.
+- **Host-safety contract (M8).** A container may never mount the Docker socket, runs
+  unprivileged, has a hard timeout, and is torn down in a `finally` on every exit path.
+  Teardown is *reported*, not assumed (`facts.environments[].teardown`). Do not weaken this
+  to make a build pass.
 - **Dated risk:** GitHub announced **`ubuntu-latest` migrates to Ubuntu 26 beginning
-  2026-10-19**. Every runner fact recorded for M7 is a statement about Ubuntu 24.04 — the
-  AppArmor restriction, the missing bubblewrap, and the `sudo sysctl` step in `exec-probe`.
-  Re-verify before trusting them; the `exec-probe` step prints its sysctl value before and
-  after precisely so the log is self-explaining.
+  2026-10-19**. Every runner fact recorded for M7/M8 is a statement about Ubuntu 24.04 —
+  the AppArmor restriction, the missing `bubblewrap`, the `sudo sysctl` step in `exec-probe`,
+  and the working Docker daemon. Re-verify before trusting them; both probe jobs print the
+  conditions they found precisely so the log is self-explaining.
 
 ---
 

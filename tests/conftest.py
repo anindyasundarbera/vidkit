@@ -20,6 +20,18 @@ Two capability markers live here, and they are independent on purpose:
     a command declared ``backend: bubblewrap`` will actually run confined. This
     is *probed*, not looked up, because an installed ``bwrap`` that the kernel
     refuses is not a sandbox — see ``vidkit.exec.bwrap_available``.
+
+``needs_docker``
+    a container can actually *run* here, which is a stricter question than
+    whether ``docker(1)`` is on ``PATH``. Probed by running one, for the reason
+    above and for the reason ``exec-guide.md`` gives: Docker's "available" has
+    three meanings and only the third one is the one a spec means.
+
+The three are applied independently and must stay that way. An earlier version
+of this file returned early once the render tools were present, which silently
+disabled the sandbox marker on exactly the machines where it mattered least —
+the CI runner has ffmpeg and no usable bwrap. That is defect G one layer up;
+capability markers do not compose by implication.
 """
 
 from __future__ import annotations
@@ -58,6 +70,22 @@ def _probe_sandbox() -> bool:
 _HAVE_SANDBOX = _probe_sandbox()
 
 
+#: Whether a container can actually run here. Probed, never looked up: on a
+#: machine with the client installed and the daemon down, ``which docker`` says
+#: yes and every declared command fails — the same lie ``bwrap_available`` was
+#: rewritten to stop telling.
+def _probe_docker() -> bool:
+    try:
+        from vidkit.exec import docker_available
+    except Exception:  # pragma: no cover
+        return False
+    ok, _ = docker_available()
+    return ok
+
+
+_HAVE_DOCKER = _probe_docker()
+
+
 def pytest_configure(config) -> None:
     _SCRATCH.mkdir(exist_ok=True)
     config.option.basetemp = str(_SCRATCH)
@@ -68,6 +96,11 @@ def pytest_configure(config) -> None:
         "markers",
         "needs_sandbox: declares `backend: bubblewrap`, so it needs a sandbox "
         "that can actually run (probing bwrap, not merely finding it on PATH)")
+    config.addinivalue_line(
+        "markers",
+        "needs_docker: declares an `environment:` and `backend: docker`, so it "
+        "needs a container to actually run (probing with `docker run`, not "
+        "merely finding docker on PATH)")
 
 
 def pytest_collection_modifyitems(config, items) -> None:
@@ -75,11 +108,17 @@ def pytest_collection_modifyitems(config, items) -> None:
         reason="render toolchain not installed (ffmpeg + rsvg-convert)")
     sandbox_skip = pytest.mark.skip(
         reason="no usable sandbox on this host (bwrap missing or blocked)")
+    docker_skip = pytest.mark.skip(
+        reason="no usable docker on this host (client, daemon or runtime)")
     for item in items:
+        # three independent conditions, three independent skips: each is a
+        # separate fact about the host and none implies another
         if not _HAVE_RENDER and "needs_render" in item.keywords:
             item.add_marker(render_skip)
         if not _HAVE_SANDBOX and "needs_sandbox" in item.keywords:
             item.add_marker(sandbox_skip)
+        if not _HAVE_DOCKER and "needs_docker" in item.keywords:
+            item.add_marker(docker_skip)
 
 
 def pytest_unconfigure(config) -> None:
