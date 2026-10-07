@@ -1157,9 +1157,9 @@ jobs:
                   assert report["ok"] is True, [c for c in report["report"]["checks"]
                                                 if not c["ok"]]
                   await call(client, "session_close", {"session": sid})
-                  return built, report["report"]
+                  return built, report["report"], three
 
-          built, report = anyio.run(go)
+          built, report, three = anyio.run(go)
 
           # The claim the whole job rests on, measured rather than re-read. Take 1
           # painted the page black and take 2 red, so if the render re-shot the page
