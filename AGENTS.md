@@ -207,7 +207,7 @@ a fully equipped box.
 ### 4.2 Commands that must keep working
 
 ```bash
-python3 -m pytest tests -q                                 # 781 passed, 1 flaky Chromium screenshot failure
+python3 -m pytest tests -q                                 # 781 passed, 1 Chromium screenshot failure
 python3 -m vidkit doctor  examples/hello-world/video.yaml  # exit 0
 python3 -m vidkit plan    examples/hello-world/video.yaml  # scene plan + estimate
 python3 -m vidkit build   examples/hello-world/video.yaml  # mp4 + srt + verify.json
