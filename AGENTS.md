@@ -317,9 +317,20 @@ python3 -m vidkit docs --index                             # JSON route table
 - **ffmpeg cannot open every path this session, and cannot open `/tmp`.** Rendering a
   fixture under `/tmp` fails with `No such file or directory` while the same file under the
   repo works. Tests that render must use `tmp_path` (pytest's root is inside the repo).
+- **`amix` cannot be used for ducking; the mix is built from `amerge`.** `amix` normalises by
+  the number of inputs, so the bed's level moves when narration starts — the duck would be
+  measured against a moving floor. `Ffmpeg.mix` instead runs both branches through `aformat`
+  (same rate, layout and sample format), then
+  `amerge=inputs=2,pan=stereo|c0=c0+c2|c1=c1+c3,alimiter=limit=0.97`. `_duck_expr` returns
+  `max(1-(1-d)*hold, 1e-6)` rather than `0`, and the bed is `-stream_loop -1` with `afade`
+  in/out. Measured depth is **13.7 dB** for `duck_db=-14.0, ramp=0.25`.
+- **`score_db` is two units in one key.** `_score_db()` interprets `≤ 0` as decibels and a
+  positive value as a linear multiplier, because both spellings are natural to write and only
+  one of them can be right.
 - **A silent cut takes the `_score_only` path in `Ffmpeg.mix`.** Nothing is merged, so nothing
   is ducked — but the returned `MixResult.ducked` is `False` and the span list is empty. Never
-  recompute `duck_seconds` from the spec; report what the mix returned.
+  recompute `duck_seconds` from the spec; report what the mix returned. `MixResult.__slots__`
+  is `("out", "seconds", "ducked", "spans")`.
 
 ---
 
@@ -358,12 +369,12 @@ Use exactly these, so they are greppable:
 
 ## 6. Current position (snapshot)
 
-> Snapshot taken 2026-10-10 (after the M9 work, before its merge). If this disagrees with
+> Snapshot taken 2026-10-10 (after M9's merge). If this disagrees with
 > [docs/plan/PLAN.md](docs/plan/PLAN.md), trust PLAN.md.
 
 - **Repo state:** public on GitHub (`anindyasundarbera/vidkit`), default branch `main`,
-  CI green. **M0–M8 are merged** (M8 = PR #9 → `63ad046`, PR #10 → `9d3385b`). **M9 is
-  complete on `phase/m9-movie-mode`, unmerged.**
+  CI green. **M0–M9 are merged** (M8 = PR #9 → `63ad046`; PR #10 → `9d3385b`; **M9 = PR #11
+  → `1894ec9`**).
 - **Tests:** `python3 -m pytest tests -q` → **610 passed in ~534 s** with every toolchain
   present, **531 passed / 79 skipped** without. Run the lean form while iterating — it is
   two orders of magnitude cheaper and it is what CI's `pytest` jobs actually do.
@@ -379,7 +390,7 @@ Use exactly these, so they are greppable:
   3 resources, docs routed across 7 modules (49 stems). M8 added a backend and a resource
   lifecycle, and M9 a whole movie mode, **without adding a stage** — if a future phase needs
   an eleventh, that is the signal to rethink the design, not to append (P5).
-- **Active phase:** **M9 is done; M10 is next**
+- **Active phase:** **M9 is merged; M10 is next**
   ([docs/plan/FEATURE-ROADMAP.md](docs/plan/FEATURE-ROADMAP.md) §13). If this line disagrees
   with [docs/plan/PLAN.md](docs/plan/PLAN.md), trust PLAN.md.
 - **What M9 added:** shots can move (`motion:`), the engine can draw a card or a solid from

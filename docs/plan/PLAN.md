@@ -4,14 +4,13 @@
 > For the phase-wise plan see [FEATURE-ROADMAP.md](FEATURE-ROADMAP.md). For what already
 > happened see [HISTORY.md](HISTORY.md). For why, see [DECISIONS.md](DECISIONS.md).
 >
-> Last updated: **2026-10-10** (M9 complete and awaiting review; M10 next).
+> Last updated: **2026-10-10** (M9 merged to `main` (`1894ec9`); M10 next).
 
 ---
 
 ## Where we are
 
-One branch, one PR, one merge per phase. **M0–M8 are merged to `main` (`9d3385b`). M9 is
-complete on `phase/m9-movie-mode` and awaiting review.**
+One branch, one PR, one merge per phase. **M0–M9 are merged to `main` (`1894ec9`).**
 
 | Phase | What it made true | Landed |
 |---|---|---|
@@ -24,7 +23,7 @@ complete on `phase/m9-movie-mode` and awaiting review.**
 | **M6** Hardening & v1.0 | Provenance as a first-class action; portability; `1.0.0`. | `6987090` |
 | **M7** Executor & sandbox | A spec can declare commands that run in a real PTY inside a declared sandbox, and the film is proven to contain the recording. | `40cf724` |
 | **M8** Docker & environment lab | A spec can declare a service, **prove** it is serving, film real commands inside the *same* container, and tear it down unconditionally — with the image recorded by digest. | `63ad046` |
-| **M9** Movie mode | A film with **no capture, no provider and no browser**: a drawn title card, a drawn field, declared artwork that moves, an expressed clock, and a looping score — with `verify` measuring the picture rather than restating the spec. | *this PR* |
+| **M9** Movie mode | A film with **no capture, no provider and no browser**: a drawn title card, a drawn field, declared artwork that moves, an expressed clock, and a looping score — with `verify` measuring the picture rather than restating the spec. | `1894ec9` |
 
 Full evidence for each is in [HISTORY.md](HISTORY.md); each phase's reasoning is in
 [DECISIONS.md](DECISIONS.md) (D1–D52).
@@ -124,8 +123,8 @@ None of these block the work; each has a default that will be taken if nobody sa
 3. **Run the two suites before every commit.** They answer different questions:
 
    ```bash
-   python3 -m pytest tests -q                         # full: ~500 s, ~620 tests, needs ffmpeg+rsvg
-   PATH=/tmp/leanbin python3 -m pytest tests -q      # lean: ~5 s, no ffmpeg/rsvg/bwrap/docker
+   python3 -m pytest tests -q                         # full: ~535 s, 610 tests, needs ffmpeg+rsvg
+   PATH=/tmp/leanbin python3 -m pytest tests -q      # lean: ~6 s, 531 passed / 79 skipped, no tools
    ```
 
    The lean run must use exactly that `PATH` — appending `:$PATH` re-exposes the real tools
