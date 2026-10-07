@@ -22,7 +22,7 @@ render. The report is written to `OUT/_build/verify.json`.
 | `timeframe consistent with spec` | every window the narration states matches the resolved timeframe | script + SRT + spec |
 | `every declared command ran` | each `exec.steps[]` entry produced a recorded run | `assets.exec_results` |
 | `every command exited as declared` | the observed exit code is in the step's `expect_exit` | `assets.exec_results` |
-| `commands ran sandboxed` | no `exec` step ran under `local` | `assets.exec_results` |
+| `commands ran sandboxed` | no `exec` step ran under `local` — the confining backends are read from the engine, so a container counts | `assets.exec_results` |
 | `frames are the declared size` | the produced film is `project.size` in pixels | ffmpeg |
 
 The `no mock mode referenced` check exists because a script may legitimately *say* "we never
@@ -73,7 +73,21 @@ timeframes](../authoring/stories-and-timeframes.md)
     "timeframe": {"start": "2026-09-09", "end": "2026-10-06", "days": 28,
                   "as_of": "2026-10-06", "source": "spec", "floating": false},
     "window_claims": [{"raw": "the last 28 days", "days": 28, "exact": false,
-                       "start": null, "end": null, "end_anchor": null}]
+                       "start": null, "end": null, "end_anchor": null}],
+    "exec": [
+      {"label": "write", "cmd": ["psql", "-c", "…"], "backend": "docker",
+       "container": "vidkit-db-10e98a0eb4e", "exit_code": 0, "expect_exit": [0],
+       "expected": true, "seconds": 0.088, "cast": "write.cast",
+       "frames": null, "playback": null}
+    ],
+    "environments": [
+      {"name": "db", "image": "postgres:16-alpine",
+       "image_digest": "sha256:721873c3…", "ready": true,
+       "ready_detail": "`docker exec` of the declared readiness command answered for 0.98s without a single failure: … accepting connections",
+       "seconds": 2.663,
+       "teardown": {"attempted": true, "stopped": true, "removed": true,
+                    "detail": "container vidkit-db-10e98a0eb4e stopped and removed"}}
+    ]
   },
   "checks": [
     {"name": "runtime within window", "ok": true, "detail": "260.70s within [180, 300]"},
@@ -155,3 +169,4 @@ vidkit build SPEC || { echo "video failed verification"; exit 1; }
 - [`narration-and-captions.md`](../authoring/narration-and-captions.md) — where the text comes from
 - [`stories-and-timeframes.md`](../authoring/stories-and-timeframes.md) — the window contract behind R-F7
 - [`capture-guide.md`](../capture/capture-guide.md) — why a capture may not have run
+- [`exec-guide.md`](../capture/exec-guide.md) — commands, environments, and what "sandboxed" counts

@@ -1119,3 +1119,117 @@ runner fact in the table above is a statement about Ubuntu 24.04. When the image
 AppArmor restriction may change shape and the `sudo sysctl` step may become a no-op — or
 unnecessary. The `exec-probe` step prints the sysctl value *before* and *after* for exactly
 this reason: the log alone should say what happened.
+
+---
+
+## 2026-10-09 — M8: the environment lab (Docker as a first-class backend)
+
+**Branch:** `phase/m8-docker-lab` off `7e46276` (PR #8's merge).
+**Goal (FEATURE-ROADMAP §11):** a spec can declare a *service* — a container — and run
+commands *inside* it, so a demo whose claim is "step 1 wrote a row and step 2 read it back"
+is a claim about one real database. Plus the `env`/`ports`/`volumes`/`ready` contract, and
+`doctor` reporting the three Docker questions separately.
+
+### What landed
+
+| Area | Change |
+|---|---|
+| `vidkit/exec.py` | `EnvSpec` / `EnvState`; `docker_client`, `docker_daemon`, `docker_available`, `docker_rungs`, `image_digest`, `_docker_argv`, `_docker_create_argv`, `_docker_run`, `_docker_workdir`, `_docker_volume_args`; `environment_up`, `_await_ready`, `_docker_probe_command`, `container_health`, `container_logs`, `capture_logs`, `environment_down`, `environments_running`; `bind_step` / `unbind_environments`; `_env_for`'s docker branch; `CONFINING_BACKENDS`; `READY_HOLD`, `DOCKER_*`, `PROBE_TIMEOUT` |
+| `vidkit/spec.py` | `EXEC_BACKENDS` + `docker`; `Environment`; `Exec.environment`; `Spec.environments` / `Spec.environment()` / **`Spec.exec_environment(label)`**; `_environment()`; `_validate_exec()` environment checks |
+| `vidkit/assembler.py` | `Assets.environments`; the `_exec_stage` split (`_start_environments` / `_run_exec_steps` / `_capture_environment_logs` / `_stop_environments`); `_env_spec`; `_env_of`; per-step `bind_step`; unconditional teardown |
+| `vidkit/verify.py` | `_container_of(spec, assets, result)`; `facts.exec[].container`; the `facts.environments` block; `commands ran sandboxed` reads `exec_mod.CONFINING_BACKENDS` |
+| `vidkit/reports.py` | the docker `doctor` row + `_image_list()`; `_backends_line()`; `_sandbox_needs(spec)` |
+| `vidkit/provenance.py` | `commands` gained the image/digest and the environment each command ran in |
+| `tests/` | **`test_docker.py`** (~50 tests); `conftest.py`'s third independent marker `needs_docker`; two `test_exec.py` tests pinning `exec_environment` |
+| `examples/docker-demo/` | Postgres 16-alpine, written to and read back inside **one** container, torn down on every exit path |
+| `.github/workflows/ci.yml` | the **`docker-probe`** job (fifth) — capability ladder, engine gate, build, artifact assertions, leak check |
+| docs | `exec-guide.md` **§11 Environments**; `spec-reference.md`'s `environment[]` section; `verification.md`'s two new fact blocks; this entry; **D42–D48** |
+
+### The defect list — nine found, all in code written during this phase
+
+This phase's most valuable output is not the feature; it is the list of ways the feature was
+wrong before it was right. Each was found by running the thing, not by reading it.
+
+| # | What was wrong | How it was found | Fix |
+|---|---|---|---|
+| **H** | `AttributeError: 'EnvState' object has no attribute 'image'` in `_start_environments` | first end-to-end build | `state.spec.image` |
+| **I** | Readiness was a **single sample**, and Postgres answers `pg_isready` against a *bootstrap* server ~150 ms before the real one is up | measured `pg_isready` / `SELECT 1` timings by hand | `READY_HOLD = 0.75 s` → **D43** |
+| **J** | `verify`'s sandbox check hard-coded `bubblewrap` | the docker fixture failed its own check | `CONFINING_BACKENDS` in the engine → **D42** |
+| **K** | A crash between `docker run` and `bind_step` **leaked a container**; teardown covered only the happy path | inspected `docker ps -a` after a refusal | nested `try/finally`; `started` recorded pre-readiness → **D45** |
+| **L** | `_start_environments` ignored its own new `started` parameter | the teardown test | `state.__dict__.update(got.__dict__)` |
+| **S** | `backend: docker` ran **`docker docker exec …`** — the argv builder already began with `docker` and the runner prepended another | the docker suite: exit 125, `unknown shorthand flag: 'w'` | probe through `_launch_argv` → **D44** |
+| **T** | The container **never received the declared environment** — `docker exec` does not inherit the client's, and only `req.env` was forwarded | `test_..._does_not_inherit_the_hosts_home_or_paths` | `_docker_argv` emits `-e` per `_env_for(...)` entry → **D47** |
+| **U** | A **single** readiness failure both cleared `ready_since` *and* overwrote `ready_detail`, making the "answered but never held" branch unreachable | reasoning about the branch while writing its test | key the branch on `answered_at` → **D43** |
+| **O/P/Q/R** | `docker exec -t` needs a terminal on *Docker's* stdin (`_docker_run` passes `DEVNULL`) → every probe exit 125; plus three test-harness faults (`textwrap.dedent` silently nesting YAML; `narration.inline` must be a mapping; `cwd: "."` → `/work/.`) | the docker suite | `tty=False` keyword on `_launch_argv`/`_docker_argv`; harness rewritten; `posixpath.normpath` |
+
+**Two of these were invisible to the unit tests by construction.** S was masked because the
+filmed path uses `Popen` directly and only the *probe* went through the broken builder; O was
+masked because the probe is the only place a TTY was requested on a non-terminal stdin. Both
+were caught only by the end-to-end fixture — which is the argument for keeping one.
+
+**A fifth issue, found in CI, not in the code:** `doctor` with **no spec** did not report the
+sandbox at all, and on a sandbox-less host printed "bwrap cannot run" **once per command**.
+Fixed, and pinned by tests.
+
+### Evidence at the end of the phase
+
+```
+python3 -m pytest tests -q                          → 518 passed in 470.54 s
+env -i PATH=<lean> python3 -m pytest tests -q      → 445 passed, 73 skipped in 5.54 s
+python3 -m pytest tests/test_docker.py -q          → 50 passed in 90.13 s
+python3 -m pytest tests/test_exec.py tests/test_docker.py tests/test_core.py -q
+                                                   → 156 passed in 100.17 s
+vidkit build examples/docker-demo/video.yaml       → ok: true, 11/11 checks pass
+docker ps -a --filter name=vidkit-                 → (empty)
+```
+
+The `docker-probe` job's extracted steps were run locally, and its verification step printed:
+
+```
+DOCKER OK — 3 commands in container vidkit-db-10e98a0eb4e, all sandboxed, service removed
+```
+
+`facts.environments[0]` from that build:
+
+```json
+{"name": "db", "image": "postgres:16-alpine",
+ "image_digest": "sha256:721873c3…",
+ "ready": true,
+ "ready_detail": "`docker exec` of the declared readiness command answered for 0.98s
+                  without a single failure: /var/run/postgresql:5432 - accepting connections",
+ "seconds": 2.663,
+ "teardown": {"attempted": true, "stopped": true, "removed": true,
+              "detail": "container vidkit-db-10e98a0eb4e stopped and removed"}}
+```
+
+The image is recorded **by digest**, because a tag is a name that can move — the same rule as
+D21's snapshot recording the request it answers.
+
+### The CI job's capability ladder, and why it prints before it gates
+
+`docker-probe` walks four rungs in order — install the client if absent, start the daemon if
+down, relax the socket mode, then let the **engine** decide via `docker_rungs()` +
+`docker_available(refresh=True)` — and it prints its own ladder *before* gating, because a red
+job should say which rung broke rather than only that the gate closed. This is D48 applied to
+CI: the failure names the missing rung.
+
+### What this phase deliberately did **not** build
+
+- **No `--rm`.** Containers are removed by the build, on every path, so "removed" is
+  attributable to vidkit — and a crashed build leaves something to inspect. **D45.**
+- **No `docker compose`, no Dockerfiles.** An `environment` is one image and one command.
+  Anything more is a build system, and the story would move out of the spec.
+- **No `ports:` publishing to the host.** Ports exist so a browser capture could later reach a
+  service *inside* one network; publishing to the host would make the video depend on what
+  else is bound on the machine.
+- **No eleventh pipeline stage.** The environments are started, used and torn down inside the
+  existing `exec` stage, per FEATURE-ROADMAP §12 constraint **P5**.
+
+### Still owed to the owner
+
+- **The `v1.0.0` tag has still not been pushed**, and M7+M8 now both sit under
+  `## [Unreleased]`. Whether that becomes `1.1.0` is the owner's call.
+- **Docker is not required to pass the suite.** `needs_docker` skips on a host without it, so
+  the docker tests are evidence of correctness *where Docker exists*, not of portability.
+- **`ubuntu-latest` moves to Ubuntu 26 on 2026-10-19.** The docker job's rungs are stated for
+  the current image; the job prints them, so the log will say what changed.

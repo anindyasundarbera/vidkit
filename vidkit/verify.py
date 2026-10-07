@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any
 
 from .context import Context
+from . import exec as exec_mod
 from .timeframe import find_window_claims, timeframe_matches
 
 
@@ -67,6 +68,19 @@ def _collect_text(ctx: Context, scenes_text: dict[int, str], srt: Path | None,
         parts.append(result.stdout)
         parts.append(result.stderr)
     return "\n".join(parts)
+
+
+def _container_of(spec, assets, result) -> str:
+    """The name of the container a recorded command ran in, or ``""``.
+
+    Read from the live environment state, which is the only thing that knows a
+    container was actually started. A ``backend: docker`` step is not enough: the
+    spec declaring a container and a container existing are different facts, and
+    ``verify`` must not report the first as if it were the second.
+    """
+    envs = getattr(assets, "environments", None) or {}
+    state = envs.get(spec.exec_environment(result.request.label))
+    return getattr(state, "container_name", "") if state is not None else ""
 
 
 def verify_output(ctx: Context, assets, scenes_text: dict[int, str]) -> Report:
@@ -203,6 +217,17 @@ def verify_output(ctx: Context, assets, scenes_text: dict[int, str]) -> Report:
         rep.add("timeframe consistent with spec", not bad,
                 "; ".join(bad) if bad else f"matches {tf.label()}")
 
+    # the environments that were declared, and what became of them. Reported as
+    # facts for the same reason the commands are: "the database was up for 2.6s
+    # and was removed afterwards" is a claim a reader can check against their own
+    # `docker ps`, and the container id and image digest are what they would need
+    # to check it. A build that leaked a container says so here.
+    environments = getattr(assets, "environments", None) or {}
+    if environments:
+        rep.facts["environments"] = [
+            state.to_dict() for state in environments.values()
+        ]
+
     # the commands that ran, and the sandbox they ran in (R-E5). Two things are
     # proved here that nothing else can: that every command did what the spec said
     # it would, and that isolation was *real* rather than merely requested.
@@ -226,6 +251,10 @@ def verify_output(ctx: Context, assets, scenes_text: dict[int, str]) -> Report:
                 "truncated": dict(result.truncated),
                 "cast": (casts[result.request.label].name
                          if result.request.label in casts else None),
+                # Which *container* it ran in, by name. Two runs of the same image
+                # are two different systems, and a demo whose whole claim is "step 2
+                # reads back what step 1 wrote" is a claim about one of them.
+                "container": _container_of(spec, assets, result),
                 # `None` frames means the recording was not shown as a moving take
                 # (a single screen, or an effect that took it as a still) — which is
                 # a different claim from "replayed at 1.0x" and must read differently.
@@ -255,11 +284,18 @@ def verify_output(ctx: Context, assets, scenes_text: dict[int, str]) -> Report:
         # unconfined on the machine — a spec that asks for a sandbox and gets one
         # anyway only because the host happened to have it has proved nothing, so
         # this reads what the runner actually used, not what the spec asked for.
+        #
+        # "Confined" is a list, not a constant, and it is read from the engine rather
+        # than spelled here. A docker-backed command runs inside a container with the
+        # image's own filesystem and no view of the host's, which is a stronger
+        # boundary than bwrap's rather than an absence of one; a check that only knew
+        # the word "bubblewrap" would call it a lie.
         unconfined = [r.request.label for r in exec_results.values()
-                      if r.backend != "bubblewrap"]
+                      if r.backend not in exec_mod.CONFINING_BACKENDS]
+        used = sorted({r.backend for r in exec_results.values()})
         rep.add("commands ran sandboxed", not unconfined,
                 f"not sandboxed: {unconfined}" if unconfined
-                else f"{len(exec_results)} command(s) under bubblewrap")
+                else f"{len(exec_results)} command(s) under {', '.join(used)}")
 
     # provenance (R-F8): what this *is*, as opposed to whether it is honest. It is
     # reported as a fact rather than a check — there is no passing or failing an

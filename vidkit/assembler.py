@@ -70,6 +70,10 @@ class Assets:
     # frame, and there is no speed to report — which must not be confused with a
     # recording that was replayed at 1.0x. Recorded only when frames are carried.
     exec_take_frames: dict[str, int] = field(default_factory=dict)
+    #: environment name -> what became of it. Carried out of the stage so that
+    #: verify and the provenance row can report the container that was used
+    #: rather than the container the spec hoped for.
+    environments: dict[str, _exec.EnvState] = field(default_factory=dict)
     artifacts: dict[str, Artifact] = field(default_factory=dict)   # name -> real bytes
     scene_audio: list[_tts.SceneAudio] = field(default_factory=list)
     video_track: Path | None = None
@@ -323,7 +327,8 @@ def _write_provenance(ctx: Context, action: str, stages: list[str],
     # A *refused* command is left out: nothing executed, so there is no fact to
     # record, and `verify` is where the refusal is reported as a failure.
     commands = [
-        _exec_fact(result, assets.exec_casts.get(result.request.label))
+        _exec_fact(result, assets.exec_casts.get(result.request.label),
+                   assets.environments.get(_env_of(spec, result.request.label)))
         for result in (assets.exec_results.values() if assets else ())
         if not result.refused
     ]
@@ -371,6 +376,11 @@ def _exec_request(step, ctx: Context) -> _exec.ExecRequest:
     )
 
 
+def _env_of(spec: Spec, label: str) -> str:
+    """The environment a command label runs in, or ``""``. One place, one rule."""
+    return spec.exec_environment(label)
+
+
 def _exec_stage(ctx: Context, assets: Assets) -> None:
     """Run every declared command, record it, and draw the frames it produced.
 
@@ -378,7 +388,152 @@ def _exec_stage(ctx: Context, assets: Assets) -> None:
     from the same in-memory events, so the picture and the ``.cast`` cannot tell
     different stories. Every byte is redacted as it arrives — see
     :meth:`vidkit.secrets.Secrets.redact_bytes`.
+
+    Declared environments are started before the first command and torn down in a
+    ``finally``, so the container is removed on every exit path — a successful
+    build, a failed check, an interrupt, or an exception from anywhere in the
+    stage (R-E6). Nothing in the loop below is trusted to remember to clean up.
     """
+    started: list[_exec.EnvState] = []
+    try:
+        _start_environments(ctx, assets, started)
+        try:
+            _run_exec_steps(ctx, assets)
+            _capture_environment_logs(ctx, assets)
+        finally:
+            _stop_environments(ctx, assets, started)
+    finally:
+        # Belt and braces, and not redundant. `_start_environments` appends to
+        # ``started`` the moment a container exists — *before* it waits for
+        # readiness — so a crash between those two points still knows what to
+        # remove. Without this the very first build of this example leaked a
+        # Postgres container into `docker ps`: the inner `finally` was never
+        # reached, because the exception happened above it. A teardown contract
+        # that only covers the happy path is not a contract.
+        _stop_environments(ctx, assets, started)
+
+
+def _start_environments(ctx: Context, assets: Assets,
+                        started: list[_exec.EnvState]) -> None:
+    """Bring up each declared environment once, for the whole exec stage.
+
+    An environment that cannot start is not fatal to the *build*: it is recorded,
+    its commands are refused, and ``verify`` says so. That separation matters,
+    because the honest failure is "the database never came up", which is a fact
+    about the run, not "the render crashed", which is a fact about the tool.
+
+    ``started`` is appended to as soon as a container exists, not when the
+    environment is declared ready, so that a failure during the wait is still
+    cleanable.
+    """
+    used = {e.environment for e in ctx.spec.exec if e.environment}
+    for env in ctx.spec.environments:
+        if env.name not in used:
+            continue        # refused at load time; belt and braces
+        spec_env = _env_spec(env)
+        # Registered before the container is awaited: from this point on something
+        # may exist, and a crash during the wait must still be able to remove it.
+        state = _exec.EnvState(spec=spec_env)
+        started.append(state)
+        try:
+            got = _exec.environment_up(spec_env, root=ctx.root)
+        except (_exec.ToolError, SpecError) as exc:
+            got = _exec.EnvState(spec=spec_env, up=False, up_error=str(exc))
+            ctx.warn(f"environment {env.name}: {exc}")
+        else:
+            if got.up:
+                status = "ready" if got.ready else "up"
+                ctx.info(f"environment {env.name}: {status} "
+                         f"[{got.spec.image}, {got.seconds:.2f}s]")
+            else:
+                ctx.warn(f"environment {env.name}: did not start — "
+                         f"{got.up_error}")
+        state.__dict__.update(got.__dict__)
+        assets.environments[env.name] = state
+        if state.container_id:
+            # bound per *step label*, because that is what the runner looks up
+            for step in ctx.spec.exec:
+                if step.environment == env.name:
+                    _exec.bind_step(step.label, state)
+
+
+def _env_spec(env) -> _exec.EnvSpec:
+    """Translate the spec's ``Environment`` into the runtime's ``EnvSpec``.
+
+    The same split as :func:`_exec_request`: what an author writes stays in
+    ``spec.py``, and what the runtime honours stays in ``exec.py``, so the spec
+    cannot reach a field the runner never reads.
+    """
+    return _exec.EnvSpec(
+        name=env.name,
+        image=env.image,
+        command=list(env.command),
+        env=dict(env.env),
+        ports=list(env.ports),
+        volumes=list(env.volumes),
+        timeout=env.timeout,
+        ready=list(env.ready),
+        ready_timeout=env.ready_timeout,
+        network=env.network,
+    )
+
+
+def _capture_environment_logs(ctx: Context, assets: Assets) -> None:
+    """Write each environment's logs to disk as evidence, before teardown.
+
+    ``--rm`` is withheld precisely so this is possible, and the logs are the thing
+    that says a service actually started rather than merely stayed running. This is
+    the *happy-path* call; :func:`_stop_environments` repeats it on every exit path,
+    where a build that died mid-stage would otherwise lose the one piece of
+    evidence explaining why.
+    """
+    for state in assets.environments.values():
+        if not state.container_id:
+            continue
+        try:
+            _exec.capture_logs(state, ctx.execs / f"env-{state.spec.name}.log")
+        except _exec.ToolError as exc:
+            ctx.warn(f"environment {state.spec.name}: could not read logs — {exc}")
+
+
+def _stop_environments(ctx: Context, assets: Assets,
+                       states: list[_exec.EnvState]) -> None:
+    """Tear every environment down, whatever happened above.
+
+    Never raises. A teardown failure is reported and recorded, because the one
+    thing worse than a container that will not stop is a build that hides it.
+
+    The logs are measured here as well as on the happy path, and *before* the
+    container is stopped, because this is the last moment at which a container
+    that already died still has its output to give.
+    """
+    for state in states:
+        try:
+            _exec.capture_logs(state, ctx.execs / f"env-{state.spec.name}.log")
+            was_removed = state.teardown.get("removed", False)
+            _exec.environment_down(state)
+        except Exception as exc:                            # noqa: BLE001
+            state.teardown = {"attempted": True, "stopped": False,
+                              "removed": False, "detail": str(exc)}
+            ctx.warn(f"environment {state.spec.name}: teardown failed — {exc}")
+        else:
+            if not state.teardown.get("removed"):
+                ctx.warn(f"environment {state.spec.name}: still present — "
+                         f"{state.teardown.get('detail', '')}")
+            elif not was_removed:
+                # Announced once, by whichever pass actually removed something.
+                # The outer `finally` deliberately runs this a second time, and a
+                # second "removed" line would read like a second container. The
+                # verdict is "did this pass change anything", checked against the
+                # record as it stood *before* the attempt — not "does the record
+                # say it was removed", which stays true for ever afterwards.
+                ctx.info(f"environment {state.spec.name}: removed "
+                         f"[{state.teardown.get('detail', '')}]")
+    _exec.unbind_environments()
+
+
+def _run_exec_steps(ctx: Context, assets: Assets) -> None:
+    """The command loop proper — one request, one recording, one set of frames."""
     for step in ctx.spec.exec:
         request = _exec_request(step, ctx)
         events: list[tuple[float, bytes]] = []
@@ -472,14 +627,22 @@ def _exec_frames(ctx: Context, step, events: list[tuple[float, bytes]]) -> list[
     return frames
 
 
-def _exec_fact(result: _exec.ExecResult, cast: Path | None) -> dict:
+def _exec_fact(result: _exec.ExecResult, cast: Path | None,
+               state: _exec.EnvState | None = None) -> dict:
     """The audit row for one command — what ran, what it did, and where the proof is."""
-    return {
+    fact = {
         **result.to_dict(),
         "cast": str(cast.name) if cast else None,
         "expects": list(result.request.expect_exit),
         "argv": result.request.argv(),
     }
+    if state is not None:
+        # Which *container* it ran in, by name as well as by id. The image alone
+        # does not identify a system: two builds of the same image are two
+        # different databases, and a demo about writing a row and reading it back
+        # is a claim about one of them.
+        fact["container"] = state.container_name
+    return fact
 
 
 def _resolve_ref(ctx: Context, ref: str) -> Path | None:

@@ -10,7 +10,7 @@
 >
 > For what is happening now see [PLAN.md](PLAN.md). For what happened see [HISTORY.md](HISTORY.md).
 
-**Last revised:** 2026-10-07 · **Status:** M0–M7 done · M8 next
+**Last revised:** 2026-10-07 · **Status:** M0–M8 done · M9 next
 
 ---
 
@@ -32,9 +32,12 @@ external capable agent can drive to produce software demo videos *and* movies, w
    way to record a real terminal session, a real container, or a real multi-step interaction.
 
 Phase **M1** fixed (1) — story and timeframe both landed. Phase **M7** fixed the first half of
-(2): a spec can now run declared commands in a sandbox and film the recording. Phases **M8–M9**
-finish it, with containers and multi-step interaction. Everything between was making what
-exists trustworthy.
+(2): a spec can now run declared commands in a sandbox and film the recording. Phase **M8**
+finished the second half for *environments*: a spec can declare a service, prove it is
+serving, film real commands inside it, and tear it down unconditionally. What remains is
+**M9** — making the output narratively versatile rather than only demonstrative — and
+**M10** — turning the verbs into a session. Everything between M0 and here was making what
+already existed trustworthy.
 
 ---
 
@@ -66,7 +69,7 @@ M5  Agent surface               ← DONE, P0         make it drivable
 M6  Hardening & v1.0            ← DONE, P0/P1      make it shippable
 ───────────── v1.0 line ─────────────
 M7  Executor & sandbox         ← DONE, P0           terminal, files, isolation
-M8  Docker & environment lab          P1           real containers on camera
+M8  Docker & environment lab   ← DONE, P1         real containers on camera
 M9  Movie mode                        P1           narrative, not just demo
 M10 Studio surface v2                 P1           session-oriented MCP tools
 ```
@@ -348,7 +351,7 @@ sandbox a property of the *spec*, which `verify` can then attest to.
 | Item | Detail |
 |---|---|
 | `Executor` protocol | `run(cmd) → {stdout, stderr, exit_code, duration}`; `stream(cmd)` for live output. |
-| Backends | `local` (no isolation, dev only), `bubblewrap` (Linux namespaces, no daemon), `docker` (delegates to M8). |
+| Backends | `local` (no isolation, dev only), `bubblewrap` (Linux namespaces, no daemon), and — delivered by M8 — `docker`. |
 | Spec surface | A scene shot kind `exec:` declaring the command, the backend, which streams to record, and the expected exit code. |
 | PTY recording | Record an authentic terminal via a **PTY** and render it as a real terminal — `asciinema` cast → `xterm.js`, or direct frame capture. |
 | Policy | Declared working dir, env allow-list, timeout, output caps, and a **hard prohibition on network unless declared**. |
@@ -394,13 +397,16 @@ and the first stage added to the pipeline since M0:
   `commands ran sandboxed` (guarded by `require_sandbox`, which defaults **true**).
 - **`examples/terminal-demo/`** — a counting shell script, an argv command, and a declared
   failure, built with no browser and no voice, probed by a fourth CI job (`exec-probe`) that
-  installs `bubblewrap` and asserts the recording is really in the film.
+  installs `bubblewrap`, lifts the Ubuntu 24.04 `apparmor_restrict_unprivileged_userns`
+  gate, and asserts the recording is really in the film. (The `docker-probe` job was added
+  by M8 alongside it.)
 - **`docs/capture/exec-guide.md`** — the author-facing guide.
 
 Evidence: `docs/plan/HISTORY.md`. Design consequences: **D33–D41**.
 
-**Deferred.** The `docker` backend is explicitly M8's — `resolve_backend()` knows the name
-and refuses it when it is not installed, so the seam is real rather than a promise. Filming a
+**Deferred, since delivered by M8.** The `docker` backend was M8's; `resolve_backend()`
+knew the name and refused it when it was not installed, so the seam was real rather than a
+promise, and §11 landed it without changing this list. Filming a
 PTY with a *moving* camera effect (a zoom over a recording) is deliberately not supported:
 the recording already moves, and two motions fighting is a picture that lies about neither.
 
@@ -431,7 +437,7 @@ capability, not observe a precondition of it** (D41).
 
 ---
 
-## 11. M8 — Docker & environment lab  *(P1)*
+## 11. M8 — Docker & environment lab  *(P1)* — **DONE**
 
 **Purpose.** Film a real environment — a service starting, a dependency installing, a
 container's logs — not a description of one.
@@ -447,6 +453,17 @@ down unconditionally, and prove the environment's identity in `verify.json`.
 **Risks.** This is the phase where a bug can affect the *host*, not just the output.
 Containers must never mount the Docker socket into the sandbox, must run unprivileged, and
 must have a hard timeout with forced teardown on every exit path.
+
+**What landed.** `docker` is a third `exec` backend (`CONFINING_BACKENDS` is a set read from
+the engine, so the verifier cannot mistake a container for an unconfined run); a declared
+`environment:` list with a bring-up → **hold-and-prove** readiness → run → log-capture →
+teardown lifecycle that runs in a `finally`; `facts.environments` (image **by digest**,
+readiness detail, lifetime, teardown record) plus a `container` key on every `facts.exec`
+entry; a third probed capability marker `needs_docker`; `examples/docker-demo/`; and a sixth
+CI job. **The pipeline stayed at ten stages** — the abstraction M7 built held, which was the
+phase's real test. Nine defects were found and fixed on the way (H–L, S, T, U, plus O/P/Q/R);
+six of them were in *this* phase's new code and three were pre-existing M7 bugs that only a
+second backend could expose. Evidence: [HISTORY.md](HISTORY.md).
 
 ---
 
@@ -471,8 +488,11 @@ emotional rather than informational. The spec surface grows; the pipeline does n
 **Exit.** A spec with no captures and no provider at all renders a scored, captioned short
 film with real assets, and `verify` passes on it.
 
-**Constraint (P5).** Movie mode must reuse the same 9 stages. If it needs a tenth stage, the
-design is wrong and should be rethought before it is built.
+**Constraint (P5).** Movie mode must reuse the **same ten stages that exist after M7/M8**
+(`exec` sits between `capture` and `narration`). If it needs an eleventh, the design is wrong
+and should be rethought before it is built. M8 is the proof that this constraint is
+satisfiable: it added a whole backend and a resource lifecycle without touching the stage
+list.
 
 ---
 

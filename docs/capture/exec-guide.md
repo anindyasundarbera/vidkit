@@ -24,7 +24,7 @@ scenes:
 ```
 
 `vidkit build video.yaml` runs `pytest -q` under `bwrap(1)`, records it, and renders the
-recording. `verify.json` gains a `commands` section naming the command, its exit code, its
+recording. `verify.json` gains an `exec` section naming the command, its exit code, its
 duration, and the backend it ran in.
 
 ---
@@ -54,7 +54,8 @@ exec:
     - label: test             # required; the only handle a shot has
       cmd: "pytest -q"        # required; string = shell script, list = argv
       cwd: "."                # relative to the spec's directory
-      backend: bubblewrap     # bubblewrap | local
+      backend: bubblewrap     # bubblewrap | docker | local
+      environment: db         # required by, and only honoured by, `backend: docker`
       network: false          # asks to open the network; see §5
       timeout: 60             # must be <= max_timeout
       expect_exit: [0]        # a build passes if the exit code is in this list
@@ -62,6 +63,24 @@ exec:
       reads: ["/srv/data"]    # extra read-only mounts
       cols: 100               # recorded terminal width
       rows: 30                # recorded terminal height
+```
+
+A spec may also declare **environments** — services a command runs inside. They are a
+property of the `exec` stage rather than a stage of their own, and they are covered in
+§10:
+
+```yaml
+environment:
+  - name: db
+    image: postgres:16-alpine
+    command: ["postgres", "-c", "fsync=off"]
+    env: {POSTGRES_PASSWORD: demo}
+    ports: ["5432:5432"]
+    volumes: ["./seed.sql:/docker-entrypoint-initdb.d/seed.sql"]
+    ready: [pg_isready, -U, postgres]
+    ready_timeout: 90
+    timeout: 180
+    network: false
 ```
 
 ### `cmd`: script or argv, never a surprise
@@ -109,6 +128,7 @@ on. With no `at:`, the shot ends on the final screen.
 | Backend | Isolation | When |
 |---|---|---|
 | `bubblewrap` | Linux user/mount/PID/network namespaces via `bwrap(1)`. System roots are mounted **read-only**; only the working directory is writable. No daemon, no root. | the default |
+| `docker` | a container from an image the spec declares. Its own filesystem, its own PID namespace, no view of the host beyond the read-only project bind. | when the command needs a **service** — a database, a broker, a second machine — and needs it to survive across commands; see §10 |
 | `local` | none — the command runs unconfined on this host | when you genuinely need the host, and say so |
 
 `bubblewrap` is the default because it is a single unprivileged binary. If the sandbox
@@ -189,10 +209,14 @@ Every declared command lands in the report:
 | every command exited as declared | an observed exit code is not in `expect_exit` |
 | commands ran sandboxed | a command ran under `local` while `require_sandbox` is true |
 
-Alongside the checks, the `commands` section of the report carries the argv, the resolved
-working directory, the backend, the exit code, and the measured duration. Secrets found in
-the environment are redacted, and the redaction is **length-preserving** so the cast stays
-playable.
+Alongside the checks, the `exec` section of the report carries the argv, the resolved
+working directory, the backend, the container it ran in, the exit code, and the measured
+duration. Secrets found in the environment are redacted, and the redaction is
+**length-preserving** so the cast stays playable.
+
+The report also carries an `environments` section — one entry per declared environment, with
+the image **by digest**, whether it became ready and for how long, how long it lived, and how
+it was torn down. See §10.
 
 ---
 
@@ -220,3 +244,116 @@ playable.
 | `exec step 'x' is not declared` | a shot names a label no step defines | check spelling — labels are the only handle a shot has |
 | `declares no exec: steps` | a shot uses `exec:` but the spec has no `exec:` block | add the block |
 | the video shows one blank frame | the recording was empty | the command produced no output; check the cast beside the build |
+| `docker(1) is not on PATH` | no Docker client | install it; the error names the rung that failed |
+| `the docker daemon does not answer` | Docker installed, no daemon | start it — this is a service to start, not an install |
+| `the image could not be pulled` | the image name is wrong, or there is no network | check the tag; a digest is recorded in the report |
+| `is not a terminal` / exit 125 | Docker was asked for a TTY with no stdin to attach it to | a vidkit bug, not a spec bug — please report it |
+
+---
+
+## 10. Environments: services a command runs inside
+
+An `exec` step runs *a command*. Some commands need something to talk to — a database with a
+row in it, a broker with a queue, a second machine with a broken resolver. Declaring that
+thing as an **environment** is what makes the difference between filming a program and
+filming a system.
+
+```yaml
+environment:
+  - name: db
+    image: postgres:16-alpine
+    env: {POSTGRES_PASSWORD: demo, POSTGRES_DB: demo}
+    ready: [pg_isready, -U, postgres]
+    ready_timeout: 90
+    timeout: 180
+
+exec:
+  steps:
+    - {label: write, cmd: [...], backend: docker, environment: db}
+    - {label: read,  cmd: [...], backend: docker, environment: db}
+```
+
+Both steps run **inside the same container**. That is the whole point: a `read` that runs in a
+*new* container would find an empty database, and the video would be a claim about a system
+that never existed. `verify.json` records the container name on every command so the
+sharing is visible rather than assumed.
+
+### The lifecycle
+
+1. **start** — one container per environment, created from the image, labelled so that a
+   leaked one can be found and removed by name.
+2. **await readiness** — see below.
+3. **bind** — each declared command is bound to the environment it named, so the command, its
+   readiness probe, and its log capture all address the same container.
+4. **run** — every `backend: docker` step is `docker exec`'d into it.
+5. **capture logs** — `docker logs` is the container's recorded output, kept beside the cast.
+6. **teardown** — in a `finally`, so a failed check, a crash, or an interrupt still removes
+   it. Teardown is reported, not assumed: `verify.json` says whether the container was
+   stopped and removed, and with what detail.
+
+### Readiness must *hold*
+
+`ready:` is an argv (never a shell line) that vidkit runs inside the container until it
+succeeds. One success is **not** enough. A container that has just started often answers
+before it is actually serving — Postgres is the canonical example: `pg_isready` returns 0 at
+~1.3 s against the *bootstrap* server, which is shut down at ~1.45 s, and a real `SELECT 1`
+only succeeds from ~1.84 s. A readiness gate that sampled once would declare the database up
+and hand the next command a server on its way down.
+
+vidkit therefore requires the command to succeed **and keep succeeding for 0.75 s**
+(`READY_HOLD`). The report distinguishes the two failure shapes, because they mean different
+things:
+
+| `ready_detail` says | What happened |
+|---|---|
+| *answered for 0.98s without a single failure* | ready, and the hold is a measured fact |
+| *answered once, then stopped holding … its last try exited 1* | the service was there and went away — the exact bootstrap-server trap |
+| *nothing became ready within 90s* | it never answered at all |
+
+### Rules that keep it honest
+
+- **The environment's own environment is the environment's.** A container does **not**
+  inherit the host's `PATH`, `HOME`, `LANG` or `PS1`; it gets the image's, plus exactly what
+  the spec declared. vidkit removes `HOME` from the *client's* environment for the same
+  reason in reverse — otherwise the client's unreadable `~/.docker/config.json` prints a
+  warning, and that warning would be filmed as if the container had said it.
+- **A command, its readiness probe, and its logs all address the same container.** Otherwise
+  the gate would be gating something else.
+- **The project is bound read-only.** A command cannot edit the repository it was filmed
+  from. Writes belong in `/tmp` or a declared volume.
+- **No network unless the environment asks.** `--network none` is the default.
+- **`--rm` is deliberately absent.** A self-removing container cannot be asked for its logs
+  afterwards, and the logs are evidence.
+- **An environment nothing references is refused at load time** — not warned about. A
+  container that starts and is torn down without appearing in any frame would be work done
+  for nothing, and would put a service on the machine for no reason.
+- **The image is identified by digest** in the report. A tag is a name that can move; the
+  digest is what actually ran.
+
+### What "sandboxed" means for a container
+
+`backend: local` still means unconfined, and `require_sandbox: true` still fails it. But
+"confined" is not a synonym for `bubblewrap`: a container has the image's own filesystem, its
+own PID namespace, and no view of the host beyond the read-only bind, which is a *stronger*
+boundary than namespaces around a host process. The verifier reads the set of confining
+backends from the engine rather than spelling one name, precisely so that a Docker run is
+not reported as a lie.
+
+Docker is probed by **running** a container, never by looking for the binary: a client on
+`PATH` with a dead daemon is a client that cannot confine anything. `vidkit doctor` reports
+the three Docker questions separately, because they have three different fixes:
+
+```
+docker       client:  /usr/bin/docker
+             daemon:  daemon answers (server 29.7.2)
+             container: `docker run --rm hello-world` succeeded
+```
+
+### What this is not, again
+
+- **Not a Docker socket on the sandbox.** vidkit drives Docker from the *host* side; nothing
+  it films ever sees `/var/run/docker.sock`.
+- **Not a compose replacement.** There is no dependency graph, no scaling, no healthcheck
+  DSL. One environment is one container, and the commands that name it share it.
+- **Not a way to reach the host network.** `ports:` publishes to the host on purpose; a step
+  that only talks to the container needs no port at all, and the demo example declares none.

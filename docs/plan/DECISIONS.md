@@ -879,6 +879,13 @@ a future portability bug has a documented baseline to be measured against.
 | D39 | A recording keeps its measured pace; only the last frame is a remainder | DECIDED |
 | D40 | An attestation must be emitted when it passes, and a `null` means one thing | DECIDED |
 | D41 | A backend is available when it *runs*, not when it is installed | DECIDED |
+| D42 | Docker is a confining backend, and the set of confining backends lives in the engine | DECIDED |
+| D43 | Readiness must hold, not merely answer once | DECIDED |
+| D44 | One environment is one container, addressed through one binding keyed by the command label | DECIDED |
+| D45 | Teardown is unconditional and idempotent, and its record is evidence | DECIDED |
+| D46 | The engine owns the rule for "which environment does this command run in" | DECIDED |
+| D47 | A container is told what it needs; the client's `HOME` must not leak into the film | DECIDED |
+| D48 | A capability report names the rung that is missing, not that the capability is absent | DECIDED |
 
 ---
 
@@ -1097,3 +1104,232 @@ with a gate that calls the probe rather than looking for a file.
 honest build is possible, it must demonstrate the capability, not observe a precondition of
 it.* The same question will be asked of Docker in M8, and the answer there must be a
 `docker run --rm hello-world`, not a `which docker`.
+
+---
+
+## D42 — Docker is a *confining* backend, and the set of confining backends lives in the engine
+
+**2026-10-09.** Context: M8, found while wiring `backend: docker` into the `commands ran
+sandboxed` check.
+
+**Decision.** `vidkit/exec.py` exports `CONFINING_BACKENDS = frozenset({"bubblewrap",
+"docker"})`, and `verify.py` reads it (`from . import exec as exec_mod`) instead of naming a
+backend. The check's question is "did every command run *confined*?", and the engine is the
+only module that knows what confinement means.
+
+**Alternatives.**
+
+- *Hard-code `backend != "local"`* — rejected. It is right today by accident: the field is an
+  enum of backends, not a taxonomy of boundaries, and the next unconfined backend (`host`,
+  `none`) would silently pass a check whose whole purpose is to fail in that case.
+- *Hard-code `{"bubblewrap", "docker"}` in `verify.py`* — rejected. Two lists in two files is
+  a drift waiting for exactly the release where nobody re-reads the verifier.
+- *Ask the `ExecResult` whether it was confined* — appealing, but it lets a result assert its
+  own honesty. The verifier should classify from the declaration + engine knowledge, not from
+  a field the runner supplied.
+
+**Consequences.** A container counts as confined for `commands ran sandboxed`, which is a
+*stronger* claim than the bubblewrap path: the command sees the image's own filesystem, its
+own PID namespace, and the project as a **read-only** bind. The honesty rules of D35 are
+unchanged — a spec that says `backend: local` still says so in plain words and still fails
+`require_sandbox`. Adding a backend now means one edit, in the one place that knows.
+
+---
+
+## D43 — Readiness must *hold*, not merely answer once
+
+**2026-10-09.** Context: M8, defect I, measured directly against `postgres:16-alpine`.
+
+**Decision.** `ready:` (`READY_HOLD = 0.75 s`) is not a single successful sample. Nothing runs
+until the declared readiness argv has succeeded on **every** attempt for a continuous
+0.75 s. A single success that is not sustained is a *distinct, named* outcome — "the
+readiness command answered once, then stopped holding" — not a generic timeout.
+
+**Alternatives.**
+
+- *One successful sample* — rejected, and this is the defect. Measured timings for
+  `pg_isready -U postgres` against a fresh `postgres:16-alpine`:
+
+  | t (s) | what is true |
+  |---|---|
+  | ~1.30 | `pg_isready` exits 0 — but against the **bootstrap** server |
+  | ~1.45 | the bootstrap server is **stopped**, the real one not yet up |
+  | ~1.84 | a real `SELECT 1` first succeeds |
+
+  A one-shot gate opens a window of roughly 150 ms in which it declares a service ready and a
+  command that then runs gets a database that is going down. This is exactly the failure the
+  whole project exists to prevent: the film would show a connection error, or worse, would
+  show a *success* against a server that no longer exists by the time the take is filmed.
+- *Parse the container's own health/`logs`* — rejected: it makes vidkit's gate depend on the
+  image's healthcheck conventions, and the image that matters most declares nothing.
+- *Sleep a fixed 2 s after the first success* — rejected as a magic number that is wrong on
+  a slow runner and wasteful on a fast one.
+
+**Consequences.** Every docker build spends at least 0.75 s in the gate, ~2.6 s for the
+Postgres fixture including the container start. The report carries `ready_detail` in three
+recognisable shapes — held, "answered once then stopped holding", and never answered — so a
+user can tell a service that never came up from one that came up and fell over, and the
+second is what a retry loop would have hidden. The rule is stated for authors in
+[exec-guide.md §10](../capture/exec-guide.md).
+
+---
+
+## D44 — One environment is one container, and a command addresses it through one binding keyed by the command label
+
+**2026-10-09.** Context: M8, defects S and the binding refactor.
+
+**Decision.** An `environment:` declaration starts **one** container per build. Every
+`backend: docker` step naming it is `docker exec`'d into that same container, and the mapping
+from a step to its container is held in **one** binding table keyed by the command's **label**
+— never by the environment name, and never recomputed. The readiness probe, the command
+itself, and the log capture all resolve their target through it.
+
+**Alternatives.**
+
+- *One container per step* — rejected. The most valuable demo in this product's category is
+  "write a row in step 1, read it back in step 2". With one container per step that claim is
+  false, and it would be false in a way that *looks* like it worked, because both steps would
+  succeed against two private databases. That is a fabricated narrative produced by an
+  infrastructure choice.
+- *Key the binding by environment name* — rejected: two steps may legitimately share one
+  environment, so an environment-keyed table cannot answer "which container is this command's
+  container" for the second step without a lookup, and any lookup is a second chance to
+  disagree with the first.
+- *Resolve the container at each use site* — rejected: defect S (`docker docker exec …`) was
+  precisely a use site that composed its own argv and did not go through the one builder.
+
+**Consequences.** `report.facts.exec[].container` makes the sharing **visible**: a reader can
+confirm from the artifact alone that step 2 ran in step 1's container, rather than trusting
+that it did. `_docker_argv` is the single argv builder; `bind_step(label, state)` is the single
+binding; `bind_step(label, state)` is the only way to populate it, and
+`unbind_environments()` is called from exactly one place, after the last step.
+
+---
+
+## D45 — Teardown is unconditional and idempotent, and its record is evidence
+
+**2026-10-09.** Context: M8, defect K (a leaked container) and the double-removal defect.
+
+**Decision.** The environment lifecycle is one `try/finally` around the whole exec stage. An
+environment is recorded as **started** *before* readiness is awaited, so a container that
+came up and never became ready is still stopped. Teardown runs on every exit path — success,
+refusal, exception — and is written into `facts.environments[].teardown` as
+`{attempted, stopped, removed, detail}`. A second teardown pass is a **no-op that returns the
+first record unchanged**, and the "removed" line is emitted only when the container was not
+already removed. Containers are **not** started with `--rm`.
+
+**Alternatives.**
+
+- *Rely on `docker run --rm`* — rejected. `--rm` removes the container when it **exits**,
+  which is not when the build decides it is done; a crash leaves the process table clean and
+  the container gone, so a *failed* build looks tidier than a successful one and the
+  post-mortem has nothing to inspect. It also makes "removed" unattributable to vidkit.
+- *Record teardown only when it succeeds* — rejected. Invariant I7: "we did not check" and
+  "it was not there" must read differently. `attempted: false` with a reason is a fact worth
+  having; a missing key is not.
+- *Tear down only on the happy path* — this was defect K. The failure mode is the one where
+  it matters most: a container whose readiness never held is precisely the container a user
+  needs to inspect, and precisely the one a happy-path-only `finally` leaves running.
+
+**Consequences.** The exec stage gained one nesting level. `environment_down()` and
+`capture_logs()` are idempotent by contract. The `docker-probe` CI job asserts
+`docker ps -a --filter name=vidkit-` is empty afterwards, which is a stronger check than
+reading the report: it verifies the report's claim rather than repeating it.
+
+---
+
+## D46 — The engine owns the rule for "which environment does this command run in"
+
+**2026-10-09.** Context: M8. `verify.json`'s `facts.exec[]` had no `container` key while
+`provenance.json` did, because the two wrote it from two separate walks of `exec.steps[]`.
+
+**Decision.** `Spec.exec_environment(label)` is the single definition. The provenance writer
+(`assembler._env_of`) and the verifier (`verify._container_of`) both read it; neither walks
+the step list itself. `_container_of` further reads the **live** `assets.environments` state
+rather than the spec, because the question is "which container did this command actually run
+in", and only the build knows that.
+
+**Alternatives.**
+
+- *Two walks* — this was the defect: two implementations of one rule, and they had already
+  diverged. One of them was silent, because an absent key reads exactly like "no container".
+- *Have `verify` read `provenance.json`* — rejected. A verify that trusts the build's own
+  record cannot detect a build that recorded the wrong thing; and a stale `provenance.json`
+  from an earlier build would be read as this build's.
+- *Have the runner put `container` on `ExecResult`* — rejected: `provenance` needs the
+  *environment*, and `verify` needs the *container*; deriving both from one authoritative
+  rule beats adding a third field each one interprets.
+
+**Consequences.** An unknown label returns `""` rather than raising — a fact about a command
+that was never started is "no container", which is answerable, not an error. Two tests pin
+the rule from both sides (`test_a_docker_step_that_was_never_started_reports_no_container`,
+`test_a_spec_says_once_which_environment_a_command_runs_in`).
+
+---
+
+## D47 — A container does not inherit the host environment, and the client's environment must not leak into the film
+
+**2026-10-09.** Context: M8, defect T and the `~/.docker/config.json` warning.
+
+**Decision.** Two separate rules about environment, both applied deliberately:
+
+1. **What the run needs, the run is told.** `docker exec` does not inherit the client's
+   environment, so `_docker_argv` emits `-e` for every entry of the same `_env_for(req, cwd,
+   "docker")` mapping the host path uses. `PATH`, `LANG`, `LC_ALL`, `TERM`, `COLUMNS`, `LINES`
+   and the declared `env:` all cross the boundary explicitly.
+2. **What the container should not see, the *client* is not told.** `HOME` is **removed** from
+   the docker client's own environment. With it set, the client read
+   `/root/.docker/config.json`, was denied, and printed `WARNING: Error loading config file`
+   — onto the very PTY being filmed. The container still resolves `/root` from its own
+   `/etc/passwd`, because the process that needs `HOME` is the container's shell, not the
+   client.
+
+**Alternatives.**
+
+- *Forward nothing and let the container's image define its environment* — rejected: the
+  film then has no `TERM`/`COLUMNS`/`LANG`, so colours, wrapping and the locale would all
+  differ from every other take in the video, and the two paths would not be comparable.
+- *Forward `os.environ` wholesale* — rejected: it is the opposite defect, and a container is
+  the one place where the boundary is cheap to hold.
+- *Keep `HOME` and silence the warning with a flag* — rejected: there is no such flag, and
+  the general rule is better than a workaround. Nothing on the filmed screen should be the
+  *tooling's* output. A warning that appears only on the docker path is a signal that the two
+  paths differ, and it would be presented to a viewer as the program's own words.
+
+**Consequences.** Every docker run passes its environment explicitly on both sides of the
+boundary, and the filmed PTY carries only what the declared command produced. Verified by
+rebuilding `examples/docker-demo` and grepping the build log and the recordings for
+`Error loading config file`.
+
+---
+
+## D48 — A capability report names the rung that is missing, not that the capability is absent
+
+**2026-10-09.** Context: M8. `doctor` must answer "can this host run my video", and Docker
+that answer has three independent failure modes.
+
+**Decision.** `doctor` reports the three Docker questions **separately**, as
+`rungs: {client, daemon, container}`, and the container rung is *demonstrated* by
+`docker run --rm hello-world` per the rule of D41. The refusal names the first rung that
+fails, in its own words.
+
+**Alternatives.**
+
+- *One boolean, `docker_available`* — rejected. `which docker` missing is an install; a
+  daemon that is not running is a service to start; a missing `hello-world` is a pull. One
+  boolean sends three different fixes to the same unhelpful sentence, and the third is the
+  one users will hit on a fresh machine with the client installed.
+- *Probe only the daemon (`docker info`, ~60 ms) and defer the container* — **considered and
+  not taken**, on cost grounds. The full ladder measured **0.51 s** against a memoised
+  14 ms bubblewrap probe, which is a real but acceptable price for a pre-flight check whose
+  entire purpose is to be believed. `doctor` costs **0.12–0.19 s** with a spec; it did not
+  become a slow command. The seam is deliberately kept: `docker_daemon()` exists and is
+  cheap, so this decision can be revisited without rewriting the probe.
+- *Reuse `resolve_backend()`'s single answer* — rejected: `resolve_backend` answers for one
+  step's declared backend, while `doctor` answers for the host.
+
+**Consequences.** `doctor` prints a docker row with a `rungs` block, and `_sandbox_needs()`
+carries the same structure so the CI gate can name the rung. The **same three rungs are what
+the local `docker-probe` job's capability ladder walks in order**, which is why the job
+prints its own ladder before it gates on the engine's answer: a failure in CI says which rung
+broke.

@@ -649,3 +649,191 @@ jobs:
         run: |
           test -s examples/terminal-demo/terminal-demo.mp4
           test -s examples/terminal-demo/narration.srt
+
+  docker-probe:
+    # M8's claim is "vidkit starts a real service from a real image, runs the
+    # declared commands *inside* that one container, and removes it again".
+    # A unit test can assert that argv was assembled and that a container name
+    # was generated; it cannot assert that a database really held a row across
+    # two commands, or that nothing was left behind. This job does.
+    #
+    # This job has to *build* the capability, not merely find it: the runner's
+    # docker group membership is not a given and the daemon may need starting.
+    # The ladder below attempts each, prints what it measured either way, and
+    # then the gate asks vidkit the same question and fails if vidkit disagrees.
+    # That is deliberate — a gate that only proved the runner could run docker
+    # would not prove that vidkit's own probe can see it.
+    #
+    # No browser and no network *from the film*: the image is pulled, and no
+    # step declares `network`, so every command runs with the network off.
+    name: run a real container, film it, and remove it
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install system tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends ffmpeg librsvg2-bin
+
+      - name: Make a container runnable
+        run: |
+          # `set +e`: this is a ladder, not a contract. Each rung is recorded and
+          # the verdict step below is what decides. `set -e` would abandon the
+          # ladder at the first rung that is not needed.
+          set +e
+
+          if ! command -v docker >/dev/null 2>&1; then
+            echo "rung 1: no docker client — installing"
+            sudo apt-get install -y --no-install-recommends docker.io || true
+          else
+            echo "rung 1: docker client already present: $(command -v docker)"
+          fi
+
+          if ! docker info >/dev/null 2>&1; then
+            echo "rung 2: the daemon does not answer — trying to start it"
+            sudo systemctl start docker || sudo service docker start || true
+            sleep 5
+          fi
+          docker info >/dev/null 2>&1 && echo "rung 2: the daemon answers" \
+                                       || echo "rung 2: the daemon still does not answer"
+
+          # The runner's user is not in the docker group, which the probes below
+          # would otherwise attribute to vidkit. `sudo docker` is not a fix: the
+          # engine calls the client as the current user.
+          if ! docker info >/dev/null 2>&1; then
+            echo "rung 3: granting $(id -un) access to the docker socket"
+            sudo chmod 666 /var/run/docker.sock || true
+          fi
+
+          echo "--- what this runner actually has ---"
+          docker version 2>&1 | sed -n '1,12p' || true
+          docker info --format '{{.ServerVersion}} {{.Driver}}' 2>&1 || true
+          exit 0
+
+      - name: Install vidkit
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e .
+
+      - name: The container really runs, and vidkit's own probe agrees
+        run: |
+          set -eu
+          python - <<'PY'
+          import sys
+          sys.path.insert(0, ".")
+          from vidkit import exec as ex
+
+          rungs = ex.docker_rungs()
+          for name in ("client", "daemon", "container"):
+              row = rungs[name]
+              print(f"rung {name}: {'ok ' if row['ok'] else 'NO '} {row['detail']}")
+
+          ok, detail = ex.docker_available(refresh=True)
+          if not ok:
+              # Each rung has a different fix, so say which one broke.
+              sys.exit("a container cannot run on this runner, so this job would "
+                       "prove nothing about the environment lab: " + detail)
+
+          row = next(b for b in ex.backends_report() if b["name"] == "docker")
+          print("docker OK —", row)
+          PY
+
+      - name: Build the docker demo
+        run: vidkit build examples/docker-demo/video.yaml
+
+      - name: The service was really used, and really removed
+        run: |
+          python - <<'PY'
+          import json, pathlib, sys
+          out = pathlib.Path("examples/docker-demo")
+          report = json.loads((out / "_build" / "verify.json").read_text())
+          if not report["ok"]:
+              sys.exit(f"verification failed: {report['checks']}")
+
+          checks = {c["name"]: c for c in report["checks"]}
+          for want in ("every declared command ran",
+                       "every command exited as declared",
+                       "commands ran sandboxed"):
+              if not checks.get(want, {}).get("ok"):
+                  sys.exit(f"verify check {want!r} did not pass: {checks.get(want)}")
+          # "sandboxed" must mean *by Docker*, not by whatever else this runner has.
+          if "docker" not in checks["commands ran sandboxed"]["detail"]:
+              sys.exit(f"the commands were not confined by Docker: "
+                       f"{checks['commands ran sandboxed']}")
+
+          facts = report["facts"]["exec"]
+          if len(facts) != 3:
+              sys.exit(f"expected 3 recorded commands, got {len(facts)}")
+
+          envs = report["facts"]["environments"]
+          if len(envs) != 1:
+              sys.exit(f"expected exactly 1 declared environment, got {len(envs)}")
+          env = envs[0]
+          if not env["ready"]:
+              sys.exit(f"the service never became ready: {env['ready_detail']}")
+          # A readiness check that sampled once would pass here and be wrong: the
+          # detail records how long the answer *held*, which is the actual claim.
+          if "without a single failure" not in env["ready_detail"]:
+              sys.exit(f"readiness was not shown to hold: {env['ready_detail']}")
+          if not env["image_digest"].startswith("sha256:"):
+              sys.exit(f"the image was not identified by digest: {env['image_digest']}")
+
+          # Every command ran inside the *same* container — that identity is what
+          # makes "the row written by step 1 is read back by step 2" a fact rather
+          # than a hope. A per-command `docker run` would break exactly this.
+          containers = {f["container"] for f in facts}
+          if len(containers) != 1 or not all(containers):
+              sys.exit(f"the commands did not share one container: {containers}")
+          name = containers.pop()
+          if name != env["container_name"]:
+              sys.exit(f"the commands ran in a container the spec did not declare: "
+                       f"{name!r} vs {env['container_name']!r}")
+
+          # Teardown is unconditional, and it must be *reported*, not assumed.
+          if not env["teardown"]["removed"]:
+              sys.exit(f"the container was not removed: {env['teardown']}")
+          if not env["teardown"]["detail"].startswith("container "):
+              sys.exit(f"teardown reported no detail: {env['teardown']}")
+
+          # The causal claim: step 2's own recorded bytes contain the row step 1 wrote.
+          write, read = next(f for f in facts if f["label"] == "write"), \
+                        next(f for f in facts if f["label"] == "read")
+          if not write["cast"] or not read["cast"]:
+              sys.exit("a command produced no cast to replay")
+          body = (out / "_build" / "exec" / read["cast"]).read_text()
+          if "filmed, not drawn" not in body:
+              sys.exit("the row written by the first command is not in the second "
+                       "command's recording — the two did not share a database")
+          if "1 |" not in body:
+              sys.exit("the database did not assign the row its id — nothing was written")
+
+          for fact in facts:
+              if fact["frames"] is not None and fact["playback"] < 1.0:
+                  sys.exit(f"{fact['label']} was re-timed to {fact['playback']}x")
+
+          print(f"DOCKER OK — {len(facts)} commands in container {name}, "
+                f"all sandboxed, service removed")
+          PY
+
+      - name: Nothing was left running on the runner
+        run: |
+          set -eu
+          left=$(docker ps -a --filter name=vidkit- --format '{{.Names}}')
+          if [ -n "$left" ]; then
+            echo "the build leaked containers: $left"
+            docker ps -a --filter name=vidkit-
+            exit 1
+          fi
+          echo "no vidkit container remains"
+
+      - name: Assert artifacts exist
+        run: |
+          test -s examples/docker-demo/docker-demo.mp4
+          test -s examples/docker-demo/narration.srt

@@ -1,0 +1,97 @@
+# vidkit spec — docker-demo (a service, filmed as it is used)
+#
+# This example is the *evidence* that the environment lab works end to end: a
+# real service is started from a real image, the commands declared in the spec run
+# *inside* that same container, its logs are captured as measured fact, and the
+# container is removed again on every exit path.
+#
+#   vidkit build examples/docker-demo/video.yaml
+#
+# The point of the example is the causal story, not the picture. `write` puts a
+# row into the database and `read` reads it back out. Both run in the *same*
+# container, so the second command really does observe what the first one did —
+# which is the thing a per-command `docker run` would destroy.
+#
+# The image is pinned to an exact minor version. A tag is a name that can move;
+# `image_digest` in verify.json is what the video was actually filmed against.
+
+project:
+  title: "vidkit docker-demo — a real service, really used"
+  slug: docker-demo
+  output: docker-demo.mp4
+  size: [1280, 720]
+  fps: 24
+  min_seconds: 4
+  max_seconds: 60
+
+voice:
+  engine: none                # offline: lengths are estimated from the wording
+
+narration:
+  source: narration.md
+
+environment:
+  - name: db
+    image: postgres:16-alpine
+    env:
+      POSTGRES_PASSWORD: demo
+      POSTGRES_DB: demo
+    # `pg_isready` is the image's own client, so the readiness gate needs no
+    # extra tooling and cannot disagree with the server it is asking about.
+    ready: [pg_isready, -U, postgres]
+    ready_timeout: 90           # a first-run initdb is legitimately slow
+    # No ports published: the commands below run *inside* the container, so the
+    # database never has to be reachable from the host at all.
+    timeout: 180
+
+exec:
+  allow_network: true         # the image pull needs it; no step declares network
+  max_timeout: 120
+  steps:
+    - label: write
+      cmd:
+        - psql
+        - -U
+        - postgres
+        - -d
+        - demo
+        - -c
+        - "CREATE TABLE IF NOT EXISTS notes (id serial primary key, body text); INSERT INTO notes (body) VALUES ('filmed, not drawn');"
+      backend: docker
+      environment: db
+      timeout: 60
+      cols: 100
+      rows: 20
+    - label: read
+      cmd: [psql, -U, postgres, -d, demo, -c, "SELECT id, body FROM notes ORDER BY id;"]
+      backend: docker
+      environment: db
+      timeout: 60
+      cols: 100
+      rows: 20
+    - label: schema
+      cmd: [psql, -U, postgres, -d, demo, -c, "\\d notes"]
+      backend: docker
+      environment: db
+      timeout: 60
+      cols: 100
+      rows: 20
+
+scenes:
+  - n: 0
+    title: A row goes in
+    shots:
+      - {exec: write, effect: hold}
+  - n: 1
+    title: The same row comes out
+    shots:
+      - {exec: read, effect: hold}
+  - n: 2
+    title: The schema agrees
+    shots:
+      - {exec: schema, effect: hold}
+
+guard:
+  require_audio: false        # declared silent cut; there is no voice engine here
+  require_sandbox: true       # every command ran inside the declared container
+  require_exec_success: true  # every exit code matched its `expect_exit`

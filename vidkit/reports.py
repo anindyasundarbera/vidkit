@@ -97,16 +97,62 @@ def doctor_report(spec_path: Path | None = None, *,
 
 
 def _backends_line() -> dict[str, Any]:
-    """Sandbox capability with no spec in hand — a fact about this host."""
-    from .exec import bwrap_available
+    """Sandbox capability with no spec in hand — a fact about this host.
+
+    Both sandboxes are asked, because a host can have one and not the other and
+    either can be the reason a story will not run. Docker's three rungs are
+    reported separately — see :func:`_docker_rungs` — since "Docker is
+    unavailable" covers a missing client, a stopped daemon and a broken runtime,
+    which are three different repairs.
+    """
+    from .exec import bwrap_available, docker_available
 
     ok, detail = bwrap_available()
-    return {"ok": ok, "declared": ["bubblewrap"], "available": ok,
-            "detail": "bubblewrap can start a sandbox on this host" if ok else detail}
+    docker_ok, docker_detail = docker_available()
+    return {
+        "ok": ok,
+        "declared": ["bubblewrap"],
+        "available": ok,
+        "detail": "bubblewrap can start a sandbox on this host" if ok else detail,
+        "docker": _docker_rungs(),
+        "available_backends": [name for name, works in
+                               (("bubblewrap", ok), ("docker", docker_ok)) if works],
+        # the one-line answer to "can a container run here at all", which is what
+        # a reader of `doctor` wants before they have written a spec
+        "docker_detail": docker_detail,
+    }
+
+
+def _docker_rungs() -> dict[str, Any]:
+    """The three questions behind "is Docker available", each answered on its own.
+
+    Kept as three rows rather than one boolean for the same reason ``bwrap`` is
+    probed rather than ``which``-ed: a verdict that cannot distinguish its causes
+    sends the reader to the wrong fix. It is also the honest shape — the engine
+    really does run three different commands with three different costs (1 ms, 60
+    ms, 450 ms) and only the third one proves a container can run.
+    """
+    from .exec import docker_rungs
+
+    rungs = docker_rungs()
+    client, daemon, container = rungs["client"], rungs["daemon"], rungs["container"]
+    if not client["ok"]:
+        detail = client["detail"]
+    elif not daemon["ok"]:
+        detail = daemon["detail"]
+    else:
+        detail = container["detail"]
+    return {
+        "client": client["ok"],
+        "daemon": daemon["ok"],
+        "container": container["ok"],
+        "detail": detail,
+        "rungs": rungs,
+    }
 
 
 def _sandbox_needs(spec) -> dict[str, Any]:
-    """Whether the spec's declared sandbox will actually work on this host (defect G).
+    """Whether the spec's declared sandboxes will actually work on this host (defect G).
 
     ``doctor`` has to answer "can this machine run this story", and a spec whose
     commands declare ``backend: bubblewrap`` on a host that cannot start a
@@ -118,12 +164,20 @@ def _sandbox_needs(spec) -> dict[str, Any]:
     ``available`` always answers the *host* question ("can bwrap start?"), never
     the narrower "does this spec need it?", so a reader can tell a machine that
     cannot sandbox from a spec that does not ask it to.
+
+    M8 adds Docker to the same question. A spec declaring ``backend: docker`` needs
+    the host to be able to *run a container*, not merely to have installed the
+    client, so the third rung is what decides it — the other two are reported
+    because they are what a reader needs in order to act.
     """
-    from .exec import bwrap_available
+    from .exec import bwrap_available, docker_available
 
     declared = sorted({step.backend for step in spec.exec})
     ok, detail = bwrap_available()
     needs_it = "bubblewrap" in declared
+    docker_ok, docker_detail = docker_available()
+    docker_rungs = _docker_rungs()
+    needs_docker = "docker" in declared
     if not declared:
         how = "no exec steps declared; bubblewrap is usable" if ok else (
             f"no exec steps declared, but {detail}")
@@ -133,12 +187,35 @@ def _sandbox_needs(spec) -> dict[str, Any]:
         how = f"declared {', '.join(declared)} cannot run: {detail}"
     else:
         how = f"declared {', '.join(declared)} run unconfined on this host"
+    # Docker's verdict is separate because it has a separate repair. A spec may
+    # declare both sandboxes, and failing on the one the author cannot use while
+    # saying nothing about the other would be a diagnosis by omission.
+    docker_problem = ""
+    if needs_docker and not docker_ok:
+        docker_problem = (
+            f"declared backend docker cannot run: {docker_rungs['detail']}")
+    elif needs_docker:
+        docker_problem = (
+            f"docker will run as declared against {_image_list(spec)}")
     return {
-        "ok": ok or not needs_it,
+        "ok": (ok or not needs_it) and (docker_ok or not needs_docker),
         "declared": declared,
         "available": ok,
         "detail": how,
+        "docker": docker_rungs,
+        "available_backends": [name for name, works in
+                               (("bubblewrap", ok), ("docker", docker_ok)) if works],
+        "docker_ok": docker_ok or not needs_docker,
+        "docker_detail": docker_problem or docker_detail,
     }
+
+
+def _image_list(spec) -> str:
+    """Name the images a spec will actually run, so `doctor` says what it checked."""
+    images = sorted({e.image for e in getattr(spec, "environments", [])})
+    if not images:
+        return "no declared environment"
+    return ", ".join(images)
 
 
 def _secret_needs(spec) -> tuple[list[dict[str, Any]], list[str]]:
@@ -187,6 +264,20 @@ def format_doctor(report: dict[str, Any]) -> str:
         mark = "yes" if backends["available"] else "NO "
         lines.append(f"  [{mark}] {'sandbox':16s} "
                      f"confines {', '.join(declared)} — {backends['detail']}")
+        # Docker gets its own row even when no step uses it, because "can a
+        # container run here" is a fact about the host and an author deciding
+        # whether to write `backend: docker` needs it before writing anything.
+        docker = backends.get("docker") or {}
+        if docker:
+            rungs = docker.get("rungs", {})
+            client = "yes" if docker.get("client") else "no "
+            daemon = ("yes" if rungs.get("daemon", {}).get("ok") else "NO ") \
+                if docker.get("client") else " - "
+            runnable = "yes" if docker.get("container") else "NO "
+            lines.append(
+                f"  [{'yes' if docker.get('container') else 'NO '}] "
+                f"{'docker':16s} client {client} · daemon {daemon} · "
+                f"container {runnable} — {docker.get('detail', '')}")
     if report.get("spec_error"):
         lines.append(f"  [NO ] spec              {report['spec_error']}")
     elif report.get("spec"):

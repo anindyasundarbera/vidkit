@@ -9,6 +9,7 @@ executes code; the optional ``provider`` module supplies data and custom panels.
 from __future__ import annotations
 
 import json
+import shlex
 from dataclasses import dataclass, field, replace
 from datetime import date
 from pathlib import Path
@@ -175,9 +176,10 @@ class Chart:
     options: dict[str, Any] = field(default_factory=dict)
 
 
-#: Backends a spec may name. ``docker`` is M8; naming it before it exists would
-#: be a spec that promises an isolation it does not get.
-EXEC_BACKENDS = {"local", "bubblewrap"}
+#: Backends a spec may name. Each is a claim about how a command is confined,
+#: so naming one the host cannot honour is a refusal at load time rather than a
+#: quiet downgrade — see ``vidkit.exec.resolve_backend``.
+EXEC_BACKENDS = {"local", "bubblewrap", "docker"}
 
 
 @dataclass
@@ -205,6 +207,39 @@ class Exec:
     cols: int = 100
     rows: int = 30
     at: float | None = None               # which second of the recording a shot shows
+    #: Which declared ``environment:`` this command runs inside. Required when
+    #: ``backend: docker``, refused when it is not — an environment started for
+    #: nothing is a container that would have to be torn down for nothing.
+    environment: str = ""
+
+
+@dataclass
+class Environment:
+    """One declared container environment, brought up and torn down once (R-E6).
+
+    Written in the spec as::
+
+        environment:
+          name: db
+          image: postgres:16-alpine
+          env: {POSTGRES_PASSWORD: demo}
+          ready: [pg_isready, -U, postgres]
+
+    The lifecycle is the *engine's*, not the spec's: the spec says which image
+    and what proves it is ready, and the engine guarantees it is removed on every
+    exit path. A spec that had to remember to tear down its own container would
+    eventually forget, and the leak would be on the author's machine.
+    """
+    name: str
+    image: str
+    command: list[str] = field(default_factory=list)
+    env: dict[str, str] = field(default_factory=dict)
+    ports: list[str] = field(default_factory=list)
+    volumes: list[str] = field(default_factory=list)
+    timeout: float = 120.0
+    ready: list[str] = field(default_factory=list)
+    ready_timeout: float = 60.0
+    network: bool = False
 
 
 @dataclass
@@ -301,6 +336,7 @@ class Spec:
     charts: list[Chart] = field(default_factory=list)
     exec: list[Exec] = field(default_factory=list)
     exec_policy: ExecPolicy = field(default_factory=ExecPolicy)
+    environments: list[Environment] = field(default_factory=list)
     guard: Guard = field(default_factory=Guard)
     story: Story | None = None
     timeframe: Timeframe | None = None
@@ -317,6 +353,19 @@ class Spec:
 
     def exec_step(self, label: str) -> Exec | None:
         return next((e for e in self.exec if e.label == label), None)
+
+    def exec_environment(self, label: str) -> str:
+        """The environment a command label runs in, or ``""``. One rule, one place.
+
+        Both the provenance writer and the verifier have to attribute a recorded
+        command to the container it ran in, and if they disagreed the report would
+        disagree with itself.
+        """
+        step = self.exec_step(label)
+        return step.environment if step is not None else ""
+
+    def environment(self, name: str) -> Environment | None:
+        return next((e for e in self.environments if e.name == name), None)
 
     def scene(self, n: int) -> Scene | None:
         return next((s for s in self.scenes if s.n == n), None)
@@ -438,9 +487,18 @@ def _exec_step(raw: dict[str, Any], where: str) -> Exec:
     if backend not in EXEC_BACKENDS:
         raise SpecError(
             f"{where}: unknown backend {backend!r}; known: "
-            f"{', '.join(sorted(EXEC_BACKENDS))}"
-            + (" (docker arrives with the environment lab in M8)"
-               if backend == "docker" else ""))
+            + ", ".join(sorted(EXEC_BACKENDS)))
+    environment = str(raw.get("environment", "") or "")
+    if backend == "docker" and not environment:
+        raise SpecError(
+            f"{where}: `backend: docker` needs an `environment:` naming which "
+            "declared environment the command runs inside — a container started "
+            "for one command would have to be torn down for one command, and "
+            "the demo would show a different system each time")
+    if backend != "docker" and environment:
+        raise SpecError(
+            f"{where}: `environment: {environment}` is declared but the backend "
+            f"is {backend!r}; only `backend: docker` runs inside an environment")
     env = raw.get("env") or {}
     if not isinstance(env, dict):
         raise SpecError(f"{where}: `env` must be a mapping of NAME: value")
@@ -464,6 +522,65 @@ def _exec_step(raw: dict[str, Any], where: str) -> Exec:
         cols=int(raw.get("cols", 100)),
         rows=int(raw.get("rows", 30)),
         at=None if raw.get("at") is None else float(raw["at"]),
+        environment=environment,
+    )
+
+
+def _environment(raw: dict[str, Any], where: str) -> Environment:
+    """Parse one declared container environment.
+
+    Strict about the fields it does not know, because this is the part of the spec
+    that can affect the *host*: a silently ignored ``privileged: true`` would be
+    an author believing they had asked for something the engine never granted.
+    """
+    known = {"name", "image", "command", "env", "ports", "volumes", "timeout",
+             "ready", "ready_timeout", "network"}
+    unknown = sorted(set(raw) - known)
+    if unknown:
+        raise SpecError(
+            f"{where}: unknown field(s) {', '.join(unknown)}; known: "
+            + ", ".join(sorted(known)))
+    if not raw.get("name"):
+        raise SpecError(f"{where}: an environment needs a `name` (exec steps reference it)")
+    if not raw.get("image"):
+        raise SpecError(
+            f"{where}: an environment needs an `image` — this is the whole point "
+            "of the backend: the image is what says *which* Postgres the video "
+            "was filmed against")
+    env = raw.get("env") or {}
+    if not isinstance(env, dict):
+        raise SpecError(f"{where}: `env` must be a mapping of NAME: value")
+    ports, volumes = raw.get("ports") or [], raw.get("volumes") or []
+    if isinstance(ports, (str, int)):
+        ports = [ports]
+    if isinstance(volumes, str):
+        volumes = [volumes]
+    ready = raw.get("ready") or []
+    if isinstance(ready, str):
+        ready = shlex.split(ready)
+    command = raw.get("command") or []
+    if isinstance(command, str):
+        command = shlex.split(command)
+    for volume in volumes:
+        # The bind syntax `-v /host:/container` is what the runtime takes; a
+        # single path would mount an anonymous volume and quietly give the
+        # container nothing, which reads as the command failing rather than the
+        # spec being thin.
+        if ":" not in str(volume):
+            raise SpecError(
+                f"{where}: volume {volume!r} must be HOST:CONTAINER (or "
+                "HOST:CONTAINER:ro) — a bare path mounts an empty volume")
+    return Environment(
+        name=str(raw["name"]),
+        image=str(raw["image"]),
+        command=[str(x) for x in command],
+        env={str(k): str(v) for k, v in env.items()},
+        ports=[str(p) for p in ports],
+        volumes=[str(v) for v in volumes],
+        timeout=float(raw.get("timeout", 120.0)),
+        ready=[str(x) for x in ready],
+        ready_timeout=float(raw.get("ready_timeout", 60.0)),
+        network=bool(raw.get("network", False)),
     )
 
 
@@ -668,6 +785,26 @@ def load_spec(path: Path | str, *,
                     "shots reference a step by label, so two would be ambiguous")
             seen_labels.add(step.label)
 
+    # `environment:` is a list of container environments. Each is brought up
+    # before the exec stage and torn down after it, unconditionally (R-E6).
+    raw_envs = raw.get("environment") or []
+    if isinstance(raw_envs, dict):
+        raw_envs = [raw_envs]
+    if not isinstance(raw_envs, list):
+        raise SpecError("`environment:` must be a list of environments")
+    environments: list[Environment] = []
+    for i, item in enumerate(raw_envs):
+        if not isinstance(item, dict):
+            raise SpecError(f"environment {i + 1}: must be a mapping")
+        environments.append(_environment(item, f"environment {i + 1}"))
+    seen_envs: set[str] = set()
+    for env in environments:
+        if env.name in seen_envs:
+            raise SpecError(
+                f"environment {env.name!r}: declared twice — exec steps reference "
+                "an environment by name, so two would be ambiguous")
+        seen_envs.add(env.name)
+
     scenes: list[Scene] = []
     for s in raw.get("scenes") or []:
         shots = [_shots(sh, f"scene {s.get('n')}") for sh in (s.get("shots") or [])]
@@ -698,6 +835,7 @@ def load_spec(path: Path | str, *,
     spec = Spec(project=project, scenes=scenes, voice=voice, narration=narration,
                 provider=provider, captures=captures, charts=charts,
                 exec=exec_steps, exec_policy=exec_policy,
+                environments=environments,
                 guard=guard, root=root)
 
     spec.story = load_story(root, default_as_of=as_of)
@@ -815,9 +953,27 @@ def _validate_exec(spec: Spec) -> None:
     """
     from .exec import check_policy
 
+    # An environment that no step runs inside is a container the engine would
+    # start, film nothing of, and tear down again. Refusing it at load time turns
+    # a wasted minute of the operator's life into a sentence.
+    used = {e.environment for e in spec.exec if e.environment}
+    problems = [
+        f"environment {env.name!r}: declared but no exec step declares "
+        f"`environment: {env.name}` — the container would start and be torn down "
+        "without appearing in the video"
+        for env in spec.environments if env.name not in used
+    ]
+    for step in spec.exec:
+        if step.environment and spec.environment(step.environment) is None:
+            problems.append(
+                f"exec step {step.label!r}: declares `environment: "
+                f"{step.environment}` but no such environment is defined")
+
     if not spec.exec:
+        if problems:
+            raise SpecError("; ".join(problems))
         return
-    problems = check_policy(
+    problems += check_policy(
         [e for e in spec.exec], root=spec.root,
         allow_network=spec.exec_policy.allow_network)
     problems += [

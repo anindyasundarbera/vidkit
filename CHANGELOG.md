@@ -9,6 +9,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Declared environments (R-E6) — services a command runs *inside*.** A spec can now
+  declare `environment: [{name, image, command, env, ports, volumes, ready, ready_timeout,
+  timeout, network}]`, and a step with `backend: docker` names the one it runs in. Every
+  command in an environment is `docker exec`'d into the *same* container, so a demo whose
+  claim is "step 2 read back the row step 1 wrote" is a claim about one real database
+  rather than about two containers that happened to share an image.
+- **`docker` as a backend** alongside `bubblewrap` and `local`. A container has the image's
+  own filesystem, its own PID namespace and no view of the host beyond the read-only
+  project bind — a *stronger* boundary than namespaces around a host process, which is why
+  `CONFINING_BACKENDS` is a set read from the engine rather than the word "bubblewrap"
+  spelled in the verifier.
+- **A readiness contract that outlives one sample.** `ready:` (an argv, never a shell line)
+  must succeed *and keep succeeding* for `READY_HOLD` (0.75 s) before anything runs. A
+  single sample is not enough and never was: `pg_isready` answers at ~1.30 s against
+  Postgres' *bootstrap* server, which is stopped at ~1.45 s, and a real query only succeeds
+  from ~1.84 s — so a one-shot gate hands the next command a database on its way down.
+- **`report.facts.environments`** — per environment: the image **by digest** (a tag is a
+  name that can move), whether it became ready, how long the answer *held*, how long the
+  container lived, and how it was torn down. Plus `container` on every `facts.exec` entry,
+  so the sharing is visible rather than presumed.
+- `vidkit doctor` reports the three Docker questions **separately** — client, daemon,
+  container — because a missing client is an install, a dead daemon is a service to start,
+  and an absent image is a pull, and one boolean sends all three to the same unhelpful
+  sentence. The container rung is *demonstrated* (`docker run --rm hello-world`), on the
+  rule that a capability gate must demonstrate the capability rather than observe a
+  precondition of it.
+- `examples/docker-demo/` — a real Postgres from a pinned image, written to and read back by
+  two commands inside the same container, torn down on every exit path. Probed by a new
+  `docker-probe` CI job that asserts the row really crossed between the two commands by
+  reading the second command's own recording.
+- `tests/test_docker.py` (~50 tests) and `tests/conftest.py`'s third capability marker,
+  `needs_docker` — probed, and independent of `needs_render` and `needs_sandbox`.
+
 - **Declared execution (R-E1…R-E5)** — a spec can now name commands to run and film, and
   the film is a replay of the recording: `exec: {steps: [...]}` plus `exec` shots. A command
   is `cmd:` (argv, or a shell script when written as a string), with `cwd`/`env`/`timeout`/
@@ -41,6 +74,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- `exec.steps[]` gained `environment:`; `backend:` gained `docker`. A `docker` step that
+  names no environment, a non-`docker` step that names one, an environment nothing
+  references, a volume without a container path, a duplicate environment name, and an
+  environment with no image are all refused at load time rather than warned about.
+- The readiness gate, the command, and the log capture for a run all address the container
+  through **one binding keyed by the command label**, so the gate cannot end up gating a
+  different container from the one it is gating for.
+- `spec.exec_environment(label)` is the single rule for "which environment does this command
+  run in", read by both the verifier and the provenance writer — two walks of the same list
+  were two chances to disagree.
 - `provenance.json` records the commands a build ran, so the record of *how* a film was
   made includes what it filmed.
 - The pipeline is now 10 stages (`exec` sits between `capture` and `narration`).
@@ -51,6 +94,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   memoised) rather than looking for `bwrap` on `PATH`.
 
 ### Fixed
+
+- **`docker exec -t` was asked for a TTY with no terminal on Docker's own stdin**, so every
+  readiness probe failed with `cannot attach stdin to a TTY-enabled container because stdin
+  is not a terminal` (exit 125) and no container could ever be reported ready. The probe now
+  runs without `-i`/`-t`, and it is launched the same way the commands it gates are, with
+  the environment already bound.
+- **A `backend: docker` step ran `docker docker exec …`.** The argv builder already began
+  with the literal `docker`, and the runner prepended its own. Every such command failed
+  with `unknown shorthand flag: 'w' in -w`, exit 125. The filmed path was unaffected because
+  it uses `Popen` directly, which is exactly why the unit tests did not notice.
+- **The container never received the declared environment.** `docker exec` does not inherit
+  the client's environment, and the argv builder only forwarded `req.env`, so `PATH`,
+  `LANG`, `LC_ALL`, `TERM`, `COLUMNS` and `LINES` were all empty inside. The builder now
+  forwards the same environment the host path gets.
+- **The Docker client's own `HOME` no longer leaks onto the filmed PTY.** With `HOME` set to
+  the container user's, the client printed `WARNING: Error loading config file: open
+  /root/.docker/config.json: permission denied` into the recording, where it would have been
+  presented as the container's output. `HOME` is now unset for the client, and the container
+  still resolves `/root` from its own `/etc/passwd`.
+- **A single readiness failure erased the evidence of a service that *did* answer.** The
+  "answered but never held" branch was unreachable because a failure both cleared
+  `ready_since` and overwrote the detail with the last exit code — destroying the record in
+  precisely the Postgres bootstrap-server case the contract exists for. The answer is now
+  remembered across the whole wait and reported as "answered once, then stopped holding".
+- **A crash between starting a container and binding it leaked the container.** Startup,
+  binding, command running, log capture and teardown are one `try/finally`; an environment
+  is recorded as *started* before readiness is awaited, so a container that came up and
+  never became ready is still removed.
+- **Removing a container twice rewrote the first pass's evidence.** The second teardown pass
+  used to overwrite `attempted: true` and re-emit the "removed" line, so a report could claim
+  four removals for one container. It is now a no-op that returns the first record unchanged.
+- `cwd: "."` inside a container produced the workdir `/work/.`. It is normalised, and a
+  `cwd` that escapes the project is still refused.
+- A readiness command written as a YAML list of one string (`ready: ["sh -c '…'"]`) was exec'd
+  as a program literally named `sh -c '…'` (exit 127). A readiness command is an argv; the
+  documentation now says so in the same terms the spec reference does.
+- The project is bound into the container **read-only**, and the docs now say so: a command
+  that wants to write belongs in `/tmp` or a declared volume.
 
 - **A backend that is present but cannot run is now a refusal, not a silent downgrade.**
   `bubblewrap` was reported available whenever the binary existed, but Ubuntu 24.04 installs
