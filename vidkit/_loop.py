@@ -33,15 +33,11 @@ own stages and the tests keep calling the engine directly with no thread at all.
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import queue
 import threading
 from concurrent.futures import Future
 from typing import Any, Callable, TypeVar
-
-try:  # anyio ships with mcp; the engine's own extras do not need it
-    from anyio.to_thread import run_sync as _run_sync
-except Exception:  # pragma: no cover - only reachable without anyio installed
-    _run_sync = None  # type: ignore[assignment]
 
 T = TypeVar("T")
 
@@ -162,12 +158,20 @@ async def offload(fn: Callable[..., T], /, *args: Any, **kwargs: Any) -> T:
     What every registered MCP tool body should be. It has no thread affinity of its
     own — a render, a container probe, a report read — and only needs to not happen
     on the loop.
+
+    Deliberately built only on :mod:`asyncio` and :mod:`contextvars`, with no
+    third-party thread pool. An earlier version delegated to ``anyio.to_thread``,
+    which is *not* one of vidkit's declared dependencies — it merely arrives
+    alongside the optional ``mcp`` extra. So the seam held exactly as long as every
+    caller also installed the MCP server, and any caller with the engine alone (a
+    lean test run, a host mounting ``vidkit://`` by hand) got
+    ``RuntimeError: ... anyio is not installed`` from a function documented as a
+    plain hop off the loop. A seam this central should not have a dependency the
+    engine does not declare, and it does not need a thread *pool*: the work here is
+    long and single, so one fresh thread per hop is the honest shape.
     """
-    if _run_sync is None:  # pragma: no cover - mcp always brings anyio
-        raise RuntimeError(
-            "this tool would block the event loop, but anyio is not installed — "
-            "`pip install anyio`")
-    return await _run_sync(lambda: fn(*args, **kwargs))
+    ctx = contextvars.copy_context()
+    return await asyncio.to_thread(lambda: ctx.run(fn, *args, **kwargs))
 
 
 def _worker_of(obj: Any) -> Worker | None:

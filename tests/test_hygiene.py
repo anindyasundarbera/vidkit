@@ -26,11 +26,14 @@ installed distribution metadata rather than from ``pyproject.toml``.
 from __future__ import annotations
 
 import ast
+import subprocess
 import sys
 from importlib.metadata import PackageNotFoundError, metadata
 from pathlib import Path
 
 import pytest
+
+from conftest import _PEP701_ILLEGAL, _PEP701_LEGAL, _compiles_with
 
 REPO = Path(__file__).resolve().parents[1]
 
@@ -75,6 +78,20 @@ def test_dev_extra_does_not_pull_in_the_mcp_server():
     assert not any(r.split(">=")[0].split("[")[0].strip() == "mcp" for r in dev), dev
 
 
+def test_mcp_extra_declares_only_supported_sdk_majors():
+    """The optional extra must not claim compatibility with an untested major."""
+    md = _package_metadata()
+    requirements = [
+        r.lower().replace(" ", "")
+        for r in (md.get_all("Requires-Dist") or [])
+        if r.split(";", 1)[0].strip().lower().startswith("mcp")
+        and "mcp" in _extras_of(r)
+    ]
+    assert len(requirements) == 1, requirements
+    assert ">=1.20" in requirements[0], requirements
+    assert "<3" in requirements[0], requirements
+
+
 def test_no_test_module_imports_a_package_the_lean_job_lacks():
     """A missing package must fail one test, never the whole collection.
 
@@ -107,96 +124,61 @@ def test_no_test_module_imports_a_package_the_lean_job_lacks():
 # --------------------------------------------------------------------------- #
 # no syntax the oldest supported interpreter cannot read
 # --------------------------------------------------------------------------- #
-_QUOTES = ('"""', "'''", '"', "'")
+def _pre_312_interpreter() -> str:
+    """An interpreter older than 3.12 that can actually compile, or ``""``.
 
+    A compiler is the only thing that reliably finds the PEP 701 quoting rule: the
+    rule lives in the *tokenizer*, so ``ast.parse`` cannot see it at any feature
+    version, and 3.12+ accepts the syntax outright. Anything below 3.12 rejects it.
 
-def _fstring_quote(text: str) -> str | None:
-    """The quote character delimiting an f-string prefix such as ``f'`` or ``f\"\"\"``."""
-    s = text
-    if s[:1] in ("f", "F"):
-        s = s[1:]
-        if s[:1] in ("r", "R"):
-            s = s[1:]
-    for q in _QUOTES:
-        if s.startswith(q):
-            return q
-    return None
-
-
-def _pre_312_fstrings(source: str) -> list[tuple[int, str]]:
-    """f-strings that Python < 3.12 rejects, as ``(line, snippet)`` pairs.
-
-    The rule, established by compiling cases under 3.11 and 3.14 rather than
-    guessed: **inside an f-string delimited by quote ``Q``, an unescaped ``Q`` may
-    not appear — not in a replacement field's expression, and not as the delimiter
-    of a string literal nested in that field.** It is narrower than "no nested
-    f-strings": ``f"{f' at {x!r}' if x else ''}"`` is fine (different quotes),
-    while ``f"{f"{x}"}"`` and ``f'{d['k']}'`` are not.
-
-    It must be done per *field*, not per node. An earlier per-node AST attempt
-    returned confident false zeros: for an implicitly concatenated f-string the
-    ``JoinedStr``'s source segment spans several lines and the offending literal is
-    a *sibling* node, never a child, so walking children can never see it.
+    The probe lives in ``conftest`` because it must not consult ``PATH``: the lean
+    CI job narrows ``PATH`` to the tools the engine shells out to, and a lookup that
+    trusted it reported "no old interpreter here" on a host that has one — turning
+    the guard against PEP 701 into a guard that could not fail.
     """
-    import io
-    import tokenize
+    from conftest import _find_pre_312_interpreter
 
-    try:
-        tree = ast.parse(source)
-    except SyntaxError:
-        return []  # already reported by the parse check above
-
-    out: list[tuple[int, str]] = []
-    for node in ast.walk(tree):
-        if not isinstance(node, ast.JoinedStr):
-            continue
-        segment = ast.get_source_segment(source, node)
-        outer = _fstring_quote(segment) if segment else None
-        if outer is None:
-            continue
-        for field in node.values:
-            if not isinstance(field, ast.FormattedValue):
-                continue
-            field_src = ast.get_source_segment(source, field)
-            if not field_src:
-                continue
-            try:
-                tokens = tokenize.generate_tokens(io.StringIO(field_src).readline)
-                for tok in tokens:
-                    if tok.type in (tokenize.STRING, getattr(tokenize, "FSTRING_START", -1)):
-                        if _fstring_quote(tok.string) == outer:
-                            out.append((node.lineno, (segment or "").strip()[:80]))
-                            break
-                else:
-                    continue
-                break
-            except (tokenize.TokenError, IndentationError):
-                continue
-    return out
+    return _find_pre_312_interpreter()
 
 
-def test_the_pre_312_fstring_scan_can_actually_fail():
-    """A check that cannot fail is worse than no check — so the scan is canaried.
+@pytest.mark.needs_pre_312_python
+def test_this_repo_can_detect_the_defect_it_was_written_for():
+    """The guard against PEP 701 must have a working detector on this machine.
 
-    This is the exact shape of the defect that shipped, and it is asserted to be
-    flagged. Without this test, a scan that had quietly stopped working would look
-    identical to a clean repo.
+    This is the *load-bearing* test, and it exists because the alternative passed.
+    An earlier version of this file shipped a hand-written tokenizer scan, because
+    the host has no ``python3.10`` and ``ast.parse(feature_version=(3, 10))`` cannot
+    catch the rule. That scan was a check that could not be trusted: run by a 3.10
+    interpreter it reported legal f-strings such as ``f"{sc.n:02d}"`` as offenders,
+    and run by 3.11 it reported none — insensitive and non-specific at once, which
+    is worse than no check, because it fails loudly on correct code and would be
+    deleted the first time it cried wolf.
+
+    So the scan is gone and this test takes its place. It asserts two things that
+    together mean the guard is real: (a) some interpreter here can detect the defect,
+    and (b) ``py_compile`` under it agrees with hand-established ground truth — the
+    two illegal shapes fail, the five legal ones pass. Where the host has only
+    3.12+, ``needs_pre_312_python`` skips this and the claim is not made at all,
+    which is the honest outcome: an unmakeable claim is skipped, never faked.
     """
-    offending = 'value = f"open{f\' at {d.get(\'url\')!r}\'}"\n'
-    assert _pre_312_fstrings(offending), "the canary must be flagged"
+    exe = _pre_312_interpreter()
+    assert exe, (
+        "no interpreter below 3.12 on this host, so PEP 701 cannot be detected — see "
+        "needs_pre_312_python; without one, do not claim this guard works")
 
-    # ...and the near-misses that are legal must stay legal, or the check will be
-    # silenced the first time it cries wolf.
-    assert not _pre_312_fstrings('value = f"open{f\' at {x!r}\'}"\n')
-    assert not _pre_312_fstrings('value = f"{d[\'k\']}"\n')
+    for src in _PEP701_ILLEGAL:
+        assert not _compiles_with(exe, src), f"{exe} should reject: {src!r}"
+    for src in _PEP701_LEGAL:
+        assert _compiles_with(exe, src), f"{exe} should accept: {src!r}"
 
 
 def test_requires_python_matches_the_ci_matrix():
     """The repo promises an interpreter range; CI must actually exercise it.
 
-    The PEP 701 defect was only reachable because a 3.10 job exists. If that job
-    is ever dropped while ``requires-python`` still says ``>=3.10``, the promise
-    becomes untested and the same syntax can return with nothing to catch it.
+    The PEP 701 defect was only reachable because a 3.10 job exists — and 3.10 is
+    the *only* job in the matrix that can detect it, because 3.12 accepts the syntax.
+    If that job is ever dropped while ``requires-python`` still says ``>=3.10``, the
+    promise becomes untested and the same syntax can return with nothing to catch it.
     """
     requires = _package_metadata()["Requires-Python"]
     assert requires and "3.10" in requires, requires
@@ -211,40 +193,41 @@ def test_requires_python_matches_the_ci_matrix():
 
 @pytest.mark.parametrize("path", sorted((REPO / "vidkit").glob("*.py")),
                          ids=lambda p: p.name)
-def test_every_module_parses_as_the_oldest_supported_python(path: Path):
-    """No module may use syntax the oldest supported interpreter rejects.
+def test_every_module_uses_no_syntax_feature_newer_than_310(path: Path):
+    """No module may carry a syntax *feature* the oldest supported interpreter lacks.
 
-    Two checks, because neither alone is sufficient — which was measured, not
-    assumed. ``py_compile`` run by an interpreter *older* than 3.12 catches the
-    tokenizer error exactly, but this host has no 3.10, and on 3.12+ the compiler
-    accepts the syntax outright. ``ast.parse(feature_version=...)`` catches syntax
-    *features* (match, PEP 695 type parameters) on any interpreter, but f-strings
-    are lexed rather than parsed, so it sails straight past the quoting rule.
-
-    So: the oldest interpreter available below 3.12 compiles the file when there
-    is one, and the tokenizer scan runs unconditionally. Together they close the
-    hole that let the original defect reach CI from a machine with none of the
-    CI interpreters installed.
+    ``ast.parse(feature_version=(3, 10))`` catches grammar-level additions — ``match``,
+    PEP 695 type parameters — on any interpreter, 3.12+ included, which is why this
+    half is not gated on having an old interpreter present. It does **not** catch the
+    tokenizer-level rules; that is ``test_every_module_compiles_as_the_oldest_supported_python``
+    below, and the two are separate tests precisely so neither can silently cover
+    for the other.
     """
-    import shutil
-    import subprocess
-
-    for candidate in ("python3.10", "python3.11"):
-        exe = shutil.which(candidate)
-        if exe:
-            proc = subprocess.run([exe, "-m", "py_compile", str(path)],
-                                  capture_output=True, text=True)
-            assert proc.returncode == 0, f"{candidate}: {proc.stderr.strip()}"
-            break
-
     source = path.read_text(encoding="utf-8")
     try:
         ast.parse(source, filename=str(path), feature_version=(3, 10))
     except SyntaxError as exc:  # pragma: no cover - only on a regression
         raise AssertionError(f"{path.name} does not parse as Python 3.10: {exc}") from exc
 
-    offenders = _pre_312_fstrings(source)
-    assert not offenders, (
-        f"{path.name} has an f-string Python < 3.12 rejects (a nested string literal "
-        f"reuses the outer f-string's own quote character): "
-        + "; ".join(f"line {n}: {seg}" for n, seg in offenders))
+
+@pytest.mark.needs_pre_312_python
+@pytest.mark.parametrize("path", sorted((REPO / "vidkit").glob("*.py")),
+                         ids=lambda p: p.name)
+def test_every_module_compiles_as_the_oldest_supported_python(path: Path):
+    """No module may carry a tokenizer rule a pre-3.12 interpreter rejects.
+
+    A real subprocess ``py_compile`` under an interpreter below 3.12 catches the
+    tokenizer-level rules, of which the PEP 701 f-string quoting change is the one
+    that bit us. It has to be a subprocess: this host's ``python3`` is 3.14, and a
+    compiler cannot be asked to *un*-know a rule it was built with. Where no such
+    interpreter exists the test skips and says so, rather than passing for the wrong
+    reason.
+    """
+    exe = _pre_312_interpreter()
+    assert exe, (
+        "needs_pre_312_python should have skipped this test, not run it; an empty "
+        "interpreter here means the marker and the probe disagree")
+    proc = subprocess.run([exe, "-m", "py_compile", str(path)],
+                          capture_output=True, text=True)
+    assert proc.returncode == 0, (
+        f"{path.name} does not compile under {exe}: {proc.stderr.strip()}")

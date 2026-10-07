@@ -11,7 +11,7 @@ allowed to see that path.
 which is both writable by the snap and cleaned up on exit. Tests that shell out
 to ffmpeg stay honest: they run against the same build a user would.
 
-Two capability markers live here, and they are independent on purpose:
+Six capability markers live here, and they are independent on purpose:
 
 ``needs_render``
     ffmpeg and rsvg-convert are installed. Absent in the lean CI job.
@@ -33,7 +33,18 @@ Two capability markers live here, and they are independent on purpose:
     download does not, and a test that says "drive a browser" fails on an
     un-downloaded Chromium with an error that reads like an engine bug.
 
-The four are applied independently and must stay that way. An earlier version
+``needs_mcp``
+    the ``mcp`` package imports, so the server can be driven over its own
+    transport. It is a declared extra, but not one ``.[dev]`` pulls in, so the
+    lean job does not have it.
+
+``needs_pre_312_python``
+    an interpreter below 3.12 is present *and was proved by compiling* to reject
+    a PEP 701 f-string while accepting legal ones. The rule lives in the
+    tokenizer, so no 3.12+ interpreter can see it, and ``PATH`` is deliberately
+    narrowed in the lean job — hence the probe compiles rather than looks up.
+
+The six are applied independently and must stay that way. An earlier version
 of this file returned early once the render tools were present, which silently
 disabled the sandbox marker on exactly the machines where it mattered least —
 the CI runner has ffmpeg and no usable bwrap. That is defect G one layer up;
@@ -43,8 +54,12 @@ capability markers do not compose by implication.
 from __future__ import annotations
 
 import asyncio
+import functools
 import inspect
+import os
 import shutil
+import subprocess
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -77,6 +92,121 @@ def arun(awaitable_or_fn, *args, **kwargs):
     if not inspect.isawaitable(coro):
         return coro
     return asyncio.run(coro)
+
+
+def mcp_sdk():
+    """The MCP app class, whichever name this version of ``mcp`` gives it.
+
+    ``FastMCP`` in 1.x, ``MCPServer`` in 2.x. Imported lazily so a lean install
+    without ``mcp`` can still import this module.
+    """
+    from vidkit.mcp_server import _server_class
+
+    return _server_class()
+
+
+def _low_level(server):
+    """The low-level ``Server`` inside the SDK's app, whichever version this is.
+
+    Both spellings are *private*, which is the seam defect 27 was caught on. It
+    is confined to this one function so the exit proof itself uses only stable
+    API: ``Server.run`` and ``create_client_server_memory_streams`` have the same
+    signature in 1.27.2 and 2.3.0, while the attribute that reaches the server
+    from the app does not.
+    """
+    for attr in ("_mcp_server", "_lowlevel_server"):   # mcp 1.x, then 2.x
+        got = getattr(server, attr, None)
+        if got is not None:
+            return got
+    raise RuntimeError(f"no low-level MCP server on {type(server).__name__} "
+                       f"(mcp {__import__('importlib.metadata', fromlist=['x']).version('mcp')})")
+
+
+def mcp_is_error(answered) -> bool:
+    """``CallToolResult.isError``, under either spelling (2.x renamed it)."""
+    return bool(getattr(answered, "isError", getattr(answered, "is_error", False)))
+
+
+def mcp_text(answered) -> str:
+    """The first text block of a tool result, both versions alike."""
+    return answered.content[0].text
+
+
+def mcp_tool_text(out) -> str:
+    """The text of an in-process ``server.call_tool(...)`` result, both SDK majors.
+
+    These two return *different shapes*, which is why the tests cannot index the
+    result directly: ``mcp`` 1.x hands back ``list[ContentBlock]``, while 2.x wraps
+    it in a ``CallToolResult``. Only the wrapper differs; the first block is text
+    in both.
+    """
+    if hasattr(out, "content"):        # mcp 2.x: CallToolResult
+        out = out.content
+    return out[0].text
+
+
+def mcp_resource_text(out) -> str:
+    """The text of an in-process ``server.read_resource(...)`` result, both majors.
+
+    1.x returns a bare sequence of ``ReadResourceContents``; 2.x wraps it in a
+    ``ReadResourceResult``. The *element* shape is the same in both, so unwrapping
+    the sequence is the whole job.
+    """
+    parts = list(out.contents) if hasattr(out, "contents") else list(out)
+    part = parts[0]
+    return getattr(part, "content", None) or part.text
+
+
+def mcp_resource_template_uri(template) -> str:
+    """``ResourceTemplate.uriTemplate``, under either spelling (2.x renamed it)."""
+    return getattr(template, "uriTemplate", None) or template.uri_template
+
+
+def mcp_session(server):
+    """A client session wired to ``server`` over the in-memory transport.
+
+    ``mcp.shared.memory.create_connected_server_and_client_session`` used to do
+    this, and the exit proof used it — but it was removed in ``mcp`` 2.x, and the
+    extra declares ``mcp>=1.20``, so CI (which resolved 2.3.0) failed while every
+    local run passed on 1.27.2. Two facts made that the wrong dependency:
+
+    * ``server.call_tool`` is **in-process** — it goes straight to the tool
+      manager and never touches the wire — so proving the tools work *over MCP*
+      needs a session, not a shortcut;
+    * only the *private* attribute that reaches the low-level ``Server`` from the
+      app changed between versions (``_mcp_server`` → ``_lowlevel_server``).
+      ``Server.run``, ``create_client_server_memory_streams`` and
+      ``ClientSession`` are all present and identically shaped in both.
+
+    So this rebuilds the helper on the stable pieces and keeps the one private
+    lookup in ``_low_level``. It is an async context manager, to be driven by
+    ``arun`` from a sync test.
+    """
+    import contextlib
+
+    @contextlib.asynccontextmanager
+    async def _session():
+        import anyio
+        from mcp.client.session import ClientSession
+        from mcp.shared.memory import create_client_server_memory_streams
+
+        async with create_client_server_memory_streams() as (client_side, server_side):
+            client_read, client_write = client_side
+            server_read, server_write = server_side
+            raw = _low_level(server)
+            async with anyio.create_task_group() as tg:
+                tg.start_soon(lambda: raw.run(server_read, server_write,
+                                              raw.create_initialization_options()))
+                try:
+                    client = ClientSession(read_stream=client_read,
+                                           write_stream=client_write)
+                    async with client:
+                        await client.initialize()
+                        yield client
+                finally:
+                    tg.cancel_scope.cancel()
+
+    return _session()
 
 #: The external tools a *render* needs. The lean ``pytest`` CI job installs none
 #: of them — it checks Python logic, which is fast and always available — while
@@ -159,6 +289,100 @@ def _probe_mcp() -> bool:
 _HAVE_MCP = _probe_mcp()
 
 
+#: Raw source text that is legal in every language version and illegal before 3.12,
+#: established by compiling each case. The point is the tokens an *old* tokenizer
+#: has to reject, so do not "tidy" these into f-strings.
+_PEP701_ILLEGAL = (
+    'x = f"{f"{1}"}"\n',            # nested literal reuses the outer quote
+    "d = {}\nx = f'{d['k']}'\n",    # subscript key reuses the outer quote
+)
+_PEP701_LEGAL = (
+    """x = f"{f' at {1!r}'}"\n""",    # nested f-string, *different* quote
+    'a = 0\nx = f"{a:02d}"\n',      # the shape a bad scan flagged as illegal
+    'a = b = c = 0\nx = f"{a}-{b:02d}-{c:02d}"\n',
+    'a = None\nx = f"{a!r}"\n',
+    'd = {}\nx = f"""{d["k"]}"""\n',  # same quote, but triple-delimited
+)
+
+
+def _candidate_interpreters() -> list[str]:
+    """Every plausible pre-3.12 interpreter path, without trusting ``PATH``.
+
+    ``shutil.which`` consults ``PATH`` alone, and the lean CI job narrows ``PATH``
+    to the handful of tools the engine shells out to — so a probe built on ``which``
+    reports "no old interpreter here" on a host that has one, and the guard against
+    PEP 701 silently stops guarding. Absolute well-known locations are checked too,
+    which is what makes the lean run measure the *host* rather than the ``PATH``.
+    """
+    names = ("python3.10", "python3.11")
+    found: list[str] = []
+    for name in names:
+        which = shutil.which(name)
+        if which:
+            found.append(which)
+        for base in ("/usr/bin", "/usr/local/bin", "/bin", os.path.expanduser("~/.local/bin")):
+            path = os.path.join(base, name)
+            if os.path.isfile(path) and os.access(path, os.X_OK):
+                found.append(path)
+    seen: set[str] = set()
+    unique = []
+    for path in found:
+        real = os.path.realpath(path)
+        if real not in seen:
+            seen.add(real)
+            unique.append(path)
+    return unique
+
+
+@functools.lru_cache(maxsize=1)
+def _find_pre_312_interpreter() -> str:
+    """A pre-3.12 interpreter this host can really run, or ``""``.
+
+    "Found on disk" is not the question — a name can point at a broken symlink, a
+    wrapper for a managed toolchain that refuses, or a real interpreter that cannot
+    import its own stdlib. The candidate has to *detect the defect* to count, so
+    each one is asked to compile the illegal shape and accept the legal one. A path
+    that cannot answer is not evidence, and a check that cannot fail is worse than
+    no check — the same rule the markers were built on.
+    """
+    for exe in _candidate_interpreters():
+        try:
+            if _compiles_with(exe, _PEP701_ILLEGAL[0]):
+                continue  # accepts the illegal shape, so it cannot detect the defect
+            if not all(_compiles_with(exe, src) for src in _PEP701_LEGAL):
+                continue  # rejects legal code, so it would cry wolf
+        except OSError:  # pragma: no cover - candidate that cannot be executed
+            continue
+        return exe
+    return ""
+
+
+def _compiles_with(exe: str, source: str) -> bool:
+    """Whether ``exe``'s compiler accepts ``source``. False on any failure to run."""
+    handle = tempfile.NamedTemporaryFile("w", suffix=".py", delete=False)
+    try:
+        with handle:
+            handle.write(source)
+        proc = subprocess.run([exe, "-m", "py_compile", handle.name],
+                              capture_output=True, text=True)
+        return proc.returncode == 0
+    except OSError:  # pragma: no cover - candidate vanished between probe and use
+        return False
+    finally:
+        try:
+            os.unlink(handle.name)
+        except OSError:  # pragma: no cover
+            pass
+
+
+_PRE_312_PYTHON = _find_pre_312_interpreter()
+
+#: Whether a pre-3.12 interpreter is available. Exported so ``tests/test_hygiene.py``
+#: can skip *and say so* instead of asserting: a host with only 3.12+ cannot detect
+#: PEP 701 at all, and the honest response is to skip the claim, not to fake it.
+HAVE_PRE_312_PYTHON = bool(_PRE_312_PYTHON)
+
+
 def pytest_configure(config) -> None:
     _SCRATCH.mkdir(exist_ok=True)
     config.option.basetemp = str(_SCRATCH)
@@ -184,6 +408,11 @@ def pytest_configure(config) -> None:
         "needs_mcp: speaks MCP to the server over its own transport, so it "
         "needs the `mcp` extra installed (a declared extra, but not one of "
         "the ones `.[dev]` pulls in)")
+    config.addinivalue_line(
+        "markers",
+        "needs_pre_312_python: compiles source with an interpreter below 3.12, "
+        "because the PEP 701 f-string quoting rule lives in the tokenizer and "
+        "cannot be seen from 3.12+ (probed by compiling, not by finding a name)")
 
 
 def pytest_collection_modifyitems(config, items) -> None:
@@ -197,9 +426,11 @@ def pytest_collection_modifyitems(config, items) -> None:
         reason="no usable Playwright on this host (package or Chromium missing)")
     mcp_skip = pytest.mark.skip(
         reason="mcp extra not installed (needed to drive the server's transport)")
+    pre_312_skip = pytest.mark.skip(
+        reason="no interpreter below 3.12 on this host (PEP 701 is undetectable here)")
     for item in items:
-        # five independent conditions, five independent skips: each is a
-        # separate fact about the host and none implies another
+        # six independent conditions, six independent skips: each is a separate
+        # fact about the host and none implies another
         if not _HAVE_RENDER and "needs_render" in item.keywords:
             item.add_marker(render_skip)
         if not _HAVE_SANDBOX and "needs_sandbox" in item.keywords:
@@ -210,6 +441,8 @@ def pytest_collection_modifyitems(config, items) -> None:
             item.add_marker(playwright_skip)
         if not _HAVE_MCP and "needs_mcp" in item.keywords:
             item.add_marker(mcp_skip)
+        if not HAVE_PRE_312_PYTHON and "needs_pre_312_python" in item.keywords:
+            item.add_marker(pre_312_skip)
 
 
 def pytest_unconfigure(config) -> None:

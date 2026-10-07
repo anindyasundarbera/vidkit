@@ -593,14 +593,21 @@ def capture_all(ctx: Context) -> list[Result]:
     caps = ctx.spec.captures
     if not caps:
         return []
-    if not _playwright_available():
+
+    # The Playwright gate is *per capture*, not a gate on the whole function. A
+    # capture whose take the caller already promoted needs no browser — the file is
+    # already on disk under the plain name — so refusing it because Playwright is
+    # absent would let a missing browser silently undo the promotion. That is the
+    # same shape of defect the promotion exists to prevent, one layer down. Only the
+    # captures that actually have to *shoot* the page require the browser.
+    have_playwright = _playwright_available()
+    if not have_playwright:
         ctx.warn("playwright not installed — skipping capture; supply pre-recorded "
                  "stills and reference them with `still:` shots")
-        return [Result(c.name, None, False, "playwright not installed") for c in caps]
-
-    chrome = _find_chrome()
-    if chrome is None:
+    chrome = _find_chrome() if have_playwright else None
+    if have_playwright and chrome is None:
         ctx.warn("no Chrome/Chromium found; playwright will try its own downloader")
+
     results: list[Result] = []
     # Producers first: an `artifact:` capture films what a `download` produced, in
     # whatever capture declared it. Everything else keeps the spec's own order.
@@ -618,6 +625,9 @@ def capture_all(ctx: Context) -> list[Result]:
             ctx.info(f"capture {cap.name}: keeping selected take {chosen}")
             results.append(Result(cap.name, base, True,
                                   f"selected take {chosen}", []))
+            continue
+        if not have_playwright:
+            results.append(Result(cap.name, None, False, "playwright not installed"))
             continue
         try:
             res = capture_one(ctx, cap, chrome)

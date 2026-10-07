@@ -14,7 +14,7 @@ from pathlib import Path
 
 import pytest
 
-from conftest import arun
+from conftest import arun, mcp_resource_template_uri, mcp_resource_text, mcp_tool_text
 
 from vidkit.errors import ToolError
 from vidkit import mcp_server as m
@@ -321,7 +321,7 @@ def test_build_server_resources():
     async def go():
         res = await server.list_resources()
         tmpl = await server.list_resource_templates()
-        return [str(r.uri) for r in res], [t.uriTemplate for t in tmpl]
+        return [str(r.uri) for r in res], [mcp_resource_template_uri(t) for t in tmpl]
 
     resources, templates = arun(go)
     assert "vidkit://actions" in resources
@@ -381,8 +381,8 @@ def test_session_resources_serve_the_same_answer_as_the_tools(tmp_path):
     session_id = opened["id"]
 
     async def go():
-        return (await server.read_resource(
-            f"vidkit://sessions/{session_id}/status"))[0].content
+        return mcp_resource_text(await server.read_resource(
+            f"vidkit://sessions/{session_id}/status"))
 
     served = json.loads(arun(go))
     direct = call(m.tool_session_status, session_id, str(out))
@@ -398,7 +398,7 @@ def test_server_tool_call_roundtrip():
 
     async def go():
         out = await server.call_tool("vidkit_panel_kinds", {})
-        return out[0].text
+        return mcp_tool_text(out)
 
     text = arun(go)
     assert "line_series" in text
@@ -497,8 +497,7 @@ def test_run_resource_is_the_action_list():
         return await server.read_resource("vidkit://actions")
 
     out = arun(go)
-    part = out[0] if isinstance(out, tuple) else next(iter(out))
-    text = getattr(part, "content", None) or part.text
+    text = mcp_resource_text(out)
     assert "init" in text and "verify" in text
 
 
@@ -510,7 +509,7 @@ def test_run_tool_is_callable_over_the_server():
 
     async def go():
         out = await server.call_tool("vidkit_run", {"action": "doctor"})
-        return out[0].text
+        return mcp_tool_text(out)
 
     text = arun(go)
     assert '"ok"' in text

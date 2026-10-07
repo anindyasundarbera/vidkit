@@ -156,10 +156,10 @@ skip honestly when they are not.
 ```bash
 pip install -e ".[dev]"          # core + pytest
 pip install -e ".[capture]"      # + Playwright (needs `playwright install chromium`)
-python3 -m pytest tests -q       # 750 tests, ~11 min with every toolchain; 649 in ~16 s without
+python3 -m pytest tests -q       # 782 tests, ~10 min with every toolchain; 681 in ~16 s without
 ```
 
-**Five capabilities, five independent markers.** CI runs `pytest` twice on a machine
+**Six capabilities, six independent markers.** CI runs `pytest` twice on a machine
 with no `ffmpeg`, no `rsvg-convert`, and — measured, not assumed — no usable `bubblewrap`,
 and separately builds `examples/hello-world` on a machine that has the render tools. A
 test that needs a capability must carry the *matching* marker; `tests/conftest.py` probes
@@ -172,6 +172,7 @@ each one and skips independently:
 | `needs_docker` | *running* `docker run --rm hello-world` | loading or building a `backend: docker` spec |
 | `needs_playwright` | importing `playwright.sync_api` and *launching* Chromium | driving a real browser (`session_browser`, `capture`) |
 | `needs_mcp` | `importlib.util.find_spec("mcp")` | anything that imports `mcp` itself — the server, its transports, `build_server()` |
+| `needs_pre_312_python` | actually compiling with a pre-3.12 interpreter | PEP 701 tokenization checks that 3.12+ cannot perform |
 
 **The markers must stay independent.** Three of these were added after a CI failure, and
 every time the failure was the same shape: a test passed locally because *this* machine
@@ -206,7 +207,7 @@ a fully equipped box.
 ### 4.2 Commands that must keep working
 
 ```bash
-python3 -m pytest tests -q                                 # 716 passed
+python3 -m pytest tests -q                                 # 781 passed, 1 flaky Chromium screenshot failure
 python3 -m vidkit doctor  examples/hello-world/video.yaml  # exit 0
 python3 -m vidkit plan    examples/hello-world/video.yaml  # scene plan + estimate
 python3 -m vidkit build   examples/hello-world/video.yaml  # mp4 + srt + verify.json
@@ -439,16 +440,17 @@ Use exactly these, so they are greppable:
 - **Repo state:** public on GitHub (`anindyasundarbera/vidkit`), default branch `main`,
   CI green. **M0–M9 are merged** (M8 = PR #9 → `63ad046`; PR #10 → `9d3385b`; **M9 = PR #11
   → `1894ec9`**). **M10 is built and verified on `phase/m10-studio-session`.**
-- **Tests:** `python3 -m pytest tests -q` → **716 passed in ~637 s** with every toolchain
-  present, **615 passed / 101 skipped** without. Run the lean form while iterating — it is
+- **Tests:** `python3 -m pytest tests -q` → **781 passed, 1 Chromium screenshot failure in 616.99 s**
+  on the latest full run; the same screenshot test passed in isolation and the 89-test studio
+  suite passed. The lean run is **681 passed / 101 skipped**. Run the lean form while iterating — it is
   two orders of magnitude cheaper and it is what CI's `pytest` jobs actually do.
   **Never run two `pytest` processes at once**: they share `.pytest-tmp/` (gitignored) and
   will fail each other spuriously.
 - **CI is seven jobs:** `test` (the lean suite on Python 3.10 *and* 3.12 — two jobs),
   `build-example`, `capture-probe`, `exec-probe`, `docker-probe`, `movie-probe`,
   `studio-probe`.
-- **Four capabilities, four independent markers:** `needs_render`, `needs_sandbox`,
-  `needs_docker`, `needs_playwright`. See §4.1 — a marker that asks "is the toolchain
+- **Six capabilities, six independent markers:** `needs_render`, `needs_sandbox`,
+  `needs_docker`, `needs_playwright`, `needs_mcp`, `needs_pre_312_python`. See §4.1 — a marker that asks "is the toolchain
   complete?" rather than "is *this* capability usable?" is the bug the markers exist to
   prevent (defect G).
 - **Engine:** host-free. **10 stages** (`data, panels, stills, capture, exec, narration,

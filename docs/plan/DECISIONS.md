@@ -896,6 +896,7 @@ a future portability bug has a documented baseline to be measured against.
 | D56 | An unknown spec key is an error, not a comment | DECIDED |
 | D57 | A test that does not await an async tool does not test anything | DECIDED |
 | D58 | Every input to a transition is normalised to one timebase | DECIDED |
+| D59 | The MCP SDK range ends at the last supported major | DECIDED |
 
 ---
 
@@ -1707,3 +1708,29 @@ lengths.
 lengths, verified rather than assumed. Anything else that consumes two streams and produces one
 should be read with the same suspicion — the timebase belongs to the *output*, and a downstream
 filter inherits it.
+
+---
+
+## D59 — The MCP SDK range ends at the last supported major
+
+**2026-10-07.** Context: M10.
+
+The MCP extra originally declared `mcp>=1.20`, which also admitted 2.x. That was not a safe
+open-ended range: the server imported `FastMCP`, which 2.x renamed to `MCPServer`, and the
+studio's protocol tests used a helper removed in 2.x. CI resolved 2.3.0 while local development
+used 1.27.2, so the declared range was broader than the code and test evidence.
+
+**Decision.** Support both MCP SDK 1.x and 2.x, and declare `mcp>=1.20,<3`. The server adapts
+the app class, context, settings, and result shapes that differ between those majors. The
+protocol-level test suite has been run against 1.27.2 and 2.3.0. Do not admit a future major
+until its API changes are exercised and adapted.
+
+**Alternatives.**
+
+- *Pin to `mcp<2`* — rejected: the 2.x compatibility path is implemented and proven, and
+  excluding it would discard supported behavior.
+- *Leave the dependency unbounded* — rejected: a future breaking major would again install
+  successfully while making the standalone server unusable.
+
+**Consequences.** The project keeps compatible 1.x installations and accepts 2.x, while
+dependency resolution refuses an unreviewed 3.x release instead of presenting it as supported.

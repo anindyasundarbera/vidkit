@@ -447,6 +447,56 @@ def test_a_build_honours_the_take_the_sitting_selected(tmp_path, monkeypatch):
     assert (ctx.captures / "login.png").read_bytes() == _PROMOTED
 
 
+def test_keeping_a_selected_take_does_not_need_a_browser(tmp_path, monkeypatch):
+    """A promoted take is kept even where Playwright is absent.
+
+    Found in CI, and it is the same defect as the one above wearing a different hat.
+    ``capture_all`` used to return early — before the promotion check — when
+    Playwright was not importable, so a host without a browser silently discarded
+    every selected take and shot the page instead. The promotion promise is about
+    bytes already on disk; requiring a browser for it makes the promise conditional
+    on something the promise does not mention.
+
+    Playwright is forced unavailable rather than assumed absent, so this test states
+    the condition it is about instead of relying on the machine it runs on.
+    """
+    from vidkit import capture as _cap
+
+    ctx = _capture_ctx(tmp_path, base=_PROMOTED)
+    ctx.selections = {"login/2"}
+
+    def boom(*a, **k):
+        raise AssertionError("the page was re-shot despite a selected take")
+
+    monkeypatch.setattr(_cap, "capture_one", boom)
+    monkeypatch.setattr(_cap, "_playwright_available", lambda: False)
+
+    got = _cap.capture_all(ctx)
+
+    assert [r.detail for r in got] == ["selected take 2"], got
+    assert (ctx.captures / "login.png").read_bytes() == _PROMOTED
+
+
+def test_a_capture_with_no_promoted_take_still_honours_a_missing_browser(tmp_path,
+                                                                       monkeypatch):
+    """With no promotion to keep, no browser still means an honest failure.
+
+    The other side of the same gate: relaxing it per capture must not turn "cannot
+    shoot this page" into a success.
+    """
+    from vidkit import capture as _cap
+
+    ctx = _capture_ctx(tmp_path, base=None)
+    ctx.selections = set()
+    monkeypatch.setattr(_cap, "_playwright_available", lambda: False)
+
+    got = _cap.capture_all(ctx)
+
+    assert [r.ok for r in got] == [False], got
+    assert got[0].detail == "playwright not installed", got
+    assert not (ctx.captures / "login.png").exists()
+
+
 def test_the_delivered_frame_is_the_one_the_record_says_is_selected(tmp_path):
     """`select_take`'s promotion and the pipeline's read must agree *by bytes*.
 
@@ -1140,7 +1190,7 @@ def test_an_mcp_client_can_take_a_sitting_end_to_end(tmp_path):
     if a verb were unreachable, misspelled, or shaped differently over the wire than
     in Python, this is where it shows.
     """
-    from mcp.shared.memory import create_connected_server_and_client_session
+    from conftest import mcp_is_error, mcp_session
     from vidkit import mcp_server as m
 
     spec_path = _spec(tmp_path, extra="""
@@ -1183,11 +1233,11 @@ def test_an_mcp_client_can_take_a_sitting_end_to_end(tmp_path):
             # the session id does not name one. The tools that take it are the ones
             # that have to find the record.
             answered = await client.call_tool(name, {"out": str(out), **args})
-            assert not answered.isError, (name, answered.content)
+            assert not mcp_is_error(answered), (name, answered.content)
             return _json.loads(answered.content[0].text)
 
         server = m.build_server()
-        async with create_connected_server_and_client_session(server) as client:
+        async with mcp_session(server) as client:
             opened = await call(client, "session_open",
                                 {"spec": str(spec_path), "title": "exit proof"})
             sid = opened["id"]
@@ -1282,7 +1332,7 @@ def test_a_second_tool_call_finds_the_page_the_first_one_opened(tmp_path):
     no browser while a real Chromium sat open, and `browser_shot` would have nothing to
     photograph. Both facts are asserted here, because either one alone can pass by luck.
     """
-    from mcp.shared.memory import create_connected_server_and_client_session
+    from conftest import mcp_is_error, mcp_session
     from vidkit import mcp_server as m
 
     spec_path = _spec(tmp_path, extra="""
@@ -1311,10 +1361,10 @@ def test_a_second_tool_call_finds_the_page_the_first_one_opened(tmp_path):
 
         async def call(client, name, args):
             answered = await attempt(client, name, args)
-            assert not answered.isError, (name, answered.content)
+            assert not mcp_is_error(answered), (name, answered.content)
             return json.loads(answered.content[0].text)
 
-        async with create_connected_server_and_client_session(m.build_server()) as client:
+        async with mcp_session(m.build_server()) as client:
             opened = await call(client, "session_open",
                                 {"spec": str(spec_path), "session_id": "wire"})
             sid = opened["id"]
@@ -1338,7 +1388,7 @@ def test_a_second_tool_call_finds_the_page_the_first_one_opened(tmp_path):
             # re-read from its record has an empty `_live`, so asking for a second
             # browser would sail past the check and open one it could never close.
             twice = await attempt(client, "browser_open", {"session": sid, "url": url})
-            assert twice.isError, twice
+            assert mcp_is_error(twice), twice
             assert "already has a browser open" in twice.content[0].text, twice.content
 
             closed = await call(client, "session_close", {"session": sid})

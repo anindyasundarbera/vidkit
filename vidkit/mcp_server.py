@@ -41,11 +41,43 @@ from .reports import doctor_report, plan_report
 try:  # pragma: no cover - the MCP extra is optional
     from mcp.server.fastmcp import Context
 except ImportError:  # pragma: no cover
-    # A placeholder so the module still imports, and so the annotations that mention
-    # it still evaluate, when the optional extra is absent. The SDK matches the real
-    # class by subclass, so this can only ever be a stand-in for a server that does
-    # not exist anyway.
-    Context = Any  # type: ignore[assignment,misc]
+    try:
+        # mcp 2.x renamed FastMCP to MCPServer and moved the class with it.
+        from mcp.server.mcpserver import Context
+    except ImportError:
+        # A placeholder so the module still imports, and so the annotations that mention
+        # it still evaluate, when the optional extra is absent. The SDK matches the real
+        # class by subclass, so this can only ever be a stand-in for a server that does
+        # not exist anyway.
+        Context = Any  # type: ignore[assignment,misc]
+
+
+#: The SDK renamed ``FastMCP`` to ``MCPServer`` in 2.0. ``mcp>=1.20`` is what the
+#: extra declares, so both spellings are live and neither may be assumed.
+_SERVER_CLASSES = (
+    ("mcp.server.fastmcp", "FastMCP"),
+    ("mcp.server.mcpserver", "MCPServer"),
+)
+
+
+def _server_class():
+    """Return the SDK's app class, whichever name this version of ``mcp`` uses.
+
+    Raises the same ``ImportError`` that importing the SDK would, so the caller
+    can tell "no mcp installed" from "mcp installed but unrecognised".
+    """
+    import importlib
+
+    errors = []
+    for module_name, attr in _SERVER_CLASSES:
+        try:
+            return getattr(importlib.import_module(module_name), attr)
+        except (ImportError, AttributeError) as exc:
+            errors.append(exc)
+    raise ImportError(
+        "no MCP app class found — this version of 'mcp' is newer than vidkit knows "
+        f"(looked for {', '.join(f'{m}.{a}' for m, a in _SERVER_CLASSES)})"
+    ) from errors[0]
 
 
 # --------------------------------------------------------------------------- #
@@ -1166,7 +1198,7 @@ def build_server(*, host: str = "127.0.0.1", port: int = 8765,
     the stdio transport ignores them.
     """
     try:
-        from mcp.server.fastmcp import FastMCP
+        Server = _server_class()
     except ImportError as exc:  # pragma: no cover - optional dependency
         raise SystemExit(
             "The MCP server needs the 'mcp' package. Install it with:\n"
@@ -1174,7 +1206,7 @@ def build_server(*, host: str = "127.0.0.1", port: int = 8765,
             f"(import error: {exc})"
         ) from exc
 
-    server = FastMCP(
+    server = Server(
         name="vidkit",
         instructions=(
             "vidkit produces narrated, captioned screen-recording videos from a YAML "
@@ -1183,14 +1215,29 @@ def build_server(*, host: str = "127.0.0.1", port: int = 8765,
             "`vidkit_doctor` first if a build fails. `vidkit_docs` returns the full "
             "documentation (start with 'concepts', then 'spec-reference')."
         ),
-        host=host,
-        port=port,
-        streamable_http_path=streamable_http_path,
     )
+    _apply_transport_settings(server, host=host, port=port, path=streamable_http_path)
 
     _register_tools(server)
     _register_resources(server)
     return server
+
+
+def _apply_transport_settings(server, *, host: str, port: int, path: str) -> None:
+    """Carry the HTTP address, on whichever SDK this is.
+
+    ``mcp`` 1.x keeps ``host``/``port``/``streamable_http_path`` on the server's
+    ``settings``; 2.x dropped them from the app entirely and takes them as kwargs
+    to ``run``. Storing them on the server when 2.x ignores them keeps one launch
+    path for both — ``main`` passes them where the transport reads them.
+    """
+    settings = getattr(server, "settings", None)
+    if settings is None:  # pragma: no cover - 2.x has settings too, just not these
+        return
+    for name, value in (("host", host), ("port", port),
+                        ("streamable_http_path", path)):
+        if hasattr(settings, name):
+            setattr(settings, name, value)
 
 
 def _register_tools(server) -> None:
@@ -1657,13 +1704,28 @@ def main(argv: list[str] | None = None) -> int:
                           streamable_http_path=args.path)
     if args.transport == "stdio":
         server.run("stdio")
-    elif args.transport == "streamable-http":
-        print(f"vidkit MCP server: http://{args.host}:{args.port}{args.path}", file=sys.stderr)
-        server.run("streamable-http")
-    else:  # sse
-        print(f"vidkit MCP server (sse): http://{args.host}:{args.port}/sse", file=sys.stderr)
-        server.run("sse")
+    else:
+        where = (f"http://{args.host}:{args.port}{args.path}"
+                 if args.transport == "streamable-http"
+                 else f"http://{args.host}:{args.port}/sse")
+        print(f"vidkit MCP server ({args.transport}): {where}", file=sys.stderr)
+        server.run(args.transport, **_transport_kwargs(server, args))
     return 0
+
+
+def _transport_kwargs(server, args) -> dict:
+    """The HTTP address, passed only to the SDK that takes it as an argument.
+
+    ``mcp`` 1.x reads it from ``server.settings`` (already set by ``build_server``)
+    and its ``run`` accepts no such kwargs; 2.x takes them here and ignores the
+    settings. Passing them unconditionally would be a ``TypeError`` on 1.x.
+    """
+    if hasattr(getattr(server, "settings", None), "host"):  # 1.x owns them
+        return {}
+    kwargs = {"host": args.host, "port": args.port}
+    if args.transport == "streamable-http":
+        kwargs["streamable_http_path"] = args.path
+    return kwargs
 
 
 if __name__ == "__main__":
