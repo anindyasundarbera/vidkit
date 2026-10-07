@@ -7,11 +7,16 @@
     vidkit capture SPEC      (re)capture screen recordings only
     vidkit verify SPEC       re-run the acceptance checks on the last render
     vidkit init   DIR        scaffold a runnable story (spec + narration + provider)
+    vidkit run    ACTION     run a job and print its artifact manifest
     vidkit docs   [NAME]     print the docs router, or a named document
 
 ``--timeframe``/``--days``/``--as-of`` override the window declared by the spec or its
 ``story.yaml``, for every command that loads a spec. ``--days`` is a shorthand for
 ``--timeframe "Nd"`` ending at ``--as-of`` (today, if omitted).
+
+``--json`` turns any command into a machine-readable call: one JSON manifest on stdout,
+the same document ``vidkit run`` returns. ``--progress`` streams the run's own log to
+stderr, so stdout stays parseable.
 """
 
 from __future__ import annotations
@@ -24,12 +29,13 @@ from pathlib import Path
 from . import __version__
 from .assembler import Assets, make_context, run
 from .errors import VidkitError
-from .narration import parse_scene_script, word_count
-from .panels import kinds as panel_kinds
-from .secrets import Secrets
-from .spec import load_spec
-from .scaffold import scaffold_story
+from .job import ACTION_HELP, ACTIONS, run_job
 from .timeframe import Timeframe, parse_timeframe
+
+
+_JSON_HELP = ("print one JSON manifest on stdout instead of prose (the same document "
+              "`vidkit run` returns)")
+_PROGRESS_HELP = "let the run's own log through to stderr as it happens (needs --json)"
 
 
 # --------------------------------------------------------------------------- #
@@ -50,7 +56,7 @@ def _override(args) -> Timeframe | None:
 
 
 def _add_timeframe_args(p) -> None:
-    p.add_argument("--timeframe", default=None, metavar="SPEC",
+    p.add_argument("--timeframe", default=None, metavar="WINDOW",
                    help='override the window: "28d", "6m", "2026-09-08..2026-10-06", '
                         '"{days: 28, as_of: 2026-10-06}"')
     p.add_argument("--days", type=int, default=None, metavar="N",
@@ -60,137 +66,25 @@ def _add_timeframe_args(p) -> None:
 
 
 def _doctor(spec_path: Path | None, timeframe: Timeframe | None = None) -> int:
-    from .capture import _find_chrome, _playwright_available
-    from .ffmpeg import Ffmpeg, Rsvg, Shell
+    from .reports import doctor_report, format_doctor
 
-    sh = Shell()
-    print(f"vidkit {__version__}  (python {sys.version.split()[0]})")
-    ok = True
-
-    checks = [
-        ("ffmpeg", sh.has("ffmpeg"), "required — renders and muxes video"),
-        ("ffprobe", sh.has("ffprobe"), "optional — durations read from ffmpeg if absent"),
-        ("rsvg-convert", sh.has("rsvg-convert"), "required — SVG assets to PNG"),
-    ]
-    for name, present, note in checks:
-        req = "required" in note
-        status = "yes" if present else ("NO " if req else "no ")
-        print(f"  [{status}] {name:16s} {note}")
-        if req and not present:
-            ok = False
-
-    have_pw = _playwright_available()
-    chrome = _find_chrome()
-    print(f"  [{'yes' if have_pw else 'no '}] {'playwright':16s} "
-          f"{'optional — screen capture'}")
-    print(f"  [{'yes' if chrome else 'no '}] {'chrome/chromium':16s} "
-          f"{chrome or 'optional — needed for capture'}")
-
-    import importlib.util
-    have_piper = importlib.util.find_spec("piper") is not None
-    print(f"  [{'yes' if have_piper else 'no '}] {'piper (TTS)':16s} "
-          f"{'optional — narration audio'}")
-
-    if spec_path:
-        try:
-            spec = load_spec(spec_path, timeframe=timeframe)
-        except VidkitError as exc:
-            print(f"  [NO ] spec              {exc}")
-            return 1
-        print(f"  [yes] spec              {spec_path}")
-        print(f"        project         {spec.project.title} ({spec.project.slug})")
-        print(f"        size/fps        {spec.project.width}x{spec.project.height} @ {spec.project.fps}")
-        print(f"        scenes          {len(spec.scenes)}")
-        print(f"        captures        {len(spec.captures)}")
-        print(f"        charts          {len(spec.charts)}")
-        print(f"        provider        {spec.provider_name or '(none)'}")
-        if spec.story:
-            note = "" if spec.story.declared else "  (folder convention)"
-            print(f"        story           {spec.story.slug}{note}")
-        else:
-            print("        story           (not resolved)")
-        tf = spec.timeframe
-        print(f"        timeframe       {tf.label_with_source if tf else '(not declared)'}")
-        print(f"        panel kinds     {', '.join(panel_kinds())}")
-        ok = _doctor_secrets(spec) and ok
-    return 0 if ok else 1
-
-
-def _doctor_secrets(spec) -> bool:
-    """Print what the provider will ask for, masked, and fail on a missing must.
-
-    Nothing here ever contains a value: ``Secrets.describe`` renders a length,
-    which is enough to tell a wrong token from an absent one (R-B4).
-    """
-    if spec.provider is None:
-        return True
-    from .provider import collect_secrets, load_provider
-
-    declared = dict(spec.provider.secrets)
-    try:
-        module, _ = load_provider(spec.provider.module, spec.root)
-        declared.update(collect_secrets(module))
-    except VidkitError as exc:
-        print(f"  [NO ] provider          {exc}")
-        return False
-
-    needs = Secrets()
-    needs.declare(declared, why=f"declared by provider {spec.provider.module!r}")
-    needs.resolve()
-    print(f"        secrets         provider {spec.provider.module!r}")
-    if not needs.needs:
-        print("          (none declared)")
-    for line in needs.describe():
-        print(f"          {line}")
-    missing = needs.missing_required()
-    if missing:
-        print(f"  [NO ] secrets           not set: {', '.join(missing)}")
-        return False
-    return True
+    report = doctor_report(spec_path, timeframe=timeframe)
+    print(format_doctor(report))
+    return 0 if report["ok"] else 1
 
 
 def _plan(spec_path: Path, timeframe: Timeframe | None = None) -> int:
-    spec = load_spec(spec_path, timeframe=timeframe)
-    print(f"{spec.project.title}  [{spec.project.slug}]")
-    print(f"  output: {spec.project.output}  {spec.project.width}x{spec.project.height} "
-          f"@{spec.project.fps}")
-    print(f"  runtime window: {spec.project.min_seconds:.0f}-{spec.project.max_seconds:.0f}s")
-    if spec.story:
-        note = "" if spec.story.declared else "  (folder convention)"
-        print(f"  story: {spec.story.slug}{note}")
-    else:
-        print("  story: (not resolved)")
-    print(f"  timeframe: {spec.timeframe.label_with_source if spec.timeframe else '(not declared)'}")
-    total_words = 0
-    source = None
-    if spec.narration.source:
-        p = (spec_path.parent / spec.narration.source)
-        if p.exists():
-            source = {s.n: s.spoken for s in parse_scene_script(p.read_text())}
-    print("  scenes:")
-    for sc in spec.scenes:
-        text = spec.narration.inline.get(sc.n) or (source or {}).get(sc.n, "")
-        w = word_count(text) if text else 0
-        total_words += w
-        shots = ", ".join(f"{s.kind}:{s.ref}({s.effect})" for s in sc.shots)
-        est = (w / 2.78) if w else 0  # ~1.08 x 2.5 wps, matching the example
-        print(f"    {sc.n:2d}. {sc.title or '(untitled)':38s} {est:5.1f}s  {shots}")
-    est_total = total_words / 2.78 if total_words else 0
-    print(f"  narration words: {total_words}  |  est. runtime ~{est_total/60:.2f} min")
-    if est_total and not (spec.project.min_seconds <= est_total <= spec.project.max_seconds):
-        print("  WARNING: estimated runtime outside the project window")
-    print(f"  banned phrases: {len(spec.guard.banned)}")
-    for b in spec.guard.banned:
-        print(f"    - {b}")
-    print(f"  required phrases: {len(spec.guard.required)}")
-    for r in spec.guard.required:
-        print(f"    - {r}")
+    from .reports import format_plan, plan_report
+
+    print(format_plan(plan_report(spec_path, timeframe=timeframe)))
     return 0
 
 
 def _init(target: Path, *, title: str | None, slug: str | None,
           timeframe: Timeframe | None) -> int:
     """Scaffold a runnable story directory; never overwrite what is already there."""
+    from .scaffold import scaffold_story
+
     written = scaffold_story(target, title=title, slug=slug, timeframe=timeframe)
     print(f"scaffolded {target}")
     for path in written:
@@ -275,17 +169,137 @@ def _assets_to_json(assets: Assets) -> dict:
     }
 
 
+# --------------------------------------------------------------------------- #
+# --json  (R-G2): every command answers with the same manifest
+# --------------------------------------------------------------------------- #
+#: Which job answers which command, so ``--json`` and ``vidkit run`` agree by
+#: construction rather than by two lists kept in step by hand.
+_COMMAND_ACTION = {
+    "doctor": "doctor", "plan": "plan", "build": "build", "tts": "tts",
+    "capture": "capture", "verify": "verify", "init": "init",
+}
+
+
+def _action_for(args) -> str | None:
+    """Which job a command line is. ``run`` names its action; the rest map by name."""
+    if args.cmd == "run":
+        return args.action
+    return _COMMAND_ACTION.get(args.cmd)
+
+
+def _job_kwargs(args, action: str) -> dict:
+    """One command line, one job call — whichever verb was typed.
+
+    Every job takes the same arguments, so this is one dict rather than a branch per
+    verb; only ``init`` differs, because it *writes* a story instead of reading one
+    and so wants a title and a slug that mean nothing to the others.
+    """
+    spec, dest = getattr(args, "spec", None), getattr(args, "dir", None)
+    only = getattr(args, "only", None)
+    kw: dict = {
+        "story": getattr(args, "story", None) or spec or dest,
+        "out": getattr(args, "out", None),
+        "only": [x.strip() for x in only.split(",") if x.strip()] if only else None,
+        "from_stage": getattr(args, "from_stage", None),
+        "refresh": bool(getattr(args, "refresh", False)),
+        "timeframe": _override(args),
+    }
+    if action == "init":
+        kw["title"] = getattr(args, "title", None)
+        kw["slug"] = getattr(args, "slug", None)
+    return kw
+
+
+def _run(action: str, args, *, echo: bool = False) -> int:
+    """The ``run`` verb: a job manifest, printed, with an exit code to match.
+
+    The manifest is the output, so the run's own log must not land on stdout; when
+    the caller wants to watch it happen, it goes to stderr line by line. ``echo``
+    is therefore about *where* the log goes, never *whether* it is captured.
+    """
+    manifest = run_job(action, on_progress=_stderr_progress if echo else None,
+                       **_job_kwargs(args, action))
+    print(json.dumps(manifest, indent=1))
+    return _exit_code(manifest)
+
+
+def _stderr_progress(line: str) -> None:
+    print(line, file=sys.stderr, flush=True)
+
+
+def _json_main(args) -> int:
+    """``--json``: the manifest ``vidkit run`` prints, for any command that is a job.
+
+    ``docs`` prints documentation and ``auth`` opens a browser for a human, so
+    neither is a job; they answer in their own shape rather than pretending.
+    """
+    if args.cmd == "docs":
+        from .mcp_server import tool_docs, tool_docs_index
+        print(json.dumps(tool_docs_index() if args.index else {"doc": tool_docs(args.name)},
+                         indent=1))
+        return 0
+    action = _action_for(args)
+    if action is None:
+        print(json.dumps({"ok": False, "failure": {
+            "kind": "usage",
+            "message": f"{args.cmd or 'vidkit'} is not a job and has no JSON form",
+            "hint": f"one of: {', '.join(ACTIONS)}",
+        }}, indent=1))
+        return 1
+    # stdout carries the manifest and nothing else, so a pipe stays parseable;
+    # with --progress the log goes to stderr, without it the manifest keeps it
+    return _run(action, args, echo=bool(getattr(args, "progress", False)))
+
+
+def _exit_code(manifest: dict) -> int:
+    """0 = done; 1 = refused; 2 = it ran but the result did not verify."""
+    if manifest.get("ok"):
+        return 0
+    return 2 if (manifest.get("failure") or {}).get("kind") == "verification" else 1
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="vidkit", description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--version", action="version", version=f"vidkit {__version__}")
+    parser.add_argument("--json", action="store_true", help=_JSON_HELP)
+    parser.add_argument("--progress", action="store_true", help=_PROGRESS_HELP)
+    # The same two flags are also accepted *after* the verb, which is where a user
+    # reaching for them will type them. `SUPPRESS` keeps the after-the-verb copy from
+    # resetting what the global one already set.
+    common = argparse.ArgumentParser(add_help=False)
+    common.add_argument("--json", action="store_true", default=argparse.SUPPRESS,
+                        help=_JSON_HELP)
+    common.add_argument("--progress", action="store_true", default=argparse.SUPPRESS,
+                        help=_PROGRESS_HELP)
     sub = parser.add_subparsers(dest="cmd")
 
-    p_doc = sub.add_parser("doctor", help="check environment + spec")
+    p_run = sub.add_parser(
+        "run", parents=[common], help="run a job and print its artifact manifest",
+        description="One entry point for every job: it takes a story, a window and an "
+                    "output directory, and answers with a manifest — always the same "
+                    "shape, so a caller can branch on `ok` instead of on which command "
+                    "it happened to invoke.")
+    p_run.add_argument("action", choices=list(ACTIONS),
+                       help="; ".join(f"{a}: {h}" for a, h in ACTION_HELP.items()))
+    p_run.add_argument("--story", default=None,
+                       help="the story folder (or its video.yaml)")
+    p_run.add_argument("--out", default=None, help="output directory (default: story folder)")
+    _add_timeframe_args(p_run)
+    p_run.add_argument("--title", default=None, help="init: project title")
+    p_run.add_argument("--slug", default=None, help="init: project slug")
+    p_run.add_argument("--only", default=None,
+                       help="comma-separated stages, for the rendering actions")
+    p_run.add_argument("--from", dest="from_stage", default=None, metavar="STAGE",
+                       help="run this stage and everything after it")
+    p_run.add_argument("--refresh", action="store_true",
+                       help="fetch provider data again instead of reusing a snapshot")
+
+    p_doc = sub.add_parser("doctor", parents=[common], help="check environment + spec")
     p_doc.add_argument("spec", nargs="?")
     _add_timeframe_args(p_doc)
 
-    p_plan = sub.add_parser("plan", help="show the scene plan")
+    p_plan = sub.add_parser("plan", parents=[common], help="show the scene plan")
     p_plan.add_argument("spec")
     _add_timeframe_args(p_plan)
 
@@ -293,7 +307,7 @@ def main(argv: list[str] | None = None) -> int:
                         ("tts", "synthesize narration only"),
                         ("capture", "capture screen recordings only"),
                         ("verify", "re-run acceptance checks")):
-        p = sub.add_parser(name, help=help_)
+        p = sub.add_parser(name, parents=[common], help=help_)
         p.add_argument("spec")
         p.add_argument("--out", default=None, help="output directory (default: spec folder)")
         _add_timeframe_args(p)
@@ -307,14 +321,15 @@ def main(argv: list[str] | None = None) -> int:
                            help="fetch provider data again instead of reusing a "
                                 "snapshot (adds the data stage back into --only/--from)")
 
-    p_init = sub.add_parser("init", help="scaffold a new story directory")
+    p_init = sub.add_parser("init", parents=[common], help="scaffold a new story directory")
     p_init.add_argument("dir", help="directory to create the story in")
     p_init.add_argument("--title", default=None, help="project title (default: from the dir name)")
     p_init.add_argument("--slug", default=None, help="project slug (default: from the dir name)")
     _add_timeframe_args(p_init)
 
     p_auth = sub.add_parser(
-        "auth", help="record a browser session once, so captures never film a login")
+        "auth", parents=[common],
+        help="record a browser session once, so captures never film a login")
     p_auth.add_argument("url", help="the page to sign in at")
     p_auth.add_argument("--save", default=None, metavar="PATH",
                         help="where to write the storage state "
@@ -324,14 +339,26 @@ def main(argv: list[str] | None = None) -> int:
     p_auth.add_argument("--spec", default=None,
                         help="a spec, to put the default state file beside it")
 
-    p_docs = sub.add_parser("docs", help="print the docs router or a named document")
+    p_docs = sub.add_parser("docs", parents=[common], help="print the docs router or a named document")
     p_docs.add_argument("name", nargs="?", help="doc name (bare stem or module/name)")
     p_docs.add_argument("--index", action="store_true",
                         help="print the machine-readable module route table (JSON)")
 
     args = parser.parse_args(argv)
 
+    if getattr(args, "json", False):
+        return _json_main(args)
+    if getattr(args, "progress", False):
+        # the flag belongs to --json; without it, say so rather than silently ignore it
+        print("vidkit: error: --progress needs --json (otherwise the log already "
+              "reaches your terminal)", file=sys.stderr)
+        return 1
+
     try:
+        if args.cmd == "run":
+            # without --json, stdout *is* the terminal, so a person watching gets
+            # the run's log as it happens and the manifest underneath it
+            return _run(args.action, args, echo=True)
         if args.cmd == "doctor":
             tf = _override(args) if args.spec else None
             return _doctor(Path(args.spec).resolve() if args.spec else None, tf)

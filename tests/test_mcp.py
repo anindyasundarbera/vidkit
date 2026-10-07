@@ -7,6 +7,7 @@ when ``mcp`` is absent.
 
 from __future__ import annotations
 
+import time
 from pathlib import Path
 
 import pytest
@@ -201,9 +202,10 @@ def test_build_server_registers_toolset():
         return [t.name for t in tools]
 
     names = anyio.run(go)
-    assert {"vidkit_doctor", "vidkit_plan", "vidkit_build", "vidkit_verify",
+    assert {"vidkit_run", "vidkit_actions", "vidkit_init", "vidkit_capture_plan",
+            "vidkit_doctor", "vidkit_plan", "vidkit_build", "vidkit_verify",
             "vidkit_docs", "vidkit_docs_index", "vidkit_panel_kinds"} <= set(names)
-    assert len(names) == 10
+    assert len(names) == 14
 
 
 def test_build_server_resources():
@@ -218,6 +220,7 @@ def test_build_server_resources():
         return [str(r.uri) for r in res], [t.uriTemplate for t in tmpl]
 
     resources, templates = anyio.run(go)
+    assert "vidkit://actions" in resources
     assert "vidkit://docs/index" in resources
     assert "vidkit://docs/modules" in resources
     assert "vidkit://docs/{name}" in templates
@@ -235,3 +238,115 @@ def test_server_tool_call_roundtrip():
 
     text = anyio.run(go)
     assert "line_series" in text
+
+
+# --------------------------------------------------------------------------- #
+# The agent surface (R-G1/R-G3/R-G4)
+# --------------------------------------------------------------------------- #
+def test_run_tool_bounds_the_call_with_a_timeout(monkeypatch):
+    """A tool call has no Ctrl-C, so an overrun must come back as a manifest."""
+    from vidkit import job
+
+    def _everlasting(*a, **kw):
+        time.sleep(5)
+        return {"ok": True}
+
+    monkeypatch.setattr(job, "run_job", _everlasting)
+    out = m.tool_run("build", story="whatever", timeout=0.05)
+
+    assert out["ok"] is False
+    assert out["failure"]["kind"] == "tool"
+    assert "did not finish within" in out["failure"]["message"]
+
+
+def test_a_timeout_of_zero_means_no_ceiling(monkeypatch):
+    from vidkit import job
+
+    monkeypatch.setattr(job, "run_job", lambda *a, **kw: {"ok": True})
+    assert m.tool_run("plan", story="x", timeout=0)["ok"] is True
+
+
+def test_run_tool_plans_a_story():
+    out = m.tool_run("plan", story=str(EXAMPLE.parent))
+    assert out["ok"] is True
+    assert out["plan"]["slug"] == "hello-world"
+    assert out["progress"]["steps"]
+
+
+def test_run_tool_answers_a_refusal_without_raising():
+    out = m.tool_run("plan", story="does-not-exist")
+    assert out["ok"] is False
+    assert out["failure"]["kind"] == "tool"
+    assert out["failure"]["hint"]
+
+
+def test_run_tool_reaches_the_whole_vocabulary():
+    from vidkit.job import ACTIONS
+
+    listed = {row["action"] for row in m.tool_actions()["actions"]}
+    assert listed == set(ACTIONS)
+    assert m.tool_actions()["actions"][0]["does"]
+
+
+def test_init_tool_scaffolds_and_then_refuses(tmp_path):
+    target = tmp_path / "from-mcp"
+    first = m.tool_init(str(target), title="From MCP")
+    assert first["ok"] is True
+    assert (target / "video.yaml").exists()
+
+    again = m.tool_init(str(target))
+    assert again["ok"] is False
+    assert "refusing to overwrite" in again["failure"]["message"]
+
+
+def test_capture_plan_lists_what_would_be_filmed():
+    kit = Path(__file__).resolve().parents[1] / "examples" / "capture-kit" / "video.yaml"
+    if not kit.exists():
+        pytest.skip("the capture fixture is not present")
+
+    out = m.tool_capture_plan(str(kit))
+    names = [c["name"] for c in out["captures"]]
+    assert "usage" in names
+    assert out["needs_playwright"] is True
+
+    usage = next(c for c in out["captures"] if c["name"] == "usage")
+    assert usage["url"]
+    assert usage["asserts"], "an assertion is the reason a capture is trustworthy"
+    # the artifact captures must come last, so the file they need already exists
+    by_artifact = [c["name"] for c in out["captures"] if c["artifact"]]
+    assert by_artifact == names[-len(by_artifact):]
+
+
+def test_capture_plan_announces_nothing_on_stdout(capsys):
+    """A tool's return value must be the only thing on the wire."""
+    m.tool_capture_plan(str(EXAMPLE))
+    assert capsys.readouterr().out == ""
+
+
+def test_run_resource_is_the_action_list():
+    pytest.importorskip("mcp")
+    import anyio
+
+    server = m.build_server()
+
+    async def go():
+        return await server.read_resource("vidkit://actions")
+
+    out = anyio.run(go)
+    part = out[0] if isinstance(out, tuple) else next(iter(out))
+    text = getattr(part, "content", None) or part.text
+    assert "init" in text and "verify" in text
+
+
+def test_run_tool_is_callable_over_the_server():
+    pytest.importorskip("mcp")
+    import anyio
+
+    server = m.build_server()
+
+    async def go():
+        out = await server.call_tool("vidkit_run", {"action": "doctor"})
+        return out[0].text
+
+    text = anyio.run(go)
+    assert '"ok"' in text

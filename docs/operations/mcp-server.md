@@ -21,9 +21,13 @@ returns JSON.
 
 | Tool | Arguments | Returns |
 |---|---|---|
+| `vidkit_run` | `action`, `story?`, `out?`, `timeframe?`, `as_of?`, `refresh?`, `title?`, `slug?`, `only?`, `from_stage?`, `progress?`, `timeout?` | a **job manifest** — the one call that covers all seven actions |
+| `vidkit_actions` | — | the action vocabulary and the stages each action runs |
+| `vidkit_init` | `story`, `title?`, `slug?`, `timeframe?`, `as_of?` | a scaffolded, runnable story directory |
+| `vidkit_capture_plan` | `spec?` | what the captures will film, in order, without filming it |
 | `vidkit_doctor` | `spec?` | environment tool status + spec sanity |
 | `vidkit_plan` | `spec?` | scenes, shots, guards, estimated runtime (no render) |
-| `vidkit_build` | `spec?`, `out?`, `only?`, `from_stage?`, `refresh?` | output path, captions, clip count, verification report |
+| `vidkit_build` | `spec?`, `out?`, `only?`, `from_stage?`, `refresh?`, `progress?` | output path, captions, clip count, verification report |
 | `vidkit_tts` | `spec?`, `out?` | per-scene narration audio + measured timings |
 | `vidkit_capture` | `spec?`, `out?` | the recorded takes and artifact stills (real UI, real files, with assertions) |
 | `vidkit_verify` | `spec?`, `out?` | re-run the acceptance checks on the last render |
@@ -31,6 +35,33 @@ returns JSON.
 | `vidkit_panel_kinds` | — | the built-in panel kinds a chart may use |
 | `vidkit_docs` | `name?` | the docs **module router**, or a named document's Markdown (module-routed) |
 | `vidkit_docs_index` | — | the machine-readable module route table (`docs/modules.yaml`) |
+
+### Which call should an agent use?
+
+`vidkit_run` is the contract: it takes `{action, story, out}` and returns a manifest whose
+keys never change, so a caller can read `ok` and `failure` without knowing vidkit. The
+individual tools (`vidkit_plan`, `vidkit_build`, ...) remain for a client that already knows
+exactly which step it wants, and they answer in their own leaner shapes.
+
+```python
+vidkit_actions()                                   # what can I ask for?
+vidkit_run("plan",  story="./my-story")            # what would be built?
+vidkit_run("build", story="./my-story", out="./video")
+vidkit_run("verify", story="./my-story", out="./video")
+```
+
+Two differences worth knowing: `vidkit_run` **never raises for an expected refusal** -- "no
+story given", "that folder has no video.yaml", "the snapshot answers a different window" all
+come back as `ok: false` plus a `failure` block -- while the individual tools raise a tool
+error for the same conditions. And only `vidkit_run` reports `progress` as data.
+
+`vidkit_run(timeout=...)` bounds the call in seconds (default `1800`, or the
+`VIDKIT_RUN_TIMEOUT` environment variable; `0` disables it). A build that overruns is
+refused with a manifest rather than leaving the client hanging. Where the platform has no
+`SIGALRM` (a non-main thread) the bound is not installed and the call runs as before.
+
+The job contract has its own page: [Job contract](job-contract.md) -- the manifest keys, the
+failure vocabulary, the exit codes.
 
 `only` accepts stage names: `data, panels, stills, capture, narration, clips, concat, render,
 verify`. `from_stage` runs that stage *and everything after it* — `only` and `from_stage`
@@ -43,6 +74,7 @@ see [the provider guide](../authoring/provider-guide.md#datasets-snapshots-and-s
 
 | URI | Contents |
 |---|---|
+| `vidkit://actions` | the action vocabulary: what each `vidkit_run` action does, as data |
 | `vidkit://docs/index` | the documentation **module router** (table of contents) |
 | `vidkit://docs/modules` | the machine-readable module route table |
 | `vidkit://docs/{name}` | a named document as Markdown, module-routed (e.g. `vidkit://docs/spec-reference`) |
@@ -58,15 +90,21 @@ needs to know the folder. Call it with no name to get the router; call
 ## Suggested agent flow
 
 ```
-vidkit_doctor            → is the environment ready? is the spec valid?
-vidkit_plan              → what will be built, and how long?
-vidkit_docs("concepts")  → understand the model before editing a spec
-vidkit_build             → render (returns the verification report)
-vidkit_verify            → re-check after a manual edit
+vidkit_run("doctor")              → is the environment ready?
+vidkit_run("init", story=DIR)     → scaffold a story that builds unedited
+vidkit_run("plan", story=DIR)     → what will be built, and how long?
+vidkit_docs("concepts")           → understand the model before editing a spec
+vidkit_run("build", story=DIR)    → render (returns the verification report)
+vidkit_run("verify", story=DIR)   → re-check after a manual edit
 ```
 
-When `vidkit_build` fails, the error text names the failing stage/step; `vidkit_docs
-("troubleshooting")` maps it to a cause and a fix.
+That is the whole loop, and every step is `vidkit_run` with a different `action` — the
+argument shape never changes, so an agent that has one call implemented has all of them.
+
+When a run fails, `failure.message` names the failing stage/step and `failure.hint` names the
+next command worth running; `vidkit_docs("troubleshooting")` maps the message to a cause and
+a fix. With `progress=true` the same lines arrive on stderr as they happen, which is how you
+tell a slow build from a stuck one.
 
 ## Registering with a client
 
@@ -139,5 +177,6 @@ tool/resource registration and a tool-call round-trip.
 |---|---|---|
 | `The MCP server needs the 'mcp' package` | extra not installed | `pip install "vidkit[mcp]"` |
 | Client shows the server as failed | wrong `command`/`PYTHONPATH` | use an absolute python path and `PYTHONPATH` to the vidkit folder |
-| `no spec given and no spec found` | no default spec | pass `spec` explicitly |
+| `no spec given and no spec found` | no default spec | pass `spec`, or `story` to `vidkit_run` |
+| A `vidkit_run` call returns `ok: false` | expected refusal, not a crash | read `failure.kind` and `failure.hint` |
 | Tools appear but builds fail | environment | call `vidkit_doctor` first |

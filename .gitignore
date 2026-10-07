@@ -22,6 +22,9 @@ _scaffold/
 # scratch story the capture probe builds with a deliberately false assertion
 _capture_refusal/
 
+# scratch stories the agent-surface assertion walks init -> build -> verify through
+_agent_probe/
+
 # packaging
 dist/
 build/

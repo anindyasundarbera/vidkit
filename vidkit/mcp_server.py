@@ -27,6 +27,8 @@ from __future__ import annotations
 import contextlib
 import io
 import json
+import os
+import signal
 import sys
 from pathlib import Path
 from typing import Any, Iterator
@@ -133,6 +135,11 @@ def _assets_summary(assets) -> dict[str, Any]:
 # --------------------------------------------------------------------------- #
 # Tool functions (pure data in, pure data out)
 # --------------------------------------------------------------------------- #
+#: Default wall-clock ceiling for ``vidkit_run``. A tool call has no terminal to
+#: Ctrl-C and no job object to cancel, so an unbounded render is a client that
+#: hangs with no way to ask what happened. Override per call, or with
+#: ``VIDKIT_RUN_TIMEOUT`` (seconds; ``0`` disables the ceiling).
+RUN_TIMEOUT = 1800.0
 def tool_doctor(spec: str | None = None) -> dict[str, Any]:
     """Check the environment (and a spec, if given)."""
     path = None
@@ -149,7 +156,7 @@ def tool_plan(spec: str | None = None) -> dict[str, Any]:
 
 def tool_build(spec: str | None = None, out: str | None = None,
                only: list[str] | None = None, from_stage: str | None = None,
-               refresh: bool = False) -> dict[str, Any]:
+               refresh: bool = False, progress: bool = False) -> dict[str, Any]:
     """Run the pipeline and return the artifacts + verification report.
 
     ``only`` selects stages, ``from_stage`` resumes at one and runs the rest, and
@@ -164,6 +171,15 @@ def tool_build(spec: str | None = None, out: str | None = None,
         raise ToolError("`only` and `from_stage` are mutually exclusive")
     spec_path = resolve_spec(spec)
     out_dir = Path(out).expanduser().resolve() if out else None
+    if progress:
+        # `progress: true` asks for the run to narrate itself, so it goes through
+        # the job contract, which owns that narration. Without it the older, leaner
+        # call is kept, so a plain build is byte-for-byte what it always was.
+        from .job import run_job
+
+        return run_job("build", story=str(spec_path), out=str(out_dir) if out_dir else None,
+                       only=only or None, from_stage=from_stage, refresh=refresh,
+                       on_progress=_emit)
     try:
         with stdout_to_stderr():
             assets = run(spec_path, only=only or None, from_stage=from_stage,
@@ -239,6 +255,157 @@ def tool_verify_report(spec: str | None = None, out: str | None = None) -> dict[
     if not path.exists():
         raise ToolError(f"no verify.json at {path}; run build or verify first")
     return json.loads(path.read_text(encoding="utf-8"))
+
+
+def _run_timeout(timeout: float | None) -> float:
+    """The wall-clock ceiling for one ``vidkit_run`` call (``0`` = unbounded)."""
+    if timeout is not None:
+        return max(0.0, float(timeout))
+    try:
+        return max(0.0, float(os.environ.get("VIDKIT_RUN_TIMEOUT", RUN_TIMEOUT)))
+    except ValueError:
+        return RUN_TIMEOUT
+
+
+@contextlib.contextmanager
+def _deadline(seconds: float, action: str):
+    """Refuse to let one tool call run forever.
+
+    SIGALRM is the only cancellation a synchronous tool call can offer without a
+    thread pool, and it is safe here: the pipeline's own work is subprocess and
+    Playwright calls, so no interpreter-level invariant is being interrupted. Where
+    it is unavailable (a non-main thread, a platform without ``setitimer``) the
+    bound is silently not installed — an unbounded build is worse than no build,
+    but a broken build is worse than both, and the manifest still reports what it got.
+    """
+    if seconds <= 0 or not hasattr(signal, "setitimer"):
+        yield False
+        return
+    def _boom(signum, frame):  # noqa: ARG001 - signal handler signature
+        raise ToolError(f"`{action}` did not finish within {seconds:g}s; "
+                        "the call was stopped so the client stays responsive")
+    try:
+        previous = signal.signal(signal.SIGALRM, _boom)
+    except ValueError:  # not the main thread - no alarm to be had
+        yield False
+        return
+    signal.setitimer(signal.ITIMER_REAL, seconds)
+    try:
+        yield True
+    finally:
+        signal.setitimer(signal.ITIMER_REAL, 0)
+        signal.signal(signal.SIGALRM, previous)
+
+
+def tool_run(action: str = "plan", story: str | None = None, out: str | None = None,
+             timeframe: str | None = None, as_of: str | None = None,
+             refresh: bool = False, title: str | None = None, slug: str | None = None,
+             only: list[str] | None = None, from_stage: str | None = None,
+             progress: bool = False, timeout: float | None = None) -> dict[str, Any]:
+    """Run one job and return its manifest (R-G3).
+
+    The whole point of the job contract: a caller that does not know vidkit can
+    call this with an action and a story and read ``ok`` and ``failure`` back,
+    instead of choosing among a dozen tools and guessing their order.
+
+    ``timeout`` bounds the call in seconds (default :data:`RUN_TIMEOUT`, or
+    ``VIDKIT_RUN_TIMEOUT``; ``0`` disables it). A job that overruns is refused with a
+    manifest rather than left hanging — see :func:`_deadline`.
+    """
+    from .job import refused, run_job
+
+    try:
+        with _deadline(_run_timeout(timeout), action):
+            return run_job(action, story=story, out=out, timeframe=timeframe, as_of=as_of,
+                           refresh=refresh, title=title, slug=slug, only=only,
+                           from_stage=from_stage,
+                           on_progress=(lambda line: _emit(line)) if progress else None)
+    except ToolError as exc:
+        # the alarm normally rings inside the job, which turns it into a refusal
+        # itself; this catches the case where it rang just outside that, so the
+        # caller still gets a manifest instead of an exception
+        return refused(action, story=story, out=out, message=str(exc))
+
+
+def _emit(line: str) -> None:
+    """Report progress to stderr when the server is asked to narrate a run."""
+    print(line, file=sys.stderr, flush=True)
+
+
+def tool_actions() -> dict[str, Any]:
+    """The job actions an agent can ask for, as data."""
+    from .job import ACTIONS, ACTION_HELP, stages_for
+
+    return {"actions": [
+        {"action": a, "does": ACTION_HELP[a], "stages": stages_for(a)} for a in ACTIONS
+    ]}
+
+
+def tool_init(story: str, title: str | None = None, slug: str | None = None,
+              timeframe: str | None = None, as_of: str | None = None) -> dict[str, Any]:
+    """Scaffold a runnable story directory (R-G4)."""
+    from .job import run_job
+
+    return run_job("init", story=story, title=title, slug=slug,
+                   timeframe=timeframe, as_of=as_of)
+
+
+def tool_capture_plan(spec: str | None = None) -> dict[str, Any]:
+    """What the captures will film, in order, without filming any of it (R-G1).
+
+    An agent that is about to drive a browser needs to know which pages, which
+    assertions and which downloads a build will depend on — before it spends a
+    minute discovering one was wrong.
+    """
+    from .assembler import make_context
+
+    path = resolve_spec(spec)
+    with stdout_to_stderr():
+        # loading a context announces the story and the window, which belongs on
+        # stderr — a tool's return value must be the only thing on the wire
+        ctx = make_context(path)
+    captures = []
+    for c in ctx.spec.captures:
+        steps = []
+        for a in c.actions:
+            step = a.kind + (f":{a.selector}" if a.selector else "")
+            if a.save_as:
+                step += f" -> {a.save_as}"
+            if a.assert_ is not None:
+                step += "  (checked)"
+            steps.append(step)
+        captures.append({
+            "name": c.name,
+            "url": c.url,
+            "artifact": c.artifact,
+            "storage_state": c.storage_state,
+            "films_a_login": c.allow_login,
+            "takes": c.take,
+            "actions": steps,
+            "asserts": _describe_assert(c.assert_),
+            "full_page": c.full_page,
+        })
+    return {
+        "spec": str(path),
+        "captures": captures,
+        "count": len(captures),
+        "needs_playwright": bool(captures),
+        "order": "artifact-producing captures run last, so the file they save exists",
+    }
+
+
+def _describe_assert(a) -> list[str]:
+    """A capture's assertion, in words, so a plan can be read without the spec."""
+    if a is None:
+        return []
+    what = a.selector
+    if a.contains is not None:
+        return [f"{what} contains {a.contains!r}"]
+    if a.equals is not None:
+        return [f"{what} equals {a.equals!r}"]
+    if a.exists:
+        return [f"{what} exists"]
+    return [what]
 
 
 def tool_panel_kinds() -> dict[str, Any]:
@@ -386,6 +553,59 @@ def _register_tools(server) -> None:
     """
 
     @server.tool(
+        name="vidkit_run",
+        title="Run a vidkit job",
+        description="Run one job — `init`, `doctor`, `plan`, `build`, `capture`, `tts` "
+                    "or `verify` — and return its manifest. `story` is a story folder "
+                    "(its video.yaml is found inside) or a spec path; `out` is where "
+                    "the run writes; `timeframe` overrides the story's window. The "
+                    "manifest always has the same keys, so branch on `ok` and read "
+                    "`failure` for a refusal — it never raises for one. `progress: "
+                    "true` narrates the run to stderr. `timeout` bounds the call in "
+                    "seconds (default 1800; 0 disables) so a long render is refused "
+                    "rather than left hanging. This is the one call to use when you "
+                    "do not want to choose among the individual tools.",
+    )
+    def vidkit_run(action: str = "plan", story: str | None = None, out: str | None = None,
+                   timeframe: str | None = None, as_of: str | None = None,
+                   refresh: bool = False, title: str | None = None,
+                   slug: str | None = None, only: list[str] | None = None,
+                   from_stage: str | None = None, progress: bool = False,
+                   timeout: float | None = None) -> dict:
+        return tool_run(action, story, out, timeframe, as_of, refresh, title, slug,
+                        only, from_stage, progress, timeout)
+
+    @server.tool(
+        name="vidkit_actions",
+        title="List the job actions",
+        description="The actions `vidkit_run` accepts, what each one does, and which "
+                    "pipeline stages each one runs.",
+    )
+    def vidkit_actions() -> dict:
+        return tool_actions()
+
+    @server.tool(
+        name="vidkit_init",
+        title="Scaffold a new story",
+        description="Create a runnable story directory (story.yaml, video.yaml, "
+                    "provider.py, narration.md) and return the manifest. Refuses to "
+                    "overwrite anything already there.",
+    )
+    def vidkit_init(story: str, title: str | None = None, slug: str | None = None,
+                    timeframe: str | None = None, as_of: str | None = None) -> dict:
+        return tool_init(story, title, slug, timeframe, as_of)
+
+    @server.tool(
+        name="vidkit_capture_plan",
+        title="What the captures will film",
+        description="The captures a build would run — URLs, action steps, assertions, "
+                    "downloads — without filming any of them. Use it to check a plan "
+                    "before spending a minute on a browser.",
+    )
+    def vidkit_capture_plan(spec: str | None = None) -> dict:
+        return tool_capture_plan(spec)
+
+    @server.tool(
         name="vidkit_doctor",
         title="Check the vidkit environment",
         description="Verify ffmpeg/rsvg-convert/playwright/piper and, if a spec is given, "
@@ -409,12 +629,14 @@ def _register_tools(server) -> None:
                     "Returns the output path, captions, and the verification report. "
                     "Stages for `only`/`from_stage`: data, panels, stills, capture, "
                     "narration, clips, concat, render, verify. `refresh: true` re-asks "
-                    "the data source even when a snapshot would do.",
+                    "the data source even when a snapshot would do. `progress: true` "
+                    "returns the job manifest and narrates the run to stderr; prefer "
+                    "`vidkit_run` for that.",
     )
     def vidkit_build(spec: str | None = None, out: str | None = None,
                      only: list[str] | None = None, from_stage: str | None = None,
-                     refresh: bool = False) -> dict:
-        return tool_build(spec, out, only, from_stage, refresh)
+                     refresh: bool = False, progress: bool = False) -> dict:
+        return tool_build(spec, out, only, from_stage, refresh, progress)
 
     @server.tool(
         name="vidkit_tts",
@@ -489,6 +711,12 @@ def _register_resources(server) -> None:
                      mime_type="application/json")
     def docs_modules() -> str:
         return json.dumps(tool_docs_index(), indent=1)
+
+    @server.resource("vidkit://actions", name="vidkit job actions",
+                     description="The job actions vidkit_run accepts, and their stages.",
+                     mime_type="application/json")
+    def actions() -> str:
+        return json.dumps(tool_actions(), indent=1)
 
     @server.resource("vidkit://docs/{name}", name="vidkit doc",
                      description="A named vidkit document as Markdown (module-routed).",

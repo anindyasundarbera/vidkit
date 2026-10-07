@@ -26,6 +26,8 @@ vidkit/
                   mean_volume), Rsvg; FITS/TRANSITIONS/OVERLAYS constants
   assembler.py    STAGES; run(); Assets; make_context(); stage helpers
   reports.py      doctor_report/plan_report + format_* (shared by CLI and MCP)
+  job.py          ACTIONS; run_job() — the {action, story, out} contract and its manifest;
+                  Progress; reporting()/on_progress
   mcp_server.py   build_server(); tool_* functions; MCP tools + resources
   verify.py       Check, Report, verify_output()
   cli.py          argparse front-end
@@ -34,8 +36,8 @@ vidkit/
 Dependency direction is one-way and acyclic:
 
 ```
-cli → assembler → {spec, context, provider, capture, narration, panels, tts, ffmpeg, verify}
-panels → svg ;  tts → {ffmpeg, narration} ;  capture → spec
+cli → job → assembler → {spec, context, provider, capture, narration, panels, tts, ffmpeg, verify}
+mcp_server → job ;  reports → spec ;  panels → svg ;  tts → {ffmpeg, narration} ;  capture → spec
 ```
 
 `svg`, `errors`, and `narration` are leaf-ish (only `errors`); they are safe to import anywhere.
@@ -47,7 +49,9 @@ panels → svg ;  tts → {ffmpeg, narration} ;  capture → spec
 - **`Context`** — the runtime object passed to providers and stages. Owns paths and tool
   wrappers so nothing else shells out directly. `ctx.info`/`ctx.warn` are the log.
 - **`Assets`** — accumulates what a run produced (`stills`, `panel_stills`, `capture_stills`,
-  `scene_audio`, `video_track`, `audio_track`, `srt`, `output`, `report`).
+  `scene_audio`, `video_track`, `audio_track`, `srt`, `output`, `report`, `ctx`).
+- **The manifest** (`job.run_job`) — the agent-facing document: one shape for every action,
+  base keys always present, a refusal carried as data rather than raised.
 - **`SceneAudio`** — `(n, path|None, seconds, words)`; `seconds` is measured.
 - **`Report`/`Check`** — verification output.
 
@@ -60,6 +64,7 @@ panels → svg ;  tts → {ffmpeg, narration} ;  capture → spec
 | A TTS engine | a branch in `tts._engine_available` / `_piper_cmd` | this doc |
 | A pipeline stage | append to `assembler.STAGES`, guard with `only`, add a block in `run()` | [`pipeline.md`](pipeline.md) |
 | A CLI command | a subparser in `cli.main` (+ a helper) | [`cli-reference.md`](../operations/cli-reference.md) |
+| A job action | a branch in `job.run_job` + `ACTIONS`/`ACTION_HELP` | [`job-contract.md`](../operations/job-contract.md) |
 | A verification check | append in `verify.verify_output` | [`verification.md`](../verification/verification.md) |
 | An MCP tool | a `tool_*` function + a `@server.tool` wrapper | [`mcp-server.md`](../operations/mcp-server.md) |
 

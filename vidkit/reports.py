@@ -65,6 +65,13 @@ def doctor_report(spec_path: Path | None = None, *,
             report["spec_error"] = str(exc)
             report["ok"] = False
             return report
+        needs, missing = _secret_needs(spec)
+        if needs:
+            # what a provider will ask for is part of "can this machine run this
+            # story", so it is reported here rather than discovered mid-build
+            add("secrets", not missing, "declared by the provider", True,
+                ("not set: " + ", ".join(missing)) if missing else "all present")
+            report["ok"] = report["ok"] and not missing
         report["spec"] = {
             "path": str(spec_path),
             "title": spec.project.title,
@@ -78,8 +85,40 @@ def doctor_report(spec_path: Path | None = None, *,
             "provider": spec.provider_name,
             "story": spec.story.to_dict() if spec.story else None,
             "timeframe": spec.timeframe.to_dict() if spec.timeframe else None,
+            "secrets": needs,
         }
     return report
+
+
+def _secret_needs(spec) -> tuple[list[dict[str, Any]], list[str]]:
+    """What a provider declares it needs, and which of those are missing.
+
+    Never a value: :class:`~vidkit.secrets.Secrets` renders a length and a label,
+    which is enough to tell a wrong token from an absent one (R-B4).
+    """
+    if spec.provider is None:
+        return [], []
+    from .provider import collect_secrets, load_provider
+    from .secrets import Secrets
+
+    declared = dict(spec.provider.secrets)
+    try:
+        module, _ = load_provider(spec.provider.module, spec.root)
+        declared.update(collect_secrets(module))
+    except VidkitError:
+        # an unloadable provider is already reported by whichever check loaded it
+        return [{"name": n, "required": r, "why": why, "present": False}
+                for n, (r, why) in sorted(declared.items())], []
+
+    needs = Secrets()
+    needs.declare(declared, why=f"declared by provider {spec.provider.module!r}")
+    needs.resolve()
+    rows = [
+        {"name": need.name, "required": need.required, "why": need.why,
+         "label": need.label(), "present": need.name in needs.values}
+        for need in needs.needs.values()
+    ]
+    return rows, [need.name for need in needs.missing_required()]
 
 
 def format_doctor(report: dict[str, Any]) -> str:

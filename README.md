@@ -55,6 +55,8 @@ voice model for audio (`python -m piper.download_voices en_US-lessac-medium`).
 
 ```bash
 vidkit doctor            # check the environment (and optionally a spec)
+vidkit run plan --story . # one entry point for every job; prints a manifest
+vidkit --json plan SPEC.yaml | jq .plan.est_seconds   # machine-readable, same document
 vidkit plan SPEC.yaml    # preview scenes, timings, and guards — no rendering
 vidkit build SPEC.yaml   # run the whole pipeline
 vidkit verify SPEC.yaml  # re-run the acceptance checks on the last render

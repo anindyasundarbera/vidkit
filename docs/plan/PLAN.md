@@ -4,7 +4,7 @@
 > For the phase-wise plan see [FEATURE-ROADMAP.md](FEATURE-ROADMAP.md). For what already
 > happened see [HISTORY.md](HISTORY.md). For why, see [DECISIONS.md](DECISIONS.md).
 >
-> Last updated: **2026-10-07**.
+> Last updated: **2026-10-07** (M5 complete; M6 next).
 
 ---
 
@@ -179,9 +179,40 @@ Branch `phase/m4-presentation-v2` → PR → merged to `main`. Design consequenc
 
 ---
 
-## Next: M5 — Agent surface  *(P0)*
+## M5 — Agent surface — **COMPLETE**
 
-See [FEATURE-ROADMAP.md](FEATURE-ROADMAP.md) §8. Nothing here is started.
+Exit criterion ([FEATURE-ROADMAP.md](FEATURE-ROADMAP.md) §8):
 
-**The one item that needs the owner.** The public `v1.0.0` tag lands at M6 and is a visible
-release; it will be raised before it is pushed.
+> An MCP client can `init → build → verify` a story purely from tool calls; the same is
+> possible from a shell with `--json`.
+
+**Met, from a shell, in one session.** `--json doctor` (no story needed) → `--json run init`
+→ `--json run plan` → `--json --progress run build` → `--json run verify`; exit codes
+`0 0 0 0 0`, 23 log lines on stderr and pure JSON on stdout throughout. 14 MCP tools.
+
+### Verified evidence
+
+| Claim | How it was checked | Result |
+|---|---|---|
+| The whole loop is driveable without prose | the five `--json` calls above, chained | `0 0 0 0 0`; the scaffolded story builds and verifies unedited |
+| stdout stays parseable under `--progress` | stdout piped to `json.load`, stderr to a file | JSON parsed; 23 log lines separated |
+| `doctor` works before a story exists | `--json doctor` in a story-less directory | `ok: true` |
+| A refusal is data | `run_job("plan", story="does-not-exist")` | `ok: false` + `failure.kind`/`hint` |
+| A refusal still names the window | `timeframe="7d"` against a spec pinning another window | `ok: false`, `timeframe.days == 7` |
+| A timeout returns a manifest | `tool_run("build", timeout=0.05)` | `ok: false`, `"did not finish within"` |
+| Suite is green | `python3 -m pytest tests -q` | **337 passed in 48.04 s** |
+
+Branch `phase/m5-agent-surface` → PR → merged to `main`. Design consequences: **D29–D30**.
+
+---
+
+## Next: M6 — Hardening & v1.0  *(P0/P1)*
+
+See [FEATURE-ROADMAP.md](FEATURE-ROADMAP.md) §9. A provenance manifest (dataset source, spec
+hash, tool versions, build time), a portability pass, `CHANGELOG` release notes, optional
+PyPI.
+
+**The one item that needs the owner.** The public **`v1.0.0` tag** is a visible release and
+is the only remaining decision in the roadmap that a human owns. It will be raised — with
+the evidence the exit criterion asks for — before it is pushed. Everything else in M6 and
+after is authorised by [FEATURE-ROADMAP.md](FEATURE-ROADMAP.md).

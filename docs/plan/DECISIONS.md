@@ -700,6 +700,64 @@ long transition can no longer paper over a change the spec has no footage for.
 
 ---
 
+## D29 — A job answers with a manifest, and never raises for an expected refusal
+
+**Context.** M5 has to hand vidkit to an agent that did not write it. Every existing entry
+point answers differently: `run()` returns an `Assets`, the CLI prints prose or a small JSON
+summary, the MCP tools raise `ToolError`, `plan` returns a report, `doctor` returns a
+verdict. An agent choosing among them has to learn eight shapes and guess the order.
+
+**Decision.** There is one call — `{action, story, out}` — and it returns **one document**
+whose *base keys are always present* (`action, ok, story, out, spec, timeframe, artifacts,
+report, timeline, failure, progress, vidkit`), whatever happened. An action may add keys
+(`plan`, `doctor`, `created`); it may never remove or rename one. An expected refusal — "no
+story given", "that folder has no video.yaml", "the snapshot answers a different window" —
+comes back as `ok: false` plus a `failure` block with a `kind` and a `hint`. It does not
+raise. A refusal still records the window that was *asked* for, because "which window was
+that about?" is the first thing a caller needs after a failure.
+
+**Alternatives rejected:** letting expected refusals raise and asking callers to catch them
+(an agent then has to tell "vidkit said no" apart from "vidkit crashed" — and it cannot, from
+a message string); a different result shape per action (that is the thing being fixed);
+returning a bare error on stdout with a non-zero exit (loses `spec`, `timeframe`, `progress`
+— the parts that make a failure diagnosable).
+
+**Consequences:** `vidkit run` and `--json` share one serializer, and `_COMMAND_ACTION` maps
+verb → action so they cannot drift. Exit code follows `ok` (`0` done, `1` refused, `2` ran and
+did not verify). The base-key set is asserted in `tests/test_job.py::BASE_KEYS`, so a future
+action that forgets a key fails a test rather than a caller.
+
+---
+
+## D30 — Progress is the pipeline's own narration, delivered only through a hook
+
+**Context.** Long builds need to say what they are doing. The pipeline already does: every
+stage prints `[vidkit] …` lines to stdout. The obvious implementation is a second progress
+channel — callbacks threaded through every stage — which is a second account of the run that
+can drift from the first.
+
+**Decision.** A job captures **stdout for the duration of the block** and turns each whole
+line into a step (`{name, kind, ok, detail, seconds}`), classified (`stage` / `check` / `warn`
+/ `log`) so a caller can render stages and checks differently without parsing text. That
+record is always in the manifest; it reaches a terminal **only** if the caller supplied a
+hook. `run_job` therefore has no `echo` parameter: the *only* way a run's log leaves it is
+`on_progress`. The CLI passes one that writes to stderr under `--progress`; the MCP server
+passes one that writes to stderr; the plain `vidkit run` passes one only when stdout is a
+terminal.
+
+**Alternatives rejected:** a second callback channel per stage (drift, and every stage
+changes); letting the log out on stdout as well as through the hook (a stdio MCP transport
+has one stdout channel and it belongs to the protocol — this is the existing `stdout_to_stderr`
+rule, restated); an `echo` flag on `run_job` (tried and removed: it broke under pytest's
+captured stdout, and it makes the log *optional* rather than *redirectable*).
+
+**Consequences:** `--json` stays pipeable by construction, not by discipline. A caller cannot
+poll a job in another process — progress describes the run you are waiting for — so over MCP
+a bounded `timeout` on `vidkit_run` is how a client stops a runaway build getting a refusal
+rather than a hang.
+
+---
+
 ## Index
 
 | ID | Title | Status |
@@ -732,3 +790,5 @@ long transition can no longer paper over a change the spec has no footage for.
 | D26 | An overlay is drawn over a shot, never instead of one | DECIDED |
 | D27 | A still is fitted, never stretched | DECIDED |
 | D28 | A transition is a beat, and it never changes the runtime | DECIDED |
+| D29 | A job answers with a manifest, and never raises for an expected refusal | DECIDED |
+| D30 | Progress is the pipeline's own narration, delivered only through a hook | DECIDED |
