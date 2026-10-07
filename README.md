@@ -139,6 +139,13 @@ Built-in panel kinds (a `dataset` is any JSON the provider returns):
 | `strip` | a persistence calendar strip |
 | `kv_table` | key/value rows |
 | `text_panel` | wrapped prose |
+| `progress` | named stages of a process (done / active / to-do) |
+| `comparison` | two columns drawn at identical geometry — only content differs |
+| `quote` | a quotation with its attribution |
+
+An x axis whose labels are dates is drawn by **elapsed time**, not list order: a
+three-month gap is three times as wide as a one-month one. Ambiguous labels (`"3"`,
+`"March"`) are left as categories, because treating them as dates would invent a timeline.
 
 Register your own with `vidkit.panels.register(name, fn)` from your provider.
 
@@ -184,10 +191,11 @@ vidkit/
   provider.py   plugin loading + interface
   capture.py    Playwright capture: downloads, artifacts, takes, assertions
   narration.py  parse the script; build readable, faithful SRT
+  overlay.py    banner/image graphics drawn over a shot
   panels.py     data -> SVG panel renderers (built-in + registry)
   svg.py        SVG primitives + theme
   tts.py        per-scene speech -> WAVs (duration is the master clock)
-  ffmpeg.py     ffmpeg/rsvg wrappers (duration without ffprobe)
+  ffmpeg.py     ffmpeg/rsvg wrappers (duration without ffprobe; fit, xfade, overlay)
   assembler.py  the pipeline: data → panels → stills → capture → narration → clips → render
   verify.py     acceptance checks -> verify.json
   cli.py        doctor / plan / build / tts / capture / verify

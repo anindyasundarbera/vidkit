@@ -70,16 +70,29 @@ warning — the pipeline does not hard-fail), or an engine configured but not ru
 
 ### `clips`
 **Reads:** the scene spans from `narration`; the still for each shot.
-**Writes:** `OUT/_build/clips/scene-<n>-<i>.mp4` one per shot.
+**Writes:** `OUT/_build/clips/scene-<n>-<i>.mp4` one per shot; the pre-overlay take of an
+overlaid scene goes to `OUT/_build/clips/base/`.
 **Purpose:** render each still to a clip whose length is `scene_duration × (shot.weight / Σweights)`.
 **Effect:** `hold` = static; `zoom` = slow Ken-Burns push-in ending at `1 + zoom`.
 **Fails when:** a shot's still is unresolved, or ffmpeg fails.
 
+The stage first lays the **whole run out as a plan** (`_clip_plan`) — every
+`(scene, shot, seconds)` in screen order — and only then renders any of it. A dissolve
+overlaps two takes, so which take carries the extra `transition_seconds` cannot be decided
+clip by clip; it is decided here, once, and it is always the **outgoing** take that carries
+it. A transition therefore changes no runtime: the time it overlaps is the time it takes back.
+
+An `overlay:` is composited onto the finished take and the pre-overlay take is kept in
+`clips/base/` — the concatenation glob only matches `clips/scene-*.mp4`, so a resumed
+`--from concat` run still finds exactly the finished takes.
+
 ### `concat`
 **Reads:** the clips (sorted numerically by scene/shot) and the scene WAVs.
-**Writes:** `OUT/_build/clips/video-track.mp4` (stream-copied) and
-`OUT/_build/narration.wav` (concatenated audio, or absent if silent).
-**Purpose:** join without re-encoding the video.
+**Writes:** `OUT/_build/clips/video-track.mp4` and `OUT/_build/narration.wav`
+(concatenated audio, or absent if silent).
+**Purpose:** join the takes. With `project.transition: cut` (the default) this is a
+stream copy, so nothing is re-encoded; with any other transition it becomes a chain of
+`xfade` filters and is re-encoded, because the junction is now a picture, not a splice.
 
 ### `render`
 **Reads:** the video track, the audio track, and the scene spans.

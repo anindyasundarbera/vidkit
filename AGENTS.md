@@ -71,29 +71,40 @@ vidkit/
 ├─ CHANGELOG.md           release notes
 ├─ LICENSE                MIT
 ├─ pyproject.toml         packaging, extras, console scripts
-├─ vidkit/                the engine (17 modules, ~2.9k lines)
+├─ vidkit/                the engine (22 modules)
 │    assembler.py         the 9-stage pipeline + Context/Assets wiring
 │    spec.py              dataclasses + loader + cross-reference validation
 │    context.py           Context/Assets: the paths every stage shares
 │    provider.py          provider plugin loading (datasets/panels/stills/register)
 │    capture.py           Playwright capture, action DSL, assert-before-shot
-│    panels.py            8 built-in panel kinds + register()
+│    panels.py            11 built-in panel kinds + register()
 │    svg.py               SVG primitives + the default Theme/PanelDoc
 │    narration.py         scene-script parsing, caption wrapping, SRT building
+│    overlay.py           banner/image graphics drawn over a shot
 │    tts.py               per-scene piper WAVs; silent fallback
-│    ffmpeg.py            duration/volume/concat/still_to_clip/mux_captioned
+│    ffmpeg.py            duration/volume/concat/xfade/still_to_clip/overlay_clip/mux
+│    timeframe.py         the resolved window (days/as_of or start/end)
+│    secrets.py           declared secrets + redaction
+│    snapshot.py          dataset snapshots, freshness, degraded replay
+│    scaffold.py          `vidkit new` project skeleton
 │    verify.py            the acceptance checks → Report
 │    reports.py           report rendering helpers
-│    cli.py               doctor/plan/build/tts/capture/verify/docs
+│    cli.py               doctor/plan/build/tts/capture/auth/new/verify/docs
 │    mcp_server.py        MCP tools + resources + transports
 │    errors.py            VidkitError / SpecError / ToolError / ProviderError
 │    __init__.py          version + public exports
 │    __main__.py          python -m vidkit
 ├─ tests/
-│    test_core.py         20 tests — pure Python, no external tools
-│    test_mcp.py          17 tests — MCP surface
+│    test_core.py         panels, spec, captions, report — pure Python
+│    test_mcp.py          the MCP surface
+│    test_timeframe.py    the window contract (R-F)
+│    test_providers.py    snapshots, fallbacks, stage selection (R-B)
+│    test_capture.py      the capture DSL, action semantics (R-C)
+│    test_ffmpeg.py       filter graphs + real pixels read back
+│    test_presentation.py fit/overlay/transition contracts (R-D)
 ├─ examples/
-│    hello-world/         the only example — offline CI fixture (no browser, no voice, no network)
+│    hello-world/         offline CI fixture (no browser, no voice, no network)
+│    capture-kit/         a local fixture server the capture probe films
 ├─ docs/
 │    modules.yaml         machine-readable doc route table (agents resolve by stem)
 │    README.md            doc router
@@ -210,14 +221,15 @@ Use exactly these, so they are greppable:
 > Snapshot taken 2026-10-06. If this disagrees with [docs/plan/PLAN.md](docs/plan/PLAN.md),
 > trust PLAN.md.
 
-- **Repo state:** local git repo on `main` with **zero commits**. Everything is untracked.
-  No remote is configured.
-- **Tests:** `pytest tests -q` → **39 passed** (24 core + 15 MCP).
-- **Engine:** complete and host-free. 9 stages, 8 panel kinds, 10 MCP tools, 15 docs.
-- **Active phase:** **M0 — Extract & baseline** ([docs/plan/FEATURE-ROADMAP.md](docs/plan/FEATURE-ROADMAP.md)).
-  In progress: `examples/hello-world/` built, `LICENSE`/CI/first commit outstanding.
-- **Biggest functional gap:** there is **no timeframe concept** anywhere in the spec, and
-  **no story identity**. This blocks the entire premise. It is M1, and it is P0.
+- **Repo state:** public on GitHub (`anindyasundarbera/vidkit`), default branch `main`,
+  CI green. M0–M3 are merged; M4 is the active phase.
+- **Tests:** `python3 -m pytest tests -q` → **278 passed**, no external tools required.
+- **Engine:** host-free. 9 stages, 22 modules, 11 panel kinds, 10 MCP tools.
+- **Active phase:** **M4 — Presentation v2** ([docs/plan/FEATURE-ROADMAP.md](docs/plan/FEATURE-ROADMAP.md)).
+  If this line disagrees with [docs/plan/PLAN.md](docs/plan/PLAN.md), trust PLAN.md.
+- **Biggest remaining gap:** there is still no **executor/sandbox** and no **Docker lab**,
+  so the studio cannot yet drive a real terminal on behalf of an agent. That is M7/M8.
+- **The one item needing an owner decision:** the public `v1.0.0` tag at M6.
 
 ---
 

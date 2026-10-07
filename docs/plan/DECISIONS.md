@@ -610,6 +610,96 @@ now structurally impossible without a line in the spec saying it was intended.
 
 ---
 
+## D26 — An overlay is drawn over a shot, never instead of one
+
+**Status:** DECIDED 2026-10-07 (M4).
+
+**Context:** M4 added `scenes[].overlay`, a banner or image composited over a shot. The obvious
+next convenience — "this scene has no footage, just show the banner" — is exactly the failure
+mode the project exists to prevent: a published frame whose content came from a spec string
+rather than from anything that actually happened.
+
+**Decision:** An overlay is **decoration on evidence**. A scene with an `overlay` still needs
+exactly one of `still:`/`capture:`/`chart:`, and the overlay is composited on top of the
+finished take. The renderer enforces the same instinct: a `progress` panel draws *named
+stages* and never an invented percentage; a `comparison` panel draws both sides with the same
+geometry and type so only content can differ; a `quote` panel requires `who:`, because an
+unattributed quotation is not checkable. `overlay.fade` is clamped to a third of the scene so
+a declared overlay can never render as nothing.
+
+**Alternatives rejected:** allow an overlay-only scene (it would make the "no fabricated
+frames" invariant unenforceable, since the frame would have no provenance to check); allow an
+overlay to *replace* a failed capture (the honest response to a failed capture is a failed
+build — `capture.py` already aborts).
+
+**Consequences:** every rendered frame still traces to a capture, a still, or a computed
+dataset. A spec author who wants a title card writes a `still:` — a declared graphic asset,
+which is a different and checkable claim from "something happened".
+
+---
+
+## D27 — A still is fitted, never stretched
+
+**Status:** DECIDED 2026-10-07 (M4).
+
+**Context:** `still_to_clip` scaled to `project.size` with a bare `scale=W:H`, which stretches.
+A full-page capture is 1280×3000-ish; letterboxed or cropped it is legible, stretched it is a
+misrepresentation of the layout the product actually has.
+
+**Decision:** `shots[].fit` is `cover` (default) or `contain`, and there is no third value.
+
+- **`cover`** scales to fill and centre-crops the overflow. No bars, no distortion, but the
+  vertical extremes of a tall page are off screen. It is the default because most footage is
+  a viewport-shaped screenshot, where `cover` is exact.
+- **`contain`** scales to fit and letterboxes with a flat colour. Nothing is hidden, and the
+  bars honestly admit the source is not the frame's aspect.
+- Neither ever invents pixels, and neither is "stretch". Choose `contain` when the *whole*
+  document body is the claim — a full CSV, a PDF page.
+- New check `frames are the declared size` reads the geometry back off the produced file, so a
+  fitting regression cannot pass by looking plausible.
+
+**Alternatives rejected:** make `contain` the default (letterboxing every ordinary screenshot
+adds bars that say nothing true); a `stretch` option (there is no honest use for one);
+per-shot crop rectangles (a footgun that lets a spec frame any arbitrary sub-region as if it
+were the page).
+
+**Consequences:** a `fit` mistake is visible on screen — bars, or a cut-off edge — which is the
+point. The verify check turns a silent regression into a build failure.
+
+---
+
+## D28 — A transition is a beat, and it never changes the runtime
+
+**Status:** DECIDED 2026-10-07 (M4).
+
+**Context:** M4 added `project.transition` (`cut`|`fade`|`wipe`|`slide`) and `transition_seconds`.
+A dissolve *overlaps* two takes. Naively concatenating padded clips makes the finished film
+longer by `transition_seconds` per junction, so the pictures drift later and later behind the
+voice — a lie about timing, and precisely the failure I5 ("measured audio is the master
+clock") exists to forbid.
+
+**Decision:** A transition is a beat **between** two states, not a shot of its own — hence the
+0.05–2.0 s cap and the refusal wording. The engine lays the whole run out as a plan before
+rendering anything (`_clip_plan`), and the **outgoing** take of each junction carries the extra
+`transition_seconds`. The dissolve therefore consumes exactly the time it adds, the total
+runtime is unchanged, and narration stays the master clock. The four transitions are four
+different claims — `cut` a changed state, `fade` an overlap, `wipe` a replacement at a definite
+instant, `slide` a movement — so the choice is content, not decoration. `cut` stays a stream
+copy; anything else builds an `xfade` chain.
+
+**Alternatives rejected:** pad the *incoming* clip (drops the next picture in `s` early —
+measured: the new colour is on screen at 1.9 s instead of 2.0 s, which is the drift this whole
+entry is about); let the runtime grow and re-time the SRT to compensate (the SRT is built from
+measured spans; stretching it to cover a video-track mismatch would make the captions wrong
+instead of the pictures); a free-form transition duration (a 5-second dissolve is a scene, and
+calling it a transition would hide that no such scene was filmed).
+
+**Consequences:** the exit criterion is checkable — `test_a_transition_never_changes_the_runtime`
+asserts the finished track equals the measured narration for all three non-cut transitions. A
+long transition can no longer paper over a change the spec has no footage for.
+
+---
+
 ## Index
 
 | ID | Title | Status |
@@ -639,3 +729,6 @@ now structurally impossible without a line in the spec saying it was intended.
 | D23 | An artifact is filmed as itself, or not at all | DECIDED |
 | D24 | A take is named, and promoting one is explicit | DECIDED |
 | D25 | A login form is filmed only on purpose | DECIDED |
+| D26 | An overlay is drawn over a shot, never instead of one | DECIDED |
+| D27 | A still is fitted, never stretched | DECIDED |
+| D28 | A transition is a beat, and it never changes the runtime | DECIDED |

@@ -89,8 +89,10 @@ scenes:
   - n: 1
     title: The CSV it gave us
     shots:
-      - {capture: csv_page, effect: hold}
+      # The whole CSV page matters, so letterbox rather than crop: the rows keep
+      # their own shape and the bars admit the page is not 16:9.
+      - {capture: csv_page, effect: hold, fit: contain}
   - n: 2
     title: The PDF it gave us
     shots:
-      - {capture: pdf_page, effect: hold}
+      - {capture: pdf_page, effect: hold, fit: contain}

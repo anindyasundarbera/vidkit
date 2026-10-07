@@ -16,12 +16,14 @@ vidkit/
   capture.py      Playwright capture: wait_for/download actions, artifact filming,
                   PDF rasterising, takes, assertions; _find_chrome()
   narration.py    parse_scene_script(); build_srt(); wrap_caption(); SceneScript
-  panels.py       renderer registry + 8 built-in kinds; register(); kinds(); render()
+  overlay.py      banner_size(); banner_svg(); svg_size() — a graphic drawn over a shot
+  panels.py       renderer registry + 11 built-in kinds; register(); kinds(); render()
   svg.py          Theme, THEME, primitives (text/rect/line/polyline/circle/text_block),
                   PanelDoc, document()
   tts.py          synthesize(); concat_audio(); SceneAudio
-  ffmpeg.py       Shell, Ffmpeg (duration, still_to_clip, concat, mux_captioned,
-                  extract_frame, mean_volume), Rsvg
+  ffmpeg.py       Shell, Ffmpeg (duration, still_to_clip, concat, concat_with_transitions,
+                  overlay_clip, clip_geometry, frame_rgb, mux_captioned, extract_frame,
+                  mean_volume), Rsvg; FITS/TRANSITIONS/OVERLAYS constants
   assembler.py    STAGES; run(); Assets; make_context(); stage helpers
   reports.py      doctor_report/plan_report + format_* (shared by CLI and MCP)
   mcp_server.py   build_server(); tool_* functions; MCP tools + resources

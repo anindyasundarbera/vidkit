@@ -544,3 +544,81 @@ scenarios), `concepts.md` (a new principle, "an artifact is filmed as itself, or
 
 **D23** an artifact is filmed as itself, or not at all. **D24** a take is named, and promoting
 one is explicit. **D25** a login form is filmed only on purpose.
+
+---
+
+## 2026-10-07 — M4: Presentation v2 — **COMPLETE**
+
+**Goal.** Stop the output from looking wrong. M3 fixed what the camera *points at*; M4 fixes
+what the audience *sees*. Requirements R-D1…R-D6.
+
+Branch `phase/m4-presentation-v2` → PR → merged to `main`.
+
+### What was built
+
+| Area | Change |
+|---|---|
+| FFmpeg | `_PAD_COLOR`; `FITS`; `fit_filters()`; `still_to_clip(..., fit=)` with `cover` (scale-up + centre-crop), `contain` (scale-down + letterbox) and a `zoom` branch that fits into the enlarged box *before* `zoompan`; `clip_geometry`, `still_geometry`, `frame_rgb`; `TRANSITIONS`; `concat_with_transitions()` (a linear `xfade` chain); `overlay_clip()` |
+| Overlay | **new module `vidkit/overlay.py`** — `banner_size`, `banner_svg` (a translucent, never-full-width panel), `svg_size` |
+| Spec | `Shot.fit`; `Overlay` + `_overlay()` validation with the `overlay image not found: <src>` refusal; `Scene.overlay`; `Project.transition` / `transition_seconds` with refusals for an unknown name and for a duration outside 0.05–2.0 |
+| Assembler | new `_clip_plan(ctx, assets)` — the whole run laid out as `(scene, idx, shot, seconds)` **before** anything renders, because a dissolve overlaps two takes; `_build_clips` composites the overlay and pads the **outgoing** take of each junction; `_concat` picks the xfade chain |
+| Panels | `_DATE_FORMATS`, `parse_x`, `axis_positions`; `render_line_series` interpolates in real time; `options.x_axis: index` opts out; three new kinds — `render_progress`, `render_comparison`, `render_quote` — registry now **11** |
+| Verify | new check `frames are the declared size` (fact `video_size`) |
+| Fixture | `examples/capture-kit/video.yaml` marks its `csv_page`/`pdf_page` shots `fit: contain`, because for those the whole document body is the claim |
+| Tests | new `tests/test_ffmpeg.py` (18, filter graphs **and** pixels read back), new `tests/test_presentation.py` (60), `tests/conftest.py` (pytest's `basetemp` moved out of `/tmp`), `test_core.py` panel test widened to 11 kinds — suite **278 passed in 37.56 s** |
+
+### Exit criterion — read back off the pixels, not the filter string
+
+A filter that *looks* right is not evidence, so every visual claim here was measured off a
+real render at 320×180:
+
+- A two-scene `fade`, both scenes 2.0 s of measured narration, produces a track of
+  **`(320, 180)` and `4.00 s`** — exactly the narration. Across t = 2.0 → 2.6 s the seam goes
+  `(253,0,0) → (253,0,0) → (167,0,83) → (0,0,254)`: a genuine dissolve.
+- `wipe` at t = 2.3 shows red at x=20 and blue at x=300 **in the same frame**; `cut` at the
+  same instant shows one colour across all of it. A boundary and a blend are different claims.
+- A `640×360` clip with a `640×100` banner: row 40 is still the shot, row 310 is the banner.
+  Setting `fade` far beyond the clip length still leaves the banner on screen, because the
+  fade is clamped to a third of the scene.
+- `--from concat` on an overlaid, dissolving spec yields the same duration and the same
+  banner, because the pre-overlay takes live in `clips/base/` and the concat glob only sees
+  `clips/scene-*.mp4`.
+- `frames are the declared size` passes a correct film and fails a `320x180` one naming the
+  real size.
+
+### Defects found and fixed while building it
+
+1. **The snap ffmpeg cannot write into `/tmp`.** Every real-render test failed for a reason
+   that had nothing to do with the code. Fixed by `tests/conftest.py` redirecting pytest's
+   `basetemp` to `<repo>/.pytest-tmp`.
+2. **Padding the *incoming* clip made the next picture appear early** — measured: blue on
+   screen at 1.9 s instead of 2.0 s. Found by a smoke build, fixed by padding the **outgoing**
+   take, which is what keeps the runtime identical to the narration. Recorded as **D28**.
+3. **My own `_dominant()` helper was wrong**, `max(("red", r), ("green", g), ("blue", b))[0]`
+   — tuples compare by name first, so `("red", 0)` beat `("green", 126)` and every green pixel
+   reported as red. Fixed to `max(..., key=lambda kv: kv[1])[0]`. A test helper that lies is
+   worse than no test.
+4. **Two overlay filter-string tests read `rec.cmds[0]`**, the wrong command; fixed to
+   `rec.cmds[-1]`.
+5. **One transition assertion asserted the wrong offset** (`2.000` where the rule gives
+   `1.500`). The code was right and the expectation was wrong; corrected with the rule
+   written out in the comment.
+
+Defects 2–5 are the same lesson twice over: check whether the *test* or the *code* is wrong
+before changing either.
+
+### Documentation
+
+`docs/authoring/spec-reference.md` (`fit:`, `overlay:`, `project.transition` /
+`transition_seconds`, with a table of what each transition *claims*), `panels-reference.md`
+(the date axis, `x_axis: index`, the three new kinds), `pipeline.md` (the clip plan, the
+overlay composite, `xfade` at concat), `concepts.md` (a new principle — a graphic states a
+fact and never substitutes for footage), `verification.md` (the new check row),
+`architecture.md` (22 modules, the overlay module, the new ffmpeg surface), `README.md`,
+`ROADMAP.md` (§3.3 gap rows struck, §3.4 ticked), `AGENTS.md` (repo map and the snapshot),
+`CHANGELOG.md`, `PLAN.md`, `FEATURE-ROADMAP.md`.
+
+### Decisions taken
+
+**D26** an overlay is drawn over a shot, never instead of one. **D27** a still is fitted,
+never stretched. **D28** a transition is a beat, and it never changes the runtime.

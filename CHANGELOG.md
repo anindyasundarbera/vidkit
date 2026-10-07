@@ -12,7 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `examples/hello-world/` — a self-contained, host-free example that builds with
   nothing but `ffmpeg` and `rsvg-convert`. It doubles as the CI fixture: every
   number it displays is counted from this repository at build time, and its eight
-  charts exercise all eight built-in panel kinds.
+  charts exercise eight of the built-in panel kinds.
 - `guard.require_audio` — a silent cut must now be *declared*. Defaults to `true`,
   so a missing TTS engine can no longer silently produce an audio-free video.
 - Documentation module `docs/plan/` — plan, feature roadmap, history, decision log,
@@ -51,6 +51,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   asserts the artifacts are real, and asserts that a deliberately-wrong assertion
   fails the build.
 
+- `project.transition` (`cut` | `fade` | `wipe` | `slide`) and `project.transition_seconds`
+  (0.05–2.0) — how one shot becomes the next. A transition *overlaps* two takes, and the
+  time it overlaps is taken back, so the finished film is still exactly as long as the
+  measured narration. `cut` remains the default and is still a stream copy.
+- `shots[].fit` (`cover` | `contain`, default `cover`) — how a still is fitted to the frame.
+  Neither value stretches: `cover` crops the overflow, `contain` letterboxes it.
+- `scenes[].overlay` — a banner or image graphic composited **over** a shot, with
+  `position`, `opacity`, `fade` and `height`. An overlay is drawn over evidence and can
+  never stand in for it: the scene still needs its own `still`/`capture`/`chart`, and an
+  `image` overlay naming a file that does not exist is refused at load time.
+- Three new built-in panel kinds: `progress` (named stages, never an invented fraction),
+  `comparison` (two columns at identical geometry) and `quote` (with its attribution).
+  The registry now holds eleven kinds.
+- `line_series` draws an x axis of *dates* by elapsed time, so a three-month gap is three
+  times as wide as a one-month gap. Labels that are not unambiguously dates (`"3"`,
+  `"March"`) keep even spacing — treating them as dates would invent a timeline.
+  `options.x_axis: index` opts out.
+- New verification check `frames are the declared size` — the produced film's geometry is
+  read back from the file, so a `fit` or scale regression cannot pass unnoticed.
+- New module `vidkit/overlay.py` — `banner_size`, `banner_svg`, `svg_size`.
+
 ### Changed
 
 - `verify` treats a declared silent cut as a pass and skips the speech-rate check
@@ -65,6 +86,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   falls back to the snapshot with a warning instead of aborting.
 - `examples/oneaquahealth/` removed from this repository; it is host-coupled and
   belongs with the OneAquaHealth project.
+- `concat` is a stream copy only for `transition: cut`. Any other transition builds an
+  `xfade` chain and re-encodes, because the junction is a picture rather than a splice.
+- `ffmpeg.still_to_clip` gained `fit=`; the bare `scale=W:H` that stretched a full-page
+  capture is gone. `examples/capture-kit/` marks its CSV and PDF pages `fit: contain`,
+  because for those two the whole document body is the claim.
 
 ### Repository
 

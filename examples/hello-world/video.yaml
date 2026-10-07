@@ -40,9 +40,10 @@ narration:
 provider: provider            # provider.py — eight datasets, all measured from disk
 
 # ---------------------------------------------------------------------------
-# One chart per dataset the provider returns. Together these exercise all
-# eight built-in panel kinds, so this example fails loudly if a panel kind
-# regresses.
+# One chart per dataset the provider returns. Together these exercise eight of
+# the eleven built-in panel kinds, so this example fails loudly if one of those
+# regresses. (The other three — progress, comparison, quote — need bespoke data
+# and are covered directly by tests/test_presentation.py.)
 # ---------------------------------------------------------------------------
 charts:
   - {name: overview,     kind: stat_cards,  dataset: overview}

@@ -3,8 +3,8 @@
 Every value below is *measured from files on disk* when the build runs: the
 size of the vidkit package itself, the stage list, and the environment vidkit
 found. Nothing is hard-coded, and nothing is fetched. That keeps this example
-useful as a CI fixture — it exercises the provider seam and all eight built-in
-panel kinds without a browser, a voice model, or a server.
+useful as a CI fixture — it exercises the provider seam and eight of the
+eleven built-in panel kinds without a browser, a voice model, or a server.
 
 This module intentionally touches only the standard library plus ``vidkit``
 itself.

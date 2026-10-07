@@ -208,20 +208,47 @@ build must stop. Resolved as **D23–D25** in [DECISIONS.md](DECISIONS.md).
 
 ---
 
-## 7. M4 — Presentation v2  *(P0/P1)*
+## 7. M4 — Presentation v2  *(P0/P1)* — **DONE**
 
 **Purpose.** Stop the output from looking wrong.
 
 **Requirements.** R-D3 (date-proportional axis), R-D4 (overlays), **R-D5 (aspect-preserving
 crop — this is a bug fix)**, R-D1/D2 (panels), R-D6 (transitions).
 
-**Delivers.** `still_to_clip` currently uses a bare `scale=W:H`, which **stretches** a
-full-page capture to 16:9. That is a silent quality bug and a truthfulness problem: a
-distorted screenshot misrepresents the product. Fix it with `scale`+`crop` (or `pad`).
-Then: real-date x-axis, overlay/lower-thirds compositing, more panel kinds.
+**Delivers.**
+
+1. **`fit: cover|contain`.** The bare `scale=W:H` that stretched a full-page capture to 16:9
+   is gone. `cover` scales up and centre-crops the overflow; `contain` scales down and
+   letterboxes with a flat colour; the `zoom` branch fits into the enlarged box *before*
+   `zoompan` so the push-in never distorts either. Neither value invents pixels and there is
+   deliberately no `stretch`.
+2. **A date-proportional x axis.** `parse_x` recognises only unambiguous dates; a bare `"3"`
+   or `"March"` stays categorical, because reading them as dates would invent a timeline. All
+   -equal dates and single points fall back to even spacing; `options.x_axis: index` opts out.
+3. **`overlay:`.** A banner built from text, or a declared image, composited over the finished
+   take with `position`, `opacity`, `fade` and `height`. A whole engine (`vidkit/overlay.py`,
+   `Ffmpeg.overlay_clip`, `assembler._overlay_graphic`), not only a spec field.
+4. **Three panel kinds.** `progress` (named stages, never an invented fraction), `comparison`
+   (both columns at identical geometry, so only content differs), `quote` (attribution
+   required). The registry is now **11 kinds**.
+5. **Transitions.** `project.transition: cut|fade|wipe|slide` with `transition_seconds`, built
+   as an `xfade` chain at `concat`. `_clip_plan` lays the whole run out before rendering and
+   the **outgoing** take of each junction carries the extra time, so the finished film is
+   exactly as long as the measured narration.
+6. **A new verify check** — `frames are the declared size`.
 
 **Exit.** Full-page captures are never stretched; a time series is spaced by real dates; an
 overlay renders.
+**Met, and read back off the pixels rather than the filter string.** A two-scene fade renders
+a `320×180` track of exactly `4.00 s` where the narration measures `4.00 s`; the seam goes
+`(253,0,0) → (253,0,0) → (167,0,83) → (0,0,254)` across t = 2.0 → 2.6 s, and a wipe at t = 2.3
+shows red on the left and blue on the right in the *same* frame while a hard cut shows one
+colour across all of it. `python3 -m pytest tests -q` → **278 passed**.
+
+**Risks.** The temptation is a transition long enough or showy enough to disguise a change
+the spec has no footage for, and an overlay used as a substitute for a shot. Both are refused
+by construction — `transition_seconds` is capped at 2.0 and a scene with an overlay still
+needs its own `still`/`capture`/`chart`. Resolved as **D26–D28** in [DECISIONS.md](DECISIONS.md).
 
 ---
 

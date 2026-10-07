@@ -35,7 +35,7 @@ Read this once; everything else refers back to it.
 | **Floating window** | A relative timeframe with no `as_of`: it resolves against *today*, so narration may state its day count but never its dates. | `spec._validate_timeframe` |
 | **Context** | The shared runtime object: paths, shell, ffmpeg, rsvg, logging. | `context.Context` |
 
-## Three ideas that explain most of the design
+## Principles that explain most of the design
 
 ### 1. Audio is the master clock
 
@@ -92,7 +92,23 @@ means a typo in the spec is caught at load time (before any expensive render).
 - Modules: `provider.py`, `panels.py`, `svg.py`.
 - The spec's cross-reference validation lives in `spec.py::_validate`.
 
-### 5. Every claim that can be checked is checked
+### 5. A graphic states a fact; it never substitutes for footage
+
+A `banner:` overlay, a caption, a chart — each is **drawn over** something that was
+actually filmed or computed. None of them can be made to stand in for a shot. A scene
+still needs exactly one of `still:`, `capture:` or `chart:`; the overlay is composited on
+top and never replaces it. The alternative — an overlay that quietly fills an empty scene —
+would let a spec ship a claim with nothing behind it, which is the whole failure mode this
+project exists to prevent.
+
+The same rule reaches into the renderer. A `progress` panel draws named stages, never an
+invented percentage; a `comparison` panel draws both sides with the same geometry so the
+only difference is content; a `quote` panel refuses to draw an attribution-less quotation,
+because the attribution is the part that can be checked.
+
+- Modules: `overlay.py`, `panels.py`, `assembler.py::_overlay_graphic`.
+
+### 6. Every claim that can be checked is checked
 
 The spec's `timeframe:` and the narration are two independent records of the same fact. Rather
 than trusting the author to keep them in sync, `verify` reads the window back out of the

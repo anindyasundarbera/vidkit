@@ -212,7 +212,7 @@ authoritative "what is done now" record is
 - CLI: `doctor, plan, build, tts, capture, verify`.
 - Capture: Playwright, actions `wait/wait_for/select/click/fill/press/scroll/eval/download`,
   `assert` **before** the frame, real downloads filmed as themselves, named takes, session reuse.
-- Panels: 8 built-in kinds + `register()` extension.
+- Panels: 11 built-in kinds + `register()` extension.
 - Narration: scene-header parsing, bold-line extraction, token-faithful SRT, ≤2 lines/≤42 chars.
 - TTS: per-scene piper WAVs; measured duration is the clock; silent fallback.
 - ffmpeg/rsvg wrappers; duration without ffprobe; `still_to_clip` (hold/zoom); `mux_captioned`; `mean_volume`.
@@ -231,9 +231,9 @@ authoritative "what is done now" record is
 | ~~No `wait_for_selector` action~~ — **closed in M3** | R-C5 |
 | ~~No take-selection/retry~~ — **closed in M3** | R-C6 |
 | ~~No auth/session support~~ — **closed in M3** | R-C7 |
-| Panel x-axis is index-based, not date-proportional | R-D3 |
-| No overlay / lower-thirds composite (`ffmpeg overlay`) | R-D4 |
-| `still_to_clip` uses bare `scale=W:H` → **stretches** full-page captures (regression risk) | R-D5 |
+| ~~Panel x-axis is index-based~~ — **closed in M4** | R-D3 |
+| ~~No overlay / lower-thirds composite~~ — **closed in M4** | R-D4 |
+| ~~`still_to_clip` stretched full-page captures~~ — **closed in M4** (`fit: cover\|contain`) | R-D5 |
 | ~~No timeframe consistency check~~ — **closed in M1** | R-F7 |
 | No provenance manifest | R-F8 |
 | No MCP server (dangling wiring) | R-G1 |
@@ -355,13 +355,17 @@ real 158-byte CSV and a real 1104-byte PDF, and rasterises the PDF to 1275×1650
 
 ### M4 — Presentation v2 *(P0/P1)* — ~3–5 days
 
-- [ ] Date-proportional axis in `line_series` (R-D3).
-- [ ] Overlay/lower-third composite in `ffmpeg.py` (R-D4).
-- [ ] Aspect-preserving crop in `still_to_clip` (R-D5) — **bug fix**.
-- [ ] Extra panel kinds + `text_panel`/annotations polish (R-D1/D2).
-- [ ] Transition effects catalogue (R-D6).
+- [x] Date-proportional axis in `line_series` (R-D3).
+- [x] Overlay/lower-third composite in `ffmpeg.py` (R-D4).
+- [x] Aspect-preserving crop in `still_to_clip` (R-D5) — **bug fix**.
+- [x] Extra panel kinds + `text_panel`/annotations polish (R-D1/D2).
+- [x] Transition effects catalogue (R-D6).
 
 **Exit:** full-page captures are never stretched; a time series is spaced by real dates; an overlay renders.
+**Met.** `fit: cover|contain` refuses to stretch; a dated x axis is spaced by elapsed time
+(and `"3"` is deliberately *not* a date); `overlay:` composites a banner or an image over a
+shot; `project.transition: cut|fade|wipe|slide` joins takes without changing the runtime.
+Evidence: `python3 -m pytest tests/test_ffmpeg.py tests/test_presentation.py -q`.
 
 ### M5 — Agent surface *(P0)* — ~3–5 days
 

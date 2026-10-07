@@ -48,6 +48,56 @@ def _series_points(raw: list) -> list[tuple[str, float]]:
     return out
 
 
+_DATE_FORMATS = ("%Y-%m-%d", "%Y/%m/%d", "%d/%m/%Y", "%Y-%m-%dT%H:%M:%S",
+                  "%Y-%m-%d %H:%M:%S", "%b %Y", "%B %Y", "%Y-%m", "%Y")
+
+
+def parse_x(value: str) -> date | None:
+    """Parse an x label as a date, or ``None`` if it is not one.
+
+    Only labels that are unambiguously dates are accepted. An index like ``"3"``
+    or a category like ``"March"`` must keep the index spacing, because treating
+    them as dates would invent a timeline the data does not have.
+    """
+    s = value.strip()
+    if not s or len(s) < 4:
+        return None
+    try:                                   # fast path, and the common case
+        return date.fromisoformat(s[:10])
+    except ValueError:
+        pass
+    for fmt in _DATE_FORMATS:
+        try:
+            return datetime.strptime(s, fmt).date()
+        except ValueError:
+            continue
+    return None
+
+
+def axis_positions(points: list[tuple[str, float]]) -> list[float]:
+    """X coordinates in *time*, not in list order (R-D3).
+
+    Returns a position per point on a 0..1 scale. When every label parses as a
+    date, the positions are the real elapsed time between the first and last
+    date — so a three-month gap in the data draws as a three-month gap, which is
+    the whole point: an index axis silently compresses it and tells a story the
+    data does not support.
+
+    If any label is not a date, the axis falls back to index positions (0..1
+    evenly spaced), which is the honest default for categorical data.
+    """
+    dates = [parse_x(x) for x, _ in points]
+    if len(points) < 2 or any(d is None for d in dates):
+        n = len(points)
+        return [i / max(n - 1, 1) for i in range(n)]
+    first, last = dates[0], dates[-1]
+    span = (last - first).days
+    if span <= 0:                          # all the same day: no timeline to draw
+        n = len(points)
+        return [i / max(n - 1, 1) for i in range(n)]
+    return [(d - first).days / span for d in dates]
+
+
 def _as_float(v: Any) -> float:
     try:
         return float(v)
@@ -75,11 +125,22 @@ def render_line_series(data: dict, options: dict, doc: PanelDoc) -> None:
     ymax = options.get("y_max") or max(y for s in series for _, y in s["points"]) * 1.15
     ymin = options.get("y_min", 0.0)
 
-    def sx(i: int, n: int) -> float:
-        return x0 + (i / max(n - 1, 1)) * (x1 - x0)
-
     def sy(v: float) -> float:
         return y1 - (v - ymin) / max(ymax - ymin, 1e-9) * (y1 - y0)
+
+    # One shared time axis across every series, built from the first series that
+    # has a usable one, so two series drawn together stay aligned in time.
+    positions: list[float] | None = None
+    if str(options.get("x_axis", "auto")).lower() != "index":
+        for s in series:
+            if len(s["points"]) > 1:
+                positions = axis_positions(s["points"])
+                break
+
+    def sx(i: int, n: int) -> float:
+        if positions and i < len(positions) and n == len(positions):
+            return x0 + positions[i] * (x1 - x0)
+        return x0 + (i / max(n - 1, 1)) * (x1 - x0)
 
     for th in data.get("thresholds", []) if isinstance(data, dict) else []:
         y = sy(_as_float(th.get("value", 0)))
@@ -242,6 +303,88 @@ def render_text_panel(data: Any, options: dict, doc: PanelDoc) -> None:
         y += 40 * (1 + len(str(p)) // options.get("width", 110) + 1)
 
 
+def render_progress(data: Any, options: dict, doc: PanelDoc) -> None:
+    """A row of named stages, each done / active / to-do.
+
+    Draws a state that was *measured* — the fraction comes from the data, and
+    the bar is clamped to the frame, so a provider cannot ask for 140%.
+    """
+    t = THEME
+    items = data.get("steps") if isinstance(data, dict) else data
+    items = list(items or [])
+    if not items:
+        raise SpecError("progress: no steps")
+    x0 = options.get("x0", 120)
+    x1 = options.get("x1", doc.width - 120)
+    y = options.get("y0", 330)
+    row_h = options.get("row_height", 74)
+    label_w = options.get("label_width", 380)
+    for i, s in enumerate(items):
+        done, active = bool(s.get("done")), bool(s.get("active"))
+        col = t.accent if (done or active) else t.line
+        colour = t.accent if done else (t.accent2 if active else t.muted)
+        doc.add(rect(x0, y + i * row_h - 20, 26, 26, rx=13,
+                     fill=col if done else t.panel, stroke=col),
+                text(x0 + label_w, y + i * row_h, s.get("label", ""), size=26,
+                     weight=700 if active else 400,
+                     fill=t.ink if (done or active) else t.muted))
+        note = s.get("note", "")
+        if note:
+            doc.add(text(x1, y + i * row_h, note, size=22, fill=colour, anchor="end"))
+    if isinstance(data, dict) and data.get("caption"):
+        doc.add(text(x0, y + len(items) * row_h + 30, data["caption"], size=22,
+                     fill=t.muted, italic=True))
+
+
+def render_comparison(data: Any, options: dict, doc: PanelDoc) -> None:
+    """Two columns — before/after, ours/theirs, expected/measured.
+
+    The two sides are drawn at the same size with the same type, so the only
+    thing that differs between them is the content. Anything else would be an
+    argument made by layout rather than by the data.
+    """
+    t = THEME
+    if not isinstance(data, dict):
+        raise SpecError("comparison: data must be a mapping with left and right")
+    left, right = data.get("left") or {}, data.get("right") or {}
+    x0 = options.get("x0", 120)
+    gap = options.get("gap", 60)
+    y0 = options.get("y0", 320)
+    cw = options.get("column_width", (doc.width - 2*x0 - gap) // 2)
+    rows = options.get("rows", 8)
+    for side, cx in ((left, x0), (right, x0 + cw + gap)):
+        title = side.get("title", "")
+        tone = t.accent if side is right else t.muted
+        doc.add(rect(cx, y0 - 96, cw, 70, rx=10, fill=tone),
+                text(cx + 24, y0 - 46, title.upper(), size=24, weight=800,
+                     fill=t.darktext if side is right else t.panel, letter=1))
+        for i, line in enumerate(list(side.get("items") or [])[:rows]):
+            doc.add(text(cx + 24, y0 + i * 48, "·", size=26, fill=tone),
+                    text(cx + 56, y0 + i * 48, line, size=25, fill=t.ink))
+
+
+def render_quote(data: Any, options: dict, doc: PanelDoc) -> None:
+    """One sentence, set large, with attribution.
+
+    A quote is a claim; the attribution is what makes it checkable, so the
+    attribution is drawn by this renderer and not left to the caller.
+    """
+    t = THEME
+    text_ = data.get("text") if isinstance(data, dict) else str(data or "")
+    if not text_:
+        raise SpecError("quote: nothing to quote")
+    x0 = options.get("x0", 160)
+    y0 = options.get("y0", 420)
+    size = options.get("font_size", 44)
+    doc.add(rect(x0 - 40, y0 - size - 40, 10, 150, fill=t.accent))
+    doc.add(text_block(x0, y0, text_, size=size, width=options.get("width", 58),
+                       line_height=int(size * 1.35), max_lines=3))
+    who = (data or {}).get("who", "") if isinstance(data, dict) else ""
+    if who:
+        doc.add(text(x0, y0 + 3 * int(size * 1.35) + 20, f"— {who}", size=24,
+                     fill=t.muted))
+
+
 # --------------------------------------------------------------------------- #
 _REGISTRY: dict[str, Callable[[Any, dict, PanelDoc], None]] = {
     "line_series": render_line_series,
@@ -252,6 +395,9 @@ _REGISTRY: dict[str, Callable[[Any, dict, PanelDoc], None]] = {
     "strip": render_strip,
     "kv_table": render_kv_table,
     "text_panel": render_text_panel,
+    "progress": render_progress,
+    "comparison": render_comparison,
+    "quote": render_quote,
 }
 
 
