@@ -1,0 +1,109 @@
+# vidkit spec — movie-demo (M9's exit proof)
+#
+# This is a *film*, not a product demo, and it is built to prove one thing that
+# nothing before M9 could: it has **no captures, no provider and no browser**. Every
+# picture in it is either declared artwork the author shipped, a title card the
+# engine drew from these words, or a flat field. It is scored, it is captioned, and
+# `verify` passes.
+#
+# Run from the repo root:
+#   vidkit doctor examples/movie-demo/video.yaml
+#   vidkit plan   examples/movie-demo/video.yaml
+#   vidkit build  examples/movie-demo/video.yaml
+#
+# Requires: ffmpeg, rsvg-convert. No browser, no voice model, no network — which is
+# why it works as a CI fixture on a machine that has none of those.
+
+project:
+  title: "vidkit movie mode — declared pictures, an expressed clock, a score"
+  slug: movie-demo
+  output: movie-demo.mp4
+  size: [1280, 720]
+  fps: 24
+  # Every length below is *declared* rather than measured, so this window is exact:
+  # 4.0 + 3.0 + 2.5 + 3.5 + 3.0 = 16.0s. The window is tight on purpose — a film
+  # whose clock is expressed should hit its own number, and if it drifts, that is
+  # the bug this example exists to catch.
+  min_seconds: 15
+  max_seconds: 17
+
+voice:
+  engine: none                # a silent cut, declared below — not an accident (I6)
+
+# The score. `theme.ogg` is four seconds long and the film is sixteen; the bed is
+# looped and ducked under the measured narration spans, so the mix follows the
+# voice rather than a second timing table of its own.
+score:
+  src: assets/theme.ogg
+  volume: 0.45
+  duck_db: -12.0
+  ramp: 0.30
+  fade_in: 0.8
+  fade_out: 1.5
+
+narration:
+  source: narration.md
+
+scenes:
+  # A title card the engine draws: no PNG, no asset, just these words. The kicker
+  # is the eyebrow line above the rule.
+  - n: 1
+    title: A film from a specification
+    seconds: 4.0
+    shots:
+      - card: "A film from a specification"
+        kicker: "vidkit movie mode"
+        motion: {kind: zoom, direction: in, amount: 0.08}
+
+  # A solid, with a pan across it — and here is why it stays this way. The field is
+  # uniform, so the pan moves the camera over nothing and the picture does not change
+  # by a single pixel. That is the *only* shot in the film that proves `verify` tells a
+  # declaration apart from a measurement: every other move measures 0.96–5.71 and would
+  # pass a check that merely counted declarations. This one measures exactly 0.00, so
+  # the report says so — "1 over a field with nothing in it to reveal" — instead of
+  # claiming five moving shots because five shots asked to move. An honest report of an
+  # honest request; see `every camera move is accounted for` in docs/verification/.
+  - n: 2
+    title: A declared field
+    seconds: 3.0
+    shots:
+      - solid: "navy"
+        motion: {kind: pan, direction: left, amount: 0.10}
+
+  # An author's own picture, moved. The file has to exist — a `still:` is a claim
+  # that something was made, and a missing one is refused at load time.
+  - n: 3
+    title: A declared picture
+    seconds: 2.5
+    shots:
+      - {still: assets/frame.svg, motion: {kind: pan, direction: right, amount: 0.12}}
+
+  # Two shots in one scene, one of them holding still while the other moves. The
+  # declared `seconds:` sits on the *shot* here, so the remainder is divided by
+  # weight between them.
+  - n: 4
+    title: An expressed clock
+    seconds: 3.5
+    shots:
+      - {solid: "#101418", seconds: 1.2}
+      - {still: assets/frame.svg, effect: zoom, weight: 1.0}
+
+  # A card over a declared picture. The scrim is drawn by the engine; the backdrop
+  # is resolved and checked at load time, so this cannot silently render over nothing.
+  - n: 5
+    title: Closing
+    seconds: 3.0
+    shots:
+      - card: "Honest by construction"
+        kicker: "vidkit"
+        backdrop: assets/frame.svg
+        motion: {kind: zoom, direction: out, amount: 0.10}
+
+guard:
+  banned:
+    - "mode=mock"
+  required:
+    - "declared"
+  require_live_mode: false    # there is nothing live in this film, and it says so
+  require_audio: false        # a declared silent cut: no voice, only the score
+  require_live_data: false    # no provider at all — every number here is in the spec

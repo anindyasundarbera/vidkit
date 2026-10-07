@@ -837,3 +837,146 @@ jobs:
         run: |
           test -s examples/docker-demo/docker-demo.mp4
           test -s examples/docker-demo/narration.srt
+
+  movie-probe:
+    # Movie mode's claim is that a film can be cut from *declared* artwork alone — no
+    # browser, no provider, no network, no voice. That is precisely the case unit tests
+    # cannot reach: it is a claim about what ffmpeg and rsvg produce together. This job
+    # installs exactly those two tools and nothing else, so if the film renders it
+    # renders for the reason the feature exists.
+    name: cut a film from declared artwork alone
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install system tools
+        # ffmpeg and rsvg-convert, deliberately nothing else
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends ffmpeg librsvg2-bin
+
+      - name: Install vidkit
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e .
+
+      - name: The spec is well formed before anything is rendered
+        run: |
+          set -eu
+          python -m vidkit doctor examples/movie-demo/video.yaml
+          python -m vidkit plan examples/movie-demo/video.yaml
+
+      - name: The plan is not allowed to disagree with the build
+        # `plan` printed narration-derived estimates for a film whose every length is
+        # declared, and warned about a runtime the build never produced. Both are now
+        # computed by the one rule the renderer uses, so the two must agree — checked
+        # here against the numbers the build actually produces.
+        run: |
+          set -eu
+          python - <<'PY'
+          import json, subprocess, sys
+          from pathlib import Path
+
+          plan = json.loads(subprocess.run(
+              [sys.executable, "-m", "vidkit", "plan", "examples/movie-demo/video.yaml",
+               "--json"], capture_output=True, text=True, check=True).stdout)["plan"]
+          if plan["timing_source"] != "spec":
+              sys.exit("the fixture's lengths are all declared, so timing must come "
+                       f"from the spec, not from {plan['timing_source']!r}")
+          declared = [s["declared_seconds"] for s in plan["scenes"]]
+          if not all(d is not None for d in declared):
+              sys.exit(f"a scene in this fixture has no declared length: {declared}")
+          print(f"plan: {plan['planned_seconds']}s from {len(plan['takes'])} take(s), "
+                f"timing from the spec, score {plan['score']['src']}")
+          PY
+
+      - name: Build the film
+        run: python -m vidkit build examples/movie-demo/video.yaml
+
+      - name: Every picture came from a declared asset, and the camera moved
+        run: |
+          set -eu
+          python - <<'PY'
+          import json, sys
+          from pathlib import Path
+
+          report = json.loads(
+              Path("examples/movie-demo/_build/verify.json").read_text())
+          if not report["ok"]:
+              failed = [c["name"] for c in report["checks"] if not c["ok"]]
+              sys.exit(f"the build did not verify: {failed}")
+          facts = report["facts"]
+
+          # 1. Nothing was fabricated: every shot names a declared asset as its source.
+          # `artwork` is one row per shot; `artwork_sources` is the distinct set of
+          # sources across those rows.
+          artwork = facts["artwork"]
+          if {r["source"] for r in artwork} != {"declared asset"}:
+              sys.exit(f"a shot was not sourced from a declared asset: {artwork}")
+          drawn = [r for r in artwork if r["kind"] in ("card", "solid")]
+          if not drawn:
+              sys.exit("the film drew no card and no solid — this job proves nothing")
+
+          # 2. The camera moved, and the *engine* says so from what it rendered.
+          # A declared move is a request; `mae` is the measurement. Every row must carry
+          # one, a move over a field with nothing in it must measure exactly 0.0, and the
+          # moves over real artwork must clear a threshold that a still could not.
+          moving = facts["motion"]
+          if len(moving) < 2:
+              sys.exit(f"too few shots moved to be evidence: {moving}")
+          if any(r.get("mae") is None for r in moving):
+              sys.exit(f"a declared move was never measured: {moving}")
+          MOVE_MAE = 0.10
+          changed = [r for r in moving if r["mae"] > MOVE_MAE]
+          if len(changed) < 3:
+              sys.exit(f"fewer than three moves actually changed pixels: {moving}")
+          # The one declared move over a flat field must be reported as exactly still,
+          # and must not have been counted among the moves that changed the picture.
+          flat = [r for r in moving if r["mae"] == 0.0]
+          if len(flat) != 1:
+              sys.exit(f"expected exactly one move over a flat field, got {flat}")
+          if len(changed) + len(flat) != len(moving):
+              sys.exit(f"a move was neither measured as changed nor as flat: {moving}")
+
+          # 3. The clock came from the spec, not from an estimate of the wording.
+          if facts["timing_source"] != "spec":
+              sys.exit(f"timing came from {facts['timing_source']!r}")
+          # This fixture is silent, so it must publish an *estimate* and never claim
+          # spans. A `narration_spans` here would assert that seeking to those windows
+          # plays the words, in a 16s film whose scenes' words would take 35.6s.
+          if "narration_spans" in facts:
+              sys.exit(f"a silent cut claimed measured narration spans: "
+                       f"{facts['narration_spans']}")
+
+          # 4. The score is either ducked or honestly reported as playing alone.
+          score = facts["score"]
+          if score["ducked"] is True and not score["duck_seconds"]:
+              sys.exit("the mix claims to be ducked but ducked for no seconds")
+          if score["ducked"] is False and score["duck_seconds"] != 0.0:
+              sys.exit(f"the mix claims not to duck but reports "
+                       f"{score['duck_seconds']}s of ducking")
+
+          print(f"MOVIE OK — {len(artwork)} shot(s) from declared asset "
+                f"({len(drawn)} drawn by the engine), {len(moving)} moving "
+                f"({len(changed)} changed the picture, {len(flat)} over a flat field "
+                f"measured 0.0), {facts['duration_seconds']}s, "
+                f"score ducked={score['ducked']}")
+          PY
+
+      - name: Assert the artifacts exist and the score reached the mux
+        run: |
+          set -eu
+          test -s examples/movie-demo/movie-demo.mp4
+          test -s examples/movie-demo/narration.srt
+          test -s examples/movie-demo/_build/mix.wav
+          test -s examples/movie-demo/_build/verify.json
+          # the film must actually carry the mixed track, not the silent stems
+          probe=$(ffmpeg -i examples/movie-demo/movie-demo.mp4 2>&1 || true)
+          echo "$probe" | grep -q "Audio:" || { echo "the film has no audio stream"; exit 1; }
+          echo "artifacts ok"

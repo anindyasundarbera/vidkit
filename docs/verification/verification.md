@@ -24,6 +24,10 @@ render. The report is written to `OUT/_build/verify.json`.
 | `every command exited as declared` | the observed exit code is in the step's `expect_exit` | `assets.exec_results` |
 | `commands ran sandboxed` | no `exec` step ran under `local` — the confining backends are read from the engine, so a container counts | `assets.exec_results` |
 | `frames are the declared size` | the produced film is `project.size` in pixels | ffmpeg |
+| `every picture has an honest source` | every shot's kind maps to a source class the engine knows: live capture, measured data, or declared asset | `spec.shots` |
+| `every camera move is accounted for` | a real frame from the head and the tail of each moving clip is decoded and differenced | ffmpeg |
+| `shot timing is expressed, not measured` | either every scene length was declared, or the voice was the master clock | spec + `assets.scene_audio` |
+| `declared score is in the mix` | a declared `score:` reached the mix with the ducking that was actually applied | `assets.mix_result` |
 
 The `no mock mode referenced` check exists because a script may legitimately *say* "we never
 open `?mode=mock`"; so it allows the phrase near the word "never".
@@ -41,6 +45,57 @@ Most of the work happens earlier and more cheaply: an `artifact:` that no `downl
 spec produces is refused by `load_spec`, and a zero-byte or oversized file is refused by
 `capture.artifact_source`. This check is the last line — it catches an artifact that was
 declared, validated, and then never actually written.
+
+### `every camera move is accounted for`
+
+A shot may declare `motion:`. That declaration is a claim about the picture, so this check
+**measures the picture**: it decodes a frame near the head of the clip and a frame near its
+tail at 64×36, differences them, and records the mean absolute error as `mae` on that shot's
+`facts.motion` row. `MOVE_MAE = 0.10` is the threshold for "the picture changed".
+
+- every declared move moved → passes, `4 of 4 declared move(s) change the picture`.
+- a move over a flat field → **passes**, with `1 over a field with nothing in it to reveal`.
+  A pan across a `solid:` is an honest thing to ask for; a uniform field simply has nothing
+  in it to shift. Saying so is the point.
+- a clip that could not be read or decoded → **fails**. A measurement that did not happen is
+  not a measurement of zero.
+
+This check replaced one that compared a list against a filter of itself and so could never
+fail. That is worse than having no check, because it reads as assurance. See
+[the honesty rule](#what-verification-does-not-do).
+
+### `shot timing is expressed, not measured` (a film, not a demo)
+
+`facts.timing_source` is `"spec"` when every scene length was declared with `seconds:`, and
+`"audio"` when the measured voice was the master clock. A film declares its lengths; a demo
+derives them. Both are honest — what is not honest is reporting declared lengths as if they
+were measured. The check's `detail` names every length and its origin.
+
+### `declared score is in the mix`
+
+Passes when a declared `score:` reached the mix, and reports the ducking that was **actually
+applied** rather than the ducking that was configured:
+
+- `facts.score.ducked` is `true` when the bed was ducked under measured narration spans,
+  `false` when the score plays alone, and `null` when the score never reached the mix.
+- `ducked: false` on a silent cut is correct, not a failure — there is nothing to duck under.
+  `facts.score.duck_seconds` is `0.0` there for the same reason.
+
+An earlier version recomputed the ducked spans from the spec, so a silent cut reported
+`duck_seconds: 16.01` for ducking that never existed. `ffmpeg.mix()` now **returns** what it
+did and verify reports that.
+
+### `narration_spans` vs `narration_estimate`
+
+`facts.narration_spans` is published **only when every scene has a real wav file on disk** —
+each span is a seek offset into a concatenated narration track, and a span without a wav
+behind it is a fiction. When any scene is silent (no voice engine, a declared silent cut, or
+a TTS failure), verify publishes `facts.narration_estimate` instead: one entry per scene of
+the word count divided by `_FALLBACK_WPS = 2.5`, clearly named as an estimate.
+
+Machine consumers must branch: `narration_spans` present → real offsets; `narration_estimate`
+present → estimates; **neither** → a film with no scene audio at all. Never read one as the
+other. An estimate is not a measurement, and this is the difference between the two.
 
 ### `timeframe consistent with spec` (R-F7)
 
@@ -74,6 +129,20 @@ timeframes](../authoring/stories-and-timeframes.md)
                   "as_of": "2026-10-06", "source": "spec", "floating": false},
     "window_claims": [{"raw": "the last 28 days", "days": 28, "exact": false,
                        "start": null, "end": null, "end_anchor": null}],
+    "artwork": [
+      {"scene": 1, "index": 0, "name": "scene-01-0", "kind": "card",
+       "source": "declared asset", "asset": null, "motion": "zoom in 8% (start)",
+       "mae": 1.309, "label": null}
+    ],
+    "artwork_sources": ["declared asset"],
+    "motion": [
+      {"scene": 2, "index": 0, "kind": "pan", "direction": "left", "amount": 0.1,
+       "span": 3.0, "at": "start", "mae": 0.0, "label": null}
+    ],
+    "narration_estimate": {"1": 4.0, "2": 3.0},
+    "timing_source": "spec",
+    "score": {"src": "assets/theme.ogg", "seconds": 16.01, "ducked": false,
+              "duck_seconds": 0.0, "duck_db": -12.0, "volume_db": -6.9, "spans": []},
     "exec": [
       {"label": "write", "cmd": ["psql", "-c", "…"], "backend": "docker",
        "container": "vidkit-db-10e98a0eb4e", "exit_code": 0, "expect_exit": [0],
@@ -129,7 +198,9 @@ Be explicit about this — over-trusting a green report is the main risk.
 
 - **No semantic judgement.** `banned`/`required` are substring matches. A sentence can pass
   every check and still be misleading. Human review is required.
-- **No visual QA.** It does not look at frames; a panel could be blank and still "pass".
+- **No visual QA.** It checks exactly one thing about the pixels — whether a declared camera
+  move changed the picture (a 64×36 head/tail difference). A panel can still be blank, a card
+  can still be clipped, and a shot can still be dull, and the report will pass.
 - **No number correctness.** It cannot tell whether a figure on screen is *true* — that is
   the provider's job.
 - **No caption/audio alignment beyond duration.** It checks the caption file's shape and the
@@ -163,6 +234,9 @@ vidkit build SPEC || { echo "video failed verification"; exit 1; }
 - **audio present** — no TTS audio was produced; check `voice`.
 - **live captures present** — a capture did not run; see [`capture-guide.md`](../capture/capture-guide.md).
 - **speech rate** — usually a sign the audio failed and durations were estimated.
+- **every camera move is accounted for** — a clip was missing or unreadable, so nothing could
+  be measured. Check `facts.motion[*].mae`; `0.0` with `ok: true` is a move over a flat field.
+- **declared score is in the mix** — `facts.score` was absent. The score never reached ffmpeg.
 
 ## See also
 

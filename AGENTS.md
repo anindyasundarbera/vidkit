@@ -4,8 +4,9 @@
 > `vidkit`. It survives context compaction; the conversation does not.
 >
 > **Repo:** <https://github.com/anindyasundarbera/vidkit> (public, MIT) · default branch `main`
-> · first commit `87b7435`. CI (`.github/workflows/ci.yml`) runs the unit suite on Python
-> 3.10/3.12 and builds `examples/hello-world` end to end.
+> · first commit `87b7435`. CI (`.github/workflows/ci.yml`) runs **seven jobs**: the lean
+> unit suite on Python 3.10/3.12 and five end-to-end probes
+> (`build-example`, `capture-probe`, `exec-probe`, `docker-probe`, `movie-probe`).
 >
 > For *what to build next* read [docs/plan/PLAN.md](docs/plan/PLAN.md).
 > For *what already happened* read [docs/plan/HISTORY.md](docs/plan/HISTORY.md).
@@ -35,10 +36,13 @@ The north star, from [ROADMAP.md](ROADMAP.md) §1.1:
 ### 1.1 The one thing that makes vidkit worth existing
 
 **Honest by construction.** Every visual is sourced from something real — a live capture of a
-running product, a chart drawn from a provider's measured data, or a declared graphic asset.
-Nothing is fabricated. `verify.py` then *reopens the render* and proves the claims hold
-(runtime window, banned/required phrases, caption readability, audio presence, live-capture
-presence). This is the differentiator. **Never weaken it to make a build pass.**
+running product, a chart drawn from a provider's measured data, or a declared graphic asset
+(a card or a solid *is* a declared asset: the engine draws it from words, and `verify` records
+which words). Nothing is fabricated. `verify.py` then *reopens the render* and proves the
+claims hold (runtime window, banned/required phrases, caption readability, audio presence,
+live-capture presence, and — since M9 — that a declared camera move **actually moved
+pixels**). A declaration is not a measurement. This is the differentiator. **Never weaken it
+to make a build pass.**
 
 ---
 
@@ -72,7 +76,7 @@ vidkit/
 ├─ CHANGELOG.md           release notes
 ├─ LICENSE                MIT
 ├─ pyproject.toml         packaging, extras, console scripts
-├─ vidkit/                the engine (26 modules)
+├─ vidkit/                the engine (27 modules)
 │    assembler.py         the 10-stage pipeline + Context/Assets wiring
 │    spec.py              dataclasses + loader + cross-reference validation
 │    context.py           Context/Assets: the paths every stage shares
@@ -82,10 +86,11 @@ vidkit/
 │    terminal.py          ANSI/CSI screen model + .cast recording -> frames
 │    panels.py            11 built-in panel kinds + register()
 │    svg.py               SVG primitives + the default Theme/PanelDoc
+│    card.py              engine-drawn title cards and solid fields (words -> picture)
 │    narration.py         scene-script parsing, caption wrapping, SRT building
 │    overlay.py           banner/image graphics drawn over a shot
 │    tts.py               per-scene piper WAVs; silent fallback
-│    ffmpeg.py            duration/volume/concat/xfade/still_to_clip/overlay_clip/mux
+│    ffmpeg.py            duration/volume/concat/motion/overlay_clip/mix/mux
 │    timeframe.py         the resolved window (days/as_of or start/end)
 │    secrets.py           declared secrets + redaction
 │    snapshot.py          dataset snapshots, freshness, degraded replay
@@ -113,11 +118,13 @@ vidkit/
 │    test_exec.py         the exec contract: policy, results, spans (R-E)
 │    test_terminal.py     the screen model: CSI, SGR, cast round-trip, SVG
 │    test_docker.py       the environment lifecycle: readiness, binding, teardown (R-E6)
+│    test_movie.py        movie mode: motion, cards, the expressed clock, the mix
 ├─ examples/
 │    hello-world/         offline CI fixture (no browser, no voice, no network)
 │    capture-kit/         a local fixture server the capture probe films
 │    terminal-demo/       a recorded, sandboxed terminal session (exec probe)
 │    docker-demo/         a real Postgres, written to and read back in one container
+│    movie-demo/          the M9 exit proof: motion, cards, a score, declared seconds
 ├─ docs/
 │    modules.yaml         machine-readable doc route table (agents resolve by stem)
 │    README.md            doc router
@@ -144,7 +151,7 @@ skip honestly when they are not.
 
 ```bash
 pip install -e ".[dev]"          # core + pytest
-python3 -m pytest tests -q       # 520 tests, ~8 min with every toolchain; 445 in ~6 s without
+python3 -m pytest tests -q       # 610 tests, ~9 min with every toolchain; 531 in ~6 s without
 ```
 
 **Three capabilities, three independent markers.** CI runs `pytest` twice on a machine
@@ -174,7 +181,7 @@ a fully equipped box.
 ### 4.2 Commands that must keep working
 
 ```bash
-python3 -m pytest tests -q                                 # 520 passed
+python3 -m pytest tests -q                                 # 610 passed
 python3 -m vidkit doctor  examples/hello-world/video.yaml  # exit 0
 python3 -m vidkit plan    examples/hello-world/video.yaml  # scene plan + estimate
 python3 -m vidkit build   examples/hello-world/video.yaml  # mp4 + srt + verify.json
@@ -275,6 +282,44 @@ python3 -m vidkit docs --index                             # JSON route table
   client, daemon, container — with three different fixes. One boolean sends all three to the
   same unhelpful sentence (D48). And a gate must *demonstrate*, never observe a precondition
   (**D41**).
+- **A check that compares the spec to a filter of the spec cannot fail.** M9's
+  `camera moves are declared` read `len(moved) == len([r for r in artwork if r.get("motion")])`
+  where `moved` *was* that filter — it was true by construction and read as assurance. The
+  replacement **decodes the picture**: `MOVE_MAE = 0.10`, `_measure_move` reads the head and
+  tail frame of the clip and compares them. A check about what a picture *did* must read the
+  picture; a declaration is not a measurement (D49).
+- **A camera move over a uniform field measures exactly `0.0`.** `examples/movie-demo` scene 2
+  pans a flat `solid: "navy"` — there is nothing in it to shift, so `mae` is `0.0`. That is
+  **kept on purpose**: it is the only shot in the fixture whose `mae` is `0.0` while its
+  declaration is non-empty, and therefore the only one that proves the report separates a
+  declaration from a measurement. A nonzero-looking fixture would let the check pass by
+  restating itself. Measured on the fixture: `1.309 / 0.0 / 5.152 / 5.709 / 0.958`.
+- **`facts.motion` rows are flat.** `{scene, index, kind, direction, amount, span, at, mae}`.
+  There is no `motion["moving"]` and no nested `"motion"` sub-dict; `facts.artwork` rows carry
+  their own `motion`/`mae` pair. `_measure_move` is expensive (~5.3 s, 12 ffmpeg calls on the
+  fixture) and returns `None` on failure — and the check **fails on `None`**, because an
+  absent measurement is not a negative measurement (D52).
+- **`narration_spans` means positions in the finished film; `narration_estimate` means a
+  guess.** `_narration_facts` publishes spans only when every scene has a *real, existing*
+  wav; otherwise it publishes `narration_estimate`. Report the wrong one and a 3.9 s scene
+  transcript is read as a position in a 16.0 s cut. Branch on `is True` / `is False` / else —
+  a `None` is not a `False`.
+- **`_narration_facts` cannot import `_spans` at module scope.** `assembler` imports `verify`,
+  so a module-level `from .assembler import _spans` is circular; and a generator expression is
+  its own scope, so binding it inside one leaves it unbound. Bind it **inside the function
+  body**, before any comprehension that uses it.
+- **ffmpeg folds `iw-iw/zoom*p` to a constant.** In `_move_filters` the travel expression must
+  be `(iw-iw/zoom)*p` — **the parentheses are load-bearing**, and the failure mode is silent:
+  a static picture renders with no error at all. The same applies to a declared motion the
+  engine cannot express: refuse it, do not quietly render a still.
+- **`shot.motion` and a non-`hold` `shot.effect` are mutually refused.** Both try to own the
+  same picture transform; declare one.
+- **ffmpeg cannot open every path this session, and cannot open `/tmp`.** Rendering a
+  fixture under `/tmp` fails with `No such file or directory` while the same file under the
+  repo works. Tests that render must use `tmp_path` (pytest's root is inside the repo).
+- **A silent cut takes the `_score_only` path in `Ffmpeg.mix`.** Nothing is merged, so nothing
+  is ducked — but the returned `MixResult.ducked` is `False` and the span list is empty. Never
+  recompute `duck_seconds` from the spec; report what the mix returned.
 
 ---
 
@@ -313,37 +358,43 @@ Use exactly these, so they are greppable:
 
 ## 6. Current position (snapshot)
 
-> Snapshot taken 2026-10-09 (after the M8 merge). If this disagrees with
+> Snapshot taken 2026-10-10 (after the M9 work, before its merge). If this disagrees with
 > [docs/plan/PLAN.md](docs/plan/PLAN.md), trust PLAN.md.
 
 - **Repo state:** public on GitHub (`anindyasundarbera/vidkit`), default branch `main`,
-  CI green. **M0–M8 are merged** (M8 = PR #9 → `63ad046`). Nothing is in flight.
-- **Tests:** `python3 -m pytest tests -q` → **520 passed in ~470 s** with every toolchain
-  present, **445 passed / 75 skipped** without. Run the lean form while iterating — it is
+  CI green. **M0–M8 are merged** (M8 = PR #9 → `63ad046`, PR #10 → `9d3385b`). **M9 is
+  complete on `phase/m9-movie-mode`, unmerged.**
+- **Tests:** `python3 -m pytest tests -q` → **610 passed in ~534 s** with every toolchain
+  present, **531 passed / 79 skipped** without. Run the lean form while iterating — it is
   two orders of magnitude cheaper and it is what CI's `pytest` jobs actually do.
   **Never run two `pytest` processes at once**: they share `.pytest-tmp/` (gitignored) and
   will fail each other spuriously.
-- **CI is six jobs:** `test` (the lean suite on Python 3.10 *and* 3.12 — two jobs), `build-example`,
-  `capture-probe`, `exec-probe`, `docker-probe`.
+- **CI is seven jobs:** `test` (the lean suite on Python 3.10 *and* 3.12 — two jobs),
+  `build-example`, `capture-probe`, `exec-probe`, `docker-probe`, `movie-probe`.
 - **Three capabilities, three independent markers:** `needs_render`, `needs_sandbox`,
   `needs_docker`. See §4.1 — a marker that asks "is the toolchain complete?" rather than
   "is *this* capability usable?" is the bug the markers exist to prevent (defect G).
 - **Engine:** host-free. **10 stages** (`data, panels, stills, capture, exec, narration,
-  clips, concat, render, verify`), **26 modules**, 11 panel kinds, **15 MCP tools**,
+  clips, concat, render, verify`), **27 modules**, 11 panel kinds, **15 MCP tools**,
   3 resources, docs routed across 7 modules (49 stems). M8 added a backend and a resource
-  lifecycle **without adding a stage** — if a future phase needs an eleventh, that is the
-  signal to rethink the design, not to append (P5).
-- **Active phase:** **M9 — Movie mode**
-  ([docs/plan/FEATURE-ROADMAP.md](docs/plan/FEATURE-ROADMAP.md) §12). If this line disagrees
+  lifecycle, and M9 a whole movie mode, **without adding a stage** — if a future phase needs
+  an eleventh, that is the signal to rethink the design, not to append (P5).
+- **Active phase:** **M9 is done; M10 is next**
+  ([docs/plan/FEATURE-ROADMAP.md](docs/plan/FEATURE-ROADMAP.md) §13). If this line disagrees
   with [docs/plan/PLAN.md](docs/plan/PLAN.md), trust PLAN.md.
-- **Biggest remaining gap:** vidkit can *demonstrate* but not yet *narrate*. Stills are
-  captures or declared images with no motion, audio is narration only — no score, no
-  ambience, no ducking — and shot length is duration-divided-by-weight rather than chosen.
-  That is M9, and it must land as an *addition* to the existing ten stages.
+- **What M9 added:** shots can move (`motion:`), the engine can draw a card or a solid from
+  words (`card`/`solid`), a shot's length can be *declared* (`seconds:`) instead of divided
+  by weight, and a declared score is mixed under the narration with measured ducking. Four
+  new checks, and a fifth — the move check — rewritten to *measure* rather than restate.
+- **The honesty rules M9 bought.** Three defects of one class were found and fixed: a check
+  that compared the spec to a filter of itself; `narration_spans` reporting scene-wav
+  durations as positions in a longer film; and `duck_seconds` printed as a number the mix
+  never produced. **A check that cannot fail is worse than no check, because it reads as
+  assurance** (D49); **an absent measurement is not a negative measurement** (D52).
 - **The one item needing an owner decision:** the public **`v1.0.0` tag** — the code is at
-  `1.0.0` and merged, but the tag itself is a visible release and has not been pushed. M7
-  and M8 both sit under `## [Unreleased]` in the CHANGELOG; whether that becomes `1.1.0` or
-  `1.2.0` at release time is a second owner call.
+  `1.0.0` and merged, but the tag itself is a visible release and has not been pushed. M7,
+  M8 and M9 all sit under `## [Unreleased]` in the CHANGELOG; whether that becomes `1.1.0` or
+  `1.2.0` at release time is a second owner call (PLAN.md records `1.2.0` as the default).
 - **Host-safety contract (M8).** A container may never mount the Docker socket, runs
   unprivileged, has a hard timeout, and is torn down in a `finally` on every exit path.
   Teardown is *reported*, not assumed (`facts.environments[].teardown`). Do not weaken this

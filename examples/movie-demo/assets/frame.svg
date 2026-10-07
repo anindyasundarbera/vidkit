@@ -1,0 +1,37 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="720" viewBox="0 0 1280 720" role="img"
+     aria-label="A declared picture: a plain framed field used to prove camera moves and scrims.">
+  <defs>
+    <linearGradient id="accent" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#1F6FB2"/>
+      <stop offset="1" stop-color="#4FA3D8"/>
+    </linearGradient>
+    <style>
+      .ink   { fill:#16232B; font-family:"Liberation Sans","DejaVu Sans",sans-serif; }
+      .muted { fill:#5B6B75; font-family:"Liberation Sans","DejaVu Sans",sans-serif; }
+      .eyebrow { fill:#1F6FB2; font-family:"Liberation Sans","DejaVu Sans",sans-serif;
+                 letter-spacing:.18em; }
+    </style>
+  </defs>
+
+  <rect width="1280" height="720" fill="#F7F5F0"/>
+  <rect x="0" y="0" width="1280" height="6" fill="url(#accent)"/>
+
+  <!-- A horizontal ruler so a pan across this picture is measurable, and a small
+       high-contrast box near the centre-left so a zoom has something whose area
+       changes. Both are here to make the camera move *checkable*, not decorative. -->
+  <g stroke="#C9D3DA" stroke-width="2">
+    <line x1="0" y1="360" x2="1280" y2="360"/>
+    <line x1="640" y1="0" x2="640" y2="720" stroke="#1F6FB2" stroke-width="3"/>
+  </g>
+  <rect x="120" y="300" width="40" height="40" fill="#B23A2F"/>
+  <rect x="1120" y="300" width="40" height="40" fill="#2F7A4A"/>
+
+  <text class="eyebrow" x="120" y="200" font-size="24" font-weight="700">DECLARED ASSET</text>
+  <text class="ink" x="120" y="266" font-size="58" font-weight="800">A picture, not a claim</text>
+  <text class="muted" x="120" y="560" font-size="26">
+    Resolved and checked at load time. Nothing about it was measured.
+  </text>
+  <text class="muted" x="120" y="600" font-size="26">
+    examples/movie-demo/assets/frame.svg
+  </text>
+</svg>
