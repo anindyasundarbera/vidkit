@@ -195,4 +195,20 @@ def verify_output(ctx: Context, assets, scenes_text: dict[int, str]) -> Report:
         bad = list(dict.fromkeys(bad))          # one line per distinct disagreement
         rep.add("timeframe consistent with spec", not bad,
                 "; ".join(bad) if bad else f"matches {tf.label()}")
+
+    # provenance (R-F8): what this *is*, as opposed to whether it is honest. It is
+    # reported as a fact rather than a check — there is no passing or failing an
+    # identity — but a reader who has verify.json in hand should not have to go
+    # looking for a second file to find out which spec and which window it proves.
+    from .provenance import Provenance
+    record = Provenance.read(ctx.build)
+    if record is not None:
+        rep.facts["provenance"] = {
+            "vidkit": record.get("vidkit"),
+            "spec": record.get("spec"),
+            "spec_sha256": record.get("spec_sha256"),
+            "built_at": record.get("built_at"),
+            "tools": {t["name"]: t["version"] for t in record.get("tools", [])
+                      if t.get("present")},
+        }
     return rep

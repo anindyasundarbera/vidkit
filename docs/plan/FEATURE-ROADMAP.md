@@ -10,7 +10,7 @@
 >
 > For what is happening now see [PLAN.md](PLAN.md). For what happened see [HISTORY.md](HISTORY.md).
 
-**Last revised:** 2026-10-06 · **Status:** M0 done · M1 done · M2 next
+**Last revised:** 2026-10-07 · **Status:** M0–M6 done · M7 next
 
 ---
 
@@ -55,13 +55,13 @@ A phase that violates one of these is not done, however many checkboxes it ticks
 ## 2. Phase map
 
 ```
-M0  Extract & baseline          ← DONE             make it safe to work on
+M0  Extract & baseline          ← DONE, P0         make it safe to work on
 M1  Story & timeframe contract  ← DONE, P0         make it aimable
 M2  Provider & data hardening   ← DONE, P1         make the data trustworthy
 M3  Capture v2                  ← DONE, P0         make real UI recordable
-M4  Presentation v2                   P0/P1        make output look right
-M5  Agent surface                     P0           make it drivable
-M6  Hardening & v1.0                  P0/P1        make it shippable
+M4  Presentation v2             ← DONE, P0/P1      make output look right
+M5  Agent surface               ← DONE, P0         make it drivable
+M6  Hardening & v1.0            ← DONE, P0/P1      make it shippable
 ───────────── v1.0 line ─────────────
 M7  Executor & sandbox                P0           terminal, files, isolation
 M8  Docker & environment lab          P1           real containers on camera
@@ -252,7 +252,7 @@ needs its own `still`/`capture`/`chart`. Resolved as **D26–D28** in [DECISIONS
 
 ---
 
-## 8. M5 — Agent surface  *(P0)*
+## 8. M5 — Agent surface  *(P0)* — **DONE**
 
 **Purpose.** Make the contract driveable by the external agent, which is the stated purpose.
 
@@ -282,7 +282,7 @@ and asserted. Recorded as **D29–D30**.
 
 ---
 
-## 9. M6 — Hardening & v1.0  *(P0/P1)*
+## 9. M6 — Hardening & v1.0  *(P0/P1)* — **DONE**
 
 **Purpose.** Ship it.
 
@@ -293,6 +293,33 @@ a portability pass, release tag `v1.0.0`, changelog, optional PyPI.
 
 **Exit.** A fresh clone can produce a verified video for a **new story + timeframe** using
 only the docs, via both CLI and MCP.
+
+**Delivered** (branch `phase/m6-hardening`, merged by PR). All four requirements landed:
+
+- **R-F8 — `vidkit/provenance.py`.** `_build/provenance.json` is written by **every** rendering
+  action and read by everything else: `verify.json` gains a `facts.provenance` block (a fact,
+  not a check), and `provenance` became the 8th job action, the 11th CLI verb, and the 15th
+  MCP tool — so the same question is answerable from all four interfaces.
+- **R-H6 — portability.** `capture._find_chrome()` now searches the real Chrome layout on
+  Linux, macOS (including `chrome-mac-arm64` and the app bundles) and Windows. Support is
+  *stated*, not implied: a tiered table in `docs/operations/troubleshooting.md` names what is
+  tested (Linux, all four CI jobs), what is supported but untested (macOS), what is
+  best-effort (Windows), and the one real degradation — `signal.setitimer` is absent on
+  Windows, so the MCP run timeout is not installed there and a job is unbounded.
+- **R-H5 — `docs/guides/first-video.md`.** A fresh clone to a verified `.mp4`, walked twice,
+  once by CLI and once by MCP, using only the docs.
+- **R-H8/H9 — release.** `0.1.0` → **`1.0.0`**; `CHANGELOG.md` entry; version asserted by a
+  test so the three places cannot drift.
+
+CI now asserts the provenance contract end to end rather than only that the commands exit 0.
+Evidence: `docs/plan/HISTORY.md`. Design consequences: **D31–D32**.
+
+**Deferred.** PyPI publication is optional in the requirement and stays deferred — tagging the
+repo and publishing a distribution are different visible acts, and only the first was asked
+for. See [PLAN.md](PLAN.md).
+
+**Risks.** Delivered. The remaining visible act is the **public `v1.0.0` tag**, which the
+owner owns; see [PLAN.md](PLAN.md).
 
 ---
 

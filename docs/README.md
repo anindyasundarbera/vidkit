@@ -14,9 +14,9 @@ docs/
   foundations/       mental model + stage machine + internals
   authoring/         write the spec, provider, panels, narration
   capture/           record real UI and assert it
-  verification/      the acceptance checks
+  verification/      the acceptance checks, and the build's own identity
   operations/        run it, diagnose it, expose it (MCP), extract it
-  guides/            copy-paste recipes
+  guides/            a first-video walkthrough, and copy-paste recipes
   plan/              where the project is going, what happened, and why
 ```
 
@@ -27,9 +27,9 @@ docs/
 | **[foundations/](foundations/)** | understand the model before anything else | [concepts](foundations/concepts.md) → [pipeline](foundations/pipeline.md) → [architecture](foundations/architecture.md) |
 | **[authoring/](authoring/)** | write or change a `video.yaml`, `provider.py`, panel, or script | [spec-reference](authoring/spec-reference.md) → [provider-guide](authoring/provider-guide.md) → [panels-reference](authoring/panels-reference.md) → [narration-and-captions](authoring/narration-and-captions.md) |
 | **[capture/](capture/)** | script a screen recording and assert the live state | [capture-guide](capture/capture-guide.md) |
-| **[verification/](verification/)** | understand the checks and `verify.json` | [verification](verification/verification.md) |
+| **[verification/](verification/)** | understand the checks, `verify.json`, and `provenance.json` | [verification](verification/verification.md) → [provenance](verification/provenance.md) |
 | **[operations/](operations/)** | run, diagnose, expose, or extract the tool | [cli-reference](operations/cli-reference.md) → [job-contract](operations/job-contract.md) → [mcp-server](operations/mcp-server.md) → [troubleshooting](operations/troubleshooting.md) → [extracting-to-new-repo](operations/extracting-to-new-repo.md) |
-| **[guides/](guides/)** | copy a known-good pattern | [recipes](guides/recipes.md) |
+| **[guides/](guides/)** | build a first video, or copy a known-good pattern | [first-video](guides/first-video.md) → [recipes](guides/recipes.md) |
 | **[plan/](plan/)** | know where the project is going, what already happened, and why a choice was made | [PLAN](plan/PLAN.md) → [FEATURE-ROADMAP](plan/FEATURE-ROADMAP.md) → [HISTORY](plan/HISTORY.md) → [DECISIONS](plan/DECISIONS.md) → [OPENMONTAGE](plan/OPENMONTAGE.md) |
 
 ## Routing by task
@@ -45,6 +45,8 @@ docs/
 | Write the script / control captions | [authoring/narration-and-captions.md](authoring/narration-and-captions.md) |
 | Record the product UI | [capture/capture-guide.md](capture/capture-guide.md) |
 | Read a failing `verify.json` | [verification/verification.md](verification/verification.md) |
+| Find out what a `.mp4` on disk was built from | [verification/provenance.md](verification/provenance.md) |
+| Go from an empty clone to a verified video | [guides/first-video.md](guides/first-video.md) |
 | Run it from a shell | [operations/cli-reference.md](operations/cli-reference.md) |
 | Drive it from an IDE/agent (MCP) | [operations/mcp-server.md](operations/mcp-server.md) |
 | Drive it from a script or an agent, whichever | [operations/job-contract.md](operations/job-contract.md) |
@@ -55,7 +57,7 @@ docs/
 
 ## Suggested reading order
 
-- **First contact (human):** [foundations](foundations/) → [authoring](authoring/).
+- **First contact (human):** [guides/first-video](guides/first-video.md) → [foundations](foundations/) → [authoring](authoring/).
 - **First contact (agent):** `foundations/concepts` → `authoring/spec-reference` →
   `operations/mcp-server`, then the module for the task.
 
@@ -68,6 +70,8 @@ docs/
 - `spec-reference` → `authoring/spec-reference.md`
 - `mcp-server` → `operations/mcp-server.md`
 - `job-contract` → `operations/job-contract.md`
+- `first-video` → `guides/first-video.md`
+- `provenance` → `verification/provenance.md`
 
 Calling with **no name** returns this index. Module-qualified names
 (`authoring/spec-reference`) and explicit paths also resolve.
@@ -90,6 +94,7 @@ made and fails the build if any promise is broken.
 - Synthesize narration locally per scene (Piper) or fall back to a silent, estimated cut.
 - Keep audio and video in sync by making measured audio the master clock.
 - Produce a readable SRT and burn it in.
+- Record a build's own provenance: the spec, window, provider, and tool versions behind it.
 - Enforce runtime windows and content guards (banned/required phrases), then report.
 
 **Cannot**

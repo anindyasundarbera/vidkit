@@ -181,6 +181,54 @@ def test_plain_plan_still_prints_prose(capsys):
     assert "  scenes:" in text
 
 
+def test_every_advertised_verb_is_actually_dispatched(capsys):
+    """A verb in the help text that falls through to `print_help` is a lie.
+
+    `provenance` was listed in the usage block, in `--json`, and in the docs, and yet
+    the plain verb printed the help screen and exited 0 — a success code for doing
+    nothing. The help text is the promise; this asserts the promise is kept.
+    """
+    with pytest.raises(SystemExit):
+        cli.main(["--help"])
+    usage = capsys.readouterr().out
+    advertised = set()
+    for line in usage.splitlines():
+        parts = line.strip().split()
+        if len(parts) >= 2 and parts[0] == "vidkit" and not parts[1].startswith("["):
+            advertised.add(parts[1])
+    assert advertised == set(cli._COMMAND_ACTION) | {"run", "auth", "docs"}, advertised
+
+    source = (REPO / "vidkit" / "cli.py").read_text()
+    for verb in sorted(advertised - {"run", "auth", "docs"}):
+        assert f'args.cmd == "{verb}"' in source, f"{verb} is advertised but not dispatched"
+
+
+@pytest.mark.needs_render
+def test_plain_provenance_verb_prints_the_build_record(capsys, tmp_path):
+    """The verb in the help text really reads the record the build wrote."""
+    code, _, _ = call(capsys, "--json", "run", "build", "--story", str(REPO / "examples" / "hello-world"),
+                      "--out", str(tmp_path))
+    assert code == 0
+
+    code = cli.main(["provenance", EXAMPLE, "--out", str(tmp_path)])
+    text = capsys.readouterr().out
+
+    assert code == 0
+    assert text.startswith("vidkit 1.0.0 built build at")
+    assert text.count("spec hash") == 1
+    assert "[yes] ffmpeg" in text or "[NO ] ffmpeg" in text
+
+
+def test_plain_provenance_before_a_build_says_so_on_stderr(capsys, tmp_path):
+    """A verb that cannot answer exits 1 with a hint — it never prints the help screen."""
+    code = cli.main(["provenance", EXAMPLE, "--out", str(tmp_path)])
+    captured = capsys.readouterr()
+
+    assert code == 1
+    assert "run build first" in captured.err
+    assert captured.out == ""
+
+
 def tmp_path_of_nothing() -> Path:
     import tempfile
 

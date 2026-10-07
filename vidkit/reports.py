@@ -167,6 +167,36 @@ def _timeframe_line(tf: dict[str, Any] | None) -> str:
 
 
 # --------------------------------------------------------------------------- #
+def format_provenance(record: dict[str, Any]) -> str:
+    """The build record as a person reads it. The JSON is the same document."""
+    lines = [
+        f"vidkit {record.get('vidkit', '?')} built {record.get('action', '?')} "
+        f"at {record.get('built_at', '?')}  ({record.get('seconds', 0):.1f}s)",
+        f"  spec      {record.get('spec')}",
+        f"  spec hash {record.get('spec_sha256')}",
+        f"  window    {_timeframe_line(record.get('timeframe'))}",
+        f"  story     {record.get('story') or '(folder convention)'}",
+    ]
+    provider = record.get("provider")
+    lines.append(f"  provider  {provider or '(none)'}"
+                 + (f"  {record.get('provider_sha256')}" if provider else ""))
+    if record.get("datasets"):
+        for name, digest in sorted(record["datasets"].items()):
+            lines.append(f"    data    {name:16s} {digest}")
+    if record.get("degraded"):
+        for name, why in sorted(record["degraded"].items()):
+            lines.append(f"    DEGRADED {name}: {why}")
+    lines.append(f"  stages    {', '.join(record.get('stages') or []) or '(none)'}")
+    for t in record.get("tools", []):
+        status = "yes" if t["present"] else "NO "
+        lines.append(f"  [{status}] {t['name']:16s} {t.get('version') or '(not found)'}")
+    rt = record.get("runtime") or {}
+    if rt:
+        lines.append(f"  runtime   {rt.get('python')} on {rt.get('machine')}")
+    return "\n".join(lines)
+
+
+# --------------------------------------------------------------------------- #
 def plan_report(spec_path: Path, *, timeframe: Any = None,
                 as_of: Any = None) -> dict[str, Any]:
     """The scene plan and estimated runtime, as data."""

@@ -723,3 +723,123 @@ fixed until the same command gave 321 passed, 16 skipped.
 
 The lesson is the M5 lesson again, one level up: a green local suite can still be testing
 the wrong machine. `AGENTS.md` §4.1 now states the two environments.
+
+---
+
+## 2026-10-07 — M6: hardening & v1.0
+
+**Phase.** M6 ([FEATURE-ROADMAP.md](FEATURE-ROADMAP.md) §9) — **complete**. Requirements
+R-F8 (provenance), R-H5 (fresh-clone walkthrough), R-H6 (portability), R-H8/R-H9 (release
+metadata), plus the M0–M5 defect debt that had accumulated.
+
+### What was built
+
+- **`vidkit/provenance.py` (new) — R-F8.** `probe_tools()`, `spec_digest()`, `Tool`,
+  `Provenance`, written to `OUT/_build/provenance.json` by **every rendering action**. The
+  record names the spec and its SHA-256, the resolved window and its source, the provider and
+  its digest, the dataset snapshots the run actually used, every tool that could have touched
+  the render (present or not, with version), the vidkit version, the action, the stages that
+  ran, and the wall-clock duration.
+- **Provenance became a first-class action.** `ACTIONS` went 7 → **8** (`plan, build,
+  capture, tts, verify, provenance, doctor, init`); `_STAGES` gained an explicit entry for
+  every action (a defect, below); the CLI gained the `provenance` verb; `mcp_server` gained
+  `vidkit_provenance`. So the same question — "which build is this and what made it?" — is
+  answerable from the CLI, from `--json`, from `vidkit_run`, and from a dedicated MCP tool.
+- **`verify` reads it, never writes it.** `verify.json` ends with a `facts["provenance"]`
+  block carrying the build's identity — a **fact, not a check**, so a verify on a build with
+  no record still runs every acceptance check and simply reports `provenance: null`.
+- **R-H6, portability.** `capture._find_chrome()` was rewritten to search the real layout on
+  all three platforms (`chrome-linux/chrome`, `chrome-mac` **and** `chrome-mac-arm64` under
+  the Playwright cache, `chrome.exe` on `PATH`, and the `/Applications` bundles) instead of
+  the Linux path only. Platform support is now *stated* rather than implied: a tiered table
+  in `docs/operations/troubleshooting.md` says what is tested (Linux, all of CI), supported
+  but untested (macOS), and best-effort (Windows) — including the one real degradation, that
+  `signal.setitimer` does not exist on Windows, so the MCP run timeout is **not installed**
+  there and a job is unbounded. That is named, not hidden.
+- **R-H5, the walkthrough.** New `docs/guides/first-video.md`: a fresh clone to a verified
+  `.mp4`, twice — once by CLI, once by MCP — using only the docs.
+- **R-H8/H9, release.** `0.1.0` → **`1.0.0`** in `pyproject.toml` and `vidkit/__init__.py`;
+  `CHANGELOG.md` `[1.0.0] - 2026-10-07`, with a duplicate `[Unreleased]` link block from the
+  original 0.1.0 section deduplicated on the way through.
+- **CI now asserts the contract, not just that the commands exit 0.** The JSON-walk step
+  checks that `build.json` carries a provenance with `action == "build"` and
+  `artifacts.provenance_json.ok`; that `verify.json`'s provenance agrees with the build's on
+  `spec_sha256`; that `report.facts.provenance.spec_sha256` is present; and that
+  `vidkit --json provenance` returns `schema == 1` with all five tools each carrying a
+  `present` key.
+
+### Evidence
+
+| Claim | How it was checked | Result |
+|---|---|---|
+| A build writes a complete record | `vidkit run build` on a scaffolded story, then `json.load` on `_build/provenance.json` | `schema 1`, `action build`, 9 stages, 5 tools, `spec_sha256` matching `sha256sum video.yaml` |
+| The record is never invented | `vidkit provenance` before any build | `ok: false`, `hint` "run build first" |
+| Every surface agrees | the four readers of one build | identical `spec_sha256`, `built_at` |
+| `verify` reports the build it looked at | `vidkit run verify`, read `report.facts.provenance` | `action: "build"`, same digest as the build |
+| Provenance is a fact, not a check | a verify whose record was deleted | every check still runs; `provenance: null` |
+| The action list is one list | `tool_actions() == actions_help()` | equal — `mcp_server` no longer keeps its own copy |
+| `stages` is never *unknown* | `stages_for(a)` for all 8 actions | `[]` for the five non-rendering actions, not `null` |
+| Suite green, full toolchain | `python3 -m pytest tests -q` | **359 passed** |
+| Suite green, lean `PATH` | the same command with `/tmp/leanbin` (no `ffmpeg`, no `rsvg-convert`) | 337 passed, 22 skipped |
+| hello-world still builds | `python3 -m vidkit build examples/hello-world/video.yaml` | `.mp4` + `.narration.srt` + `verify.json`, every check passing |
+| The CI chain itself runs | the extracted JSON-walk step with `PATH=/tmp/cibin:$PATH` | `CI_CHAIN_OK` |
+
+### Defects found while building it
+
+1. **`tool_provenance` called `.to_dict()` on a dict.** The new MCP tool assumed the job layer
+   returned a `Provenance` object; `run_job` had already serialised it. Every unit test around
+   the *reader* passed while the *tool* was broken — the two were tested separately and never
+   against each other. Fixed, and pinned by a test that drives the tool against a real build.
+2. **`tool_actions` silently had no `stages`.** It built its own rows instead of asking the job
+   layer, so the one surface an agent uses to *choose* an action was the one that could not say
+   what the action would run. `tool_actions()` now delegates to `actions_help()`, and a test
+   asserts the two are equal so they cannot drift again.
+3. **`actions_help()` had no `stages` key at all.** An agent asking "which stages does
+   verification run?" got a missing key, indistinguishable from "unknown". The *missing key*
+   in `_STAGES` was the real bug: `[]` ("this action renders nothing") and absent ("nobody
+   said") are different answers, and the code was giving the second one.
+4. **`test_provenance_tool_reads_what_build_wrote` passed a spec *file* to a function that
+   wanted a *story folder*.** The test built from `examples/hello-world/video.yaml` and then
+   read provenance from `.../video.yaml/video.yaml`. Caught by running the full suite rather
+   than the file I had been editing. The `hint` in the resulting `ToolError` said exactly
+   which path was wrong, which is the job contract doing its work on its own author.
+5. **`vidkit provenance SPEC` was advertised and dispatched nowhere.** The plain verb was in
+   the usage block, in `--json`, in `ci-reference.md` and in `README.md` — and the parser had
+   no handler for it, so `vidkit provenance video.yaml` fell through to `print_help()` and
+   returned **`0`**: a success code for doing nothing. Found by running the extracted CI step
+   against `/tmp/cibin` rather than by reading it, which is the only way this class of defect
+   is ever found. Fixed with a real `_provenance()` and a `format_provenance()` renderer, and
+   pinned by `test_every_advertised_verb_is_actually_dispatched`, which parses the usage block
+   and asserts every verb in it has a dispatch branch.
+6. **The CI step itself was wrong twice.** First it called `vidkit --json provenance
+   --story …`, a flag the top-level verb does not take (it takes a positional spec) — the
+   first run of the extracted step said `unrecognized arguments: --story`. Then it asserted
+   `m['schema'] == 1` against the whole manifest, where `--json` returns the job manifest
+   *wrapping* the record, exactly as `verify` does. Both were invisible while the assertion
+   was only ever read.
+
+Defects 1–3 share one shape: **a new surface tested only against its own assumptions**.
+Defects 5–6 share another: **a command that was written down and never run**. The fix each
+time was to drive the *other* surface — which is why the CI step now walks the whole chain
+from the shell, through the shim a user would actually type.
+
+### Documentation
+
+`docs/verification/provenance.md` (new), `docs/guides/first-video.md` (new), both routed in
+`docs/modules.yaml` (23 docs / 7 modules); `README.md`, `docs/README.md`,
+`docs/foundations/architecture.md`, `docs/foundations/pipeline.md`,
+`docs/operations/cli-reference.md`, `docs/operations/mcp-server.md`,
+`docs/operations/troubleshooting.md`, `AGENTS.md`, `PLAN.md`, `FEATURE-ROADMAP.md`,
+`DECISIONS.md`.
+
+### Decisions taken
+
+**D31** provenance is written by the build and only read by everything else.
+**D32** platform support is stated, not implied.
+
+### The framing, recorded because it will be asked again
+
+`verify.json` answers **"is this honest?"** — it reopens the render and checks the claims.
+`provenance.json` answers **"what is this?"** — it says what was built, from what, by what,
+and when. They are two questions and two files. Folding provenance into the report would mean
+a re-verify rewrites the build's identity, which is the drift the split exists to prevent.

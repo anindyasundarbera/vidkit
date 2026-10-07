@@ -22,6 +22,7 @@ again even though a snapshot would have been acceptable.
 from __future__ import annotations
 
 import json
+import time
 from dataclasses import dataclass, field
 from datetime import date
 from pathlib import Path
@@ -35,8 +36,9 @@ from . import tts as _tts
 from .context import Context
 from .errors import SpecError
 from .narration import build_srt, parse_scene_script, word_count
-from .snapshot import (SNAPSHOT_FILE, Snapshot, digest_text, load_datasets,
-                       request_key, verify_fresh)
+from .provenance import Provenance, probe_tools, spec_digest
+from .snapshot import (SNAPSHOT_FILE, Snapshot, digest_text, file_digest,
+                       load_datasets, request_key, verify_fresh)
 from .spec import Artifact, Spec, load_spec
 from .timeframe import Timeframe, parse_timeframe
 from .svg import PanelDoc, document
@@ -58,6 +60,7 @@ class Assets:
     srt: Path | None = None
     output: Path | None = None
     report: Report | None = None
+    provenance: dict | None = None        # what this build was made from and by
     ctx: Context | None = None            # set by run(), so a caller knows where things went
 
 
@@ -111,7 +114,9 @@ def _stage_set(only: Iterable[str] | None, from_stage: str | None = None) -> set
 def run(spec_path: Path | str, *, only: Iterable[str] | None = None,
         from_stage: str | None = None,
         out_dir: Path | None = None, timeframe: Timeframe | str | dict | None = None,
-        as_of: date | None = None, refresh: bool = False) -> Assets:
+        as_of: date | None = None, refresh: bool = False,
+        action: str = "build") -> Assets:
+    started = time.time()
     ctx = make_context(spec_path, out_dir, timeframe=timeframe, as_of=as_of)
     spec = ctx.spec
     stages = _stage_set(only, from_stage)
@@ -269,8 +274,43 @@ def run(spec_path: Path | str, *, only: Iterable[str] | None = None,
             json.dumps(assets.report.to_dict(), indent=1), encoding="utf-8")
         assets.report.print()
 
+    # -- provenance (R-F8) -------------------------------------------------- #
+    # Written by *every* job, verify or not: a plan or a capture still produced
+    # figures, and whoever reads them later needs to know what they came from.
+    # `verify.json` answers "is this honest?" and this answers "what is this?"
+    assets.provenance = _write_provenance(ctx, action, sorted(stages), started).to_dict()
+
     assets.ctx = ctx
     return assets
+
+
+def _write_provenance(ctx: Context, action: str, stages: list[str],
+                      started: float) -> Provenance:
+    spec = ctx.spec
+    provider_path = None
+    if spec.provider:
+        module = spec.provider.module or ""
+        for candidate in (ctx.root / module, ctx.root / f"{module}.py"):
+            if module and candidate.is_file():
+                provider_path = candidate
+                break
+    snapshot = Snapshot.read(ctx.data_dir)
+    record = Provenance(
+        action=action,
+        spec=str(spec.path) if spec.path else "",
+        spec_sha256=spec_digest(spec.path),
+        timeframe=spec.timeframe.to_dict() if spec.timeframe else None,
+        started=started, ended=time.time(),
+        provider=spec.provider_name,
+        provider_sha256=file_digest(provider_path),
+        story=spec.story.slug if spec.story else None,
+        tools=probe_tools(ctx.shell),
+        stages=stages,
+        datasets=dict(snapshot.datasets) if snapshot else {},
+        degraded=dict(spec.degraded),
+    )
+    record.write(ctx.build)
+    return record
 
 
 # --------------------------------------------------------------------------- #

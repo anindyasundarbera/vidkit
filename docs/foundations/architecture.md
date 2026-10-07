@@ -29,7 +29,8 @@ vidkit/
   job.py          ACTIONS; run_job() — the {action, story, out} contract and its manifest;
                   Progress; reporting()/on_progress
   mcp_server.py   build_server(); tool_* functions; MCP tools + resources
-  verify.py       Check, Report, verify_output()
+  verify.py       Check, Report, verify_output()  — "is this honest?"
+  provenance.py   Tool, Provenance, probe_tools(), spec_digest() — "what is this?"
   cli.py          argparse front-end
 ```
 
@@ -38,6 +39,8 @@ Dependency direction is one-way and acyclic:
 ```
 cli → job → assembler → {spec, context, provider, capture, narration, panels, tts, ffmpeg, verify}
 mcp_server → job ;  reports → spec ;  panels → svg ;  tts → {ffmpeg, narration} ;  capture → spec
+assembler → provenance ;  job → provenance ;  mcp_server → provenance
+mcp_server → provenance ;  provenance → {snapshot, errors}
 ```
 
 `svg`, `errors`, and `narration` are leaf-ish (only `errors`); they are safe to import anywhere.
@@ -107,6 +110,13 @@ the wrappers unit-testable). `Ffmpeg` and `Rsvg` build on it.
    domain-free.
 6. **No writes to source systems from the toolkit.** Read-only by contract.
 7. **`svg.text` escapes by default.** Do not reintroduce manual escaping.
+8. **Every build writes its own provenance; a verify reads it.** `assembler.run` writes
+   `provenance.json` for every action that renders. A verify must *read* that file, never
+   compose a fresh record — a record assembled at read time describes today while appearing
+   to describe last week's build.
+9. **A missing tool is recorded as absent, never omitted.** `probe_tools` emits a row for
+   every name in `TOOLS` with `present: false`. "We did not check" and "it was not there"
+   are different facts.
 
 ## Error discipline
 

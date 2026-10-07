@@ -71,7 +71,7 @@ vidkit/
 ├─ CHANGELOG.md           release notes
 ├─ LICENSE                MIT
 ├─ pyproject.toml         packaging, extras, console scripts
-├─ vidkit/                the engine (23 modules)
+├─ vidkit/                the engine (24 modules)
 │    assembler.py         the 9-stage pipeline + Context/Assets wiring
 │    spec.py              dataclasses + loader + cross-reference validation
 │    context.py           Context/Assets: the paths every stage shares
@@ -87,11 +87,12 @@ vidkit/
 │    secrets.py           declared secrets + redaction
 │    snapshot.py          dataset snapshots, freshness, degraded replay
 │    scaffold.py          `vidkit new` project skeleton
+│    provenance.py        what the build was and what made it -> provenance.json
 │    verify.py            the acceptance checks → Report
 │    reports.py           report rendering helpers (shared by CLI and MCP)
 │    job.py               the {action, story, out} job contract -> one manifest
-│    cli.py               doctor/plan/build/tts/capture/auth/init/run/verify/docs
-│    mcp_server.py        MCP tools (14) + resources (3) + transports
+│    cli.py               doctor/plan/build/tts/capture/auth/init/run/verify/provenance/docs
+│    mcp_server.py        MCP tools (15) + resources (3) + transports
 │    errors.py            VidkitError / SpecError / ToolError / ProviderError
 │    __init__.py          version + public exports
 │    __main__.py          python -m vidkit
@@ -105,6 +106,7 @@ vidkit/
 │    test_capture.py      the capture DSL, action semantics (R-C)
 │    test_ffmpeg.py       filter graphs + real pixels read back
 │    test_presentation.py fit/overlay/transition contracts (R-D)
+│    test_provenance.py   the build record: shape, refusals, read-only (R-F8)
 ├─ examples/
 │    hello-world/         offline CI fixture (no browser, no voice, no network)
 │    capture-kit/         a local fixture server the capture probe films
@@ -114,10 +116,10 @@ vidkit/
 │    foundations/         concepts, pipeline, architecture
 │    authoring/           spec-reference, provider-guide, panels-reference, narration-and-captions
 │    capture/             capture-guide
-│    verification/        verification
-│    operations/          cli-reference, mcp-server, troubleshooting, extracting-to-new-repo
-│    guides/              recipes
-│    plan/                PLAN.md, HISTORY.md, ROADMAP.md, DECISIONS.md, OPENMONTAGE.md
+│    verification/        verification, provenance
+│    operations/          cli-reference, mcp-server, job-contract, troubleshooting, extracting-to-new-repo
+│    guides/              recipes, first-video
+│    plan/                PLAN.md, HISTORY.md, FEATURE-ROADMAP.md, DECISIONS.md, OPENMONTAGE.md
 └─ .github/workflows/     CI (lint + pytest + hello-world build)
 ```
 
@@ -132,7 +134,7 @@ vidkit/
 
 ```bash
 pip install -e ".[dev]"          # core + pytest
-pytest tests -q                  # 337 tests, ~50 s; no external tools needed
+pytest tests -q                  # 359 tests, ~6 min with a toolchain; 337 in 2 s without one
 ```
 
 **Two test environments, one suite.** CI runs `pytest` twice on a machine with no
@@ -150,7 +152,7 @@ a fully equipped box.
 ### 4.2 Commands that must keep working
 
 ```bash
-pytest tests -q                                            # 337 passed
+pytest tests -q                                            # 359 passed
 python3 -m vidkit doctor  examples/hello-world/video.yaml  # exit 0
 python3 -m vidkit plan    examples/hello-world/video.yaml  # scene plan + estimate
 python3 -m vidkit build   examples/hello-world/video.yaml  # mp4 + srt + verify.json
@@ -234,18 +236,22 @@ Use exactly these, so they are greppable:
 
 ## 6. Current position (snapshot)
 
-> Snapshot taken 2026-10-06. If this disagrees with [docs/plan/PLAN.md](docs/plan/PLAN.md),
+> Snapshot taken 2026-10-07. If this disagrees with [docs/plan/PLAN.md](docs/plan/PLAN.md),
 > trust PLAN.md.
 
 - **Repo state:** public on GitHub (`anindyasundarbera/vidkit`), default branch `main`,
-  CI green. M0–M3 are merged; M4 is the active phase.
-- **Tests:** `python3 -m pytest tests -q` → **337 passed**, no external tools required.
-- **Engine:** host-free. 9 stages, 23 modules, 11 panel kinds, 14 MCP tools.
-- **Active phase:** **M4 — Presentation v2** ([docs/plan/FEATURE-ROADMAP.md](docs/plan/FEATURE-ROADMAP.md)).
-  If this line disagrees with [docs/plan/PLAN.md](docs/plan/PLAN.md), trust PLAN.md.
+  CI green. **M0–M6 are merged; the code is at v1.0.0.** M7 is the active phase.
+- **Tests:** `python3 -m pytest tests -q` → **359 passed** with `ffmpeg` + `rsvg-convert`
+  present, **337 passed / 22 skipped** without them.
+- **Engine:** host-free. 9 stages, **24 modules**, 11 panel kinds, **15 MCP tools**,
+  3 resources, 23 docs across 7 modules.
+- **Active phase:** **M7 — Executor & sandbox**
+  ([docs/plan/FEATURE-ROADMAP.md](docs/plan/FEATURE-ROADMAP.md) §10). If this line disagrees
+  with [docs/plan/PLAN.md](docs/plan/PLAN.md), trust PLAN.md.
 - **Biggest remaining gap:** there is still no **executor/sandbox** and no **Docker lab**,
   so the studio cannot yet drive a real terminal on behalf of an agent. That is M7/M8.
-- **The one item needing an owner decision:** the public `v1.0.0` tag at M6.
+- **The one item needing an owner decision:** the public **`v1.0.0` tag** — the code is at
+  `1.0.0` and merged, but the tag itself is a visible release and has not been pushed.
 
 ---
 

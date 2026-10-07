@@ -61,20 +61,38 @@ class ArtifactRefused(ToolError):
 # environment probing
 # --------------------------------------------------------------------------- #
 def _find_chrome() -> str | None:
-    """Prefer the Playwright-managed Chrome, then any system Chrome/Chromium."""
+    """Prefer the Playwright-managed Chrome, then any system Chrome/Chromium.
+
+    Playwright unpacks its browser to a different place on each platform, so all
+    three layouts are searched. A path that is not there simply does not match —
+    a Windows path on Linux costs one failed ``glob`` and nothing else, which is
+    cheaper than making the reader guess which branch their machine takes.
+    """
     import glob
     import shutil as _sh
 
-    for pattern in (
-        Path.home() / ".cache/ms-playwright/chromium-*/chrome-linux64/chrome",
-        Path.home() / ".cache/ms-playwright/chromium-*/chrome-linux/chrome",
+    cache = Path.home() / ".cache/ms-playwright"          # Linux
+    for base, patterns in (
+        (cache, ("chromium-*/chrome-linux64/chrome", "chromium-*/chrome-linux/chrome")),
+        # macOS: PLAYWRIGHT_BROWSERS_PATH, then the per-user cache
+        (Path.home() / "Library/Caches/ms-playwright",
+         ("chromium-*/chrome-mac/Chromium.app/Contents/MacOS/Chromium",
+          "chromium-*/chrome-mac-arm64/Chromium.app/Contents/MacOS/Chromium")),
+        (cache, ("chromium-*/chrome-mac/Chromium.app/Contents/MacOS/Chromium",)),
+        # Windows: %USERPROFILE%\AppData\Local\ms-playwright
+        (Path.home() / "AppData/Local/ms-playwright",
+         ("chromium-*/chrome-win/chrome.exe", "chromium-*/chrome-win64/chrome.exe")),
     ):
-        hits = sorted(glob.glob(str(pattern)))
-        if hits:
-            return hits[-1]
+        for pattern in patterns:
+            hits = sorted(glob.glob(str(base / pattern)))
+            if hits:
+                return hits[-1]
     for name in ("google-chrome", "google-chrome-stable", "chromium", "chromium-browser",
-                 "chrome", "msedge"):
-        found = _sh.which(name)
+                 "chrome", "msedge",
+                 # macOS, where the app bundle is not on PATH by its binary name
+                 "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+                 "/Applications/Chromium.app/Contents/MacOS/Chromium"):
+        found = _sh.which(name) or (name if Path(name).exists() else None)
         if found:
             return found
     return None

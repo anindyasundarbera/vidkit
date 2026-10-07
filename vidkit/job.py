@@ -39,13 +39,21 @@ from .errors import SpecError, ToolError, VidkitError
 from .timeframe import Timeframe, parse_timeframe
 
 #: The actions a job may ask for. Each is a verb an agent can reason about.
-ACTIONS = ("plan", "build", "capture", "tts", "verify", "doctor", "init")
+ACTIONS = ("plan", "build", "capture", "tts", "verify", "provenance", "doctor", "init")
 
-#: How the actions map onto pipeline stages. ``None`` means "the whole pipeline".
+#: How the actions map onto pipeline stages. ``None`` means "the whole pipeline";
+#: ``[]`` means "this action renders nothing". The empty list is *not* the same as
+#: the missing key: a reader asking "which stages does verification run?" deserves
+#: "none", not "unknown".
 _STAGES: dict[str, list[str] | None] = {
     "build": None,
     "capture": ["capture"],
     "tts": ["narration"],
+    "plan": [],
+    "verify": [],
+    "provenance": [],
+    "doctor": [],
+    "init": [],
 }
 
 ACTION_HELP: dict[str, str] = {
@@ -54,6 +62,7 @@ ACTION_HELP: dict[str, str] = {
     "capture": "re-run only the screen captures",
     "tts": "re-synthesize only the narration",
     "verify": "re-run the acceptance checks against the last render",
+    "provenance": "read the last build's identity: spec hash, window, provider, tools",
     "doctor": "check the environment, and the story's spec if there is one",
     "init": "scaffold a new story directory (needs `story`)",
 }
@@ -176,6 +185,7 @@ def _manifest(action: str, story: Path | None, out: Path | None,
         "spec": None,
         "timeframe": None,
         "artifacts": {},
+        "provenance": None,
         "report": None,
         "timeline": [],
         "failure": None,
@@ -246,6 +256,7 @@ _HINTS = (
     ("snapshot is stale", "build with refresh=true, or widen the window back"),
     ("no dataset snapshot", "drop `data` from `only`, or pass refresh=true"),
     ("missing_required", "export the named variables, then retry"),
+    ("provenance.json", "run build first: provenance describes a build, it cannot make one"),
     ("not set:", "export the named variables, then retry"),
     ("no narration", "declare `narration.source` or `narration.inline`"),
     ("did not finish within", "raise `timeout`, or run fewer stages with `only`"),
@@ -354,6 +365,8 @@ def run_job(action: str = "plan", *, story: str | Path | None = None,
                 _do_doctor(manifest, progress, spec_path, timeframe, as_of)
             elif action == "verify":
                 _do_verify(manifest, progress, spec_path, out_dir, timeframe, as_of)
+            elif action == "provenance":
+                _do_provenance(manifest, progress, spec_path, out_dir)
             else:
                 _do_build(manifest, progress, spec_path, out_dir, timeframe, as_of,
                           refresh, action, only, from_stage)
@@ -430,9 +443,38 @@ def _do_doctor(manifest, progress: Progress, spec: Path | None, timeframe: Any,
         }
 
 
+def _do_provenance(manifest, progress: Progress, spec: Path, out: Path | None) -> None:
+    """Read the last build's identity. Never writes, never fabricates.
+
+    The same answer arrives whether the caller asked the CLI, the MCP tool, or a
+    job, because all three end up here — and all three read the file ``build``
+    wrote rather than deriving a record from the current state of the tree, which
+    would describe *now* while appearing to describe a build from last week.
+    """
+    from .assembler import make_context
+    from .provenance import Provenance
+
+    started = time.monotonic()
+    ctx = make_context(spec, out)
+    record = Provenance.read(ctx.build)
+    if record is None:
+        raise ToolError(f"no readable provenance.json at {ctx.build}; run build first "
+                        "(verify and provenance only read what build wrote)")
+    manifest["out"] = str(ctx.out_dir)
+    manifest["provenance"] = record
+    manifest["artifacts"] = {"provenance_json": _artifact(ctx.build / Provenance.FILE)}
+    manifest["timeframe"] = ctx.spec.timeframe.to_dict() if ctx.spec.timeframe else None
+    # built_at is worth saying out loud: it is the answer to "how old is this?",
+    # which is the question the rest of the record exists to make answerable
+    progress.step("read provenance", True, f"built {record.get('built_at', '?')}",
+                  time.monotonic() - started)
+    manifest["ok"] = True
+
+
 def _do_verify(manifest, progress: Progress, spec: Path, out: Path | None,
                timeframe: Any, as_of: date | None) -> None:
     from .assembler import Assets, _load_or_estimate, _scripts_for, make_context
+    from .provenance import Provenance
     from .verify import verify_output
 
     started = time.monotonic()
@@ -456,6 +498,11 @@ def _do_verify(manifest, progress: Progress, spec: Path, out: Path | None,
     manifest["report"] = assets.report.to_dict()
     manifest["artifacts"] = {"output": _artifact(assets.output), "srt": _artifact(assets.srt)}
     manifest["timeline"] = _timeline(assets)
+    # a verify *reads* a provenance record rather than writing one: it is
+    # describing a build somebody else already made, and inventing a fresh
+    # "what is this" for that build would be exactly the fabrication this
+    # engine refuses elsewhere
+    manifest["provenance"] = Provenance.read(ctx.build)
     manifest["ok"] = bool(assets.report.ok)
     if assets.output is None or not assets.output.exists():
         # "there is nothing to verify" and "the render failed its checks" are
@@ -481,7 +528,8 @@ def _do_build(manifest, progress: Progress, spec: Path, out: Path | None,
     started = time.monotonic()
     assets = run(spec, only=only if only is not None else _STAGES.get(action),
                  from_stage=from_stage,
-                 out_dir=out, timeframe=timeframe, as_of=as_of, refresh=refresh)
+                 out_dir=out, timeframe=timeframe, as_of=as_of, refresh=refresh,
+                 action=action)
     ctx = getattr(assets, "ctx", None)
     if ctx is not None:
         manifest["timeframe"] = (ctx.spec.timeframe.to_dict() if ctx.spec.timeframe else None)
@@ -493,9 +541,12 @@ def _do_build(manifest, progress: Progress, spec: Path, out: Path | None,
         "srt": _artifact(assets.srt),
         "audio": _artifact(assets.audio_track),
         "verify_json": _artifact((ctx.build / "verify.json") if ctx is not None else None),
+        "provenance_json": _artifact((ctx.build / "provenance.json") if ctx is not None else None),
     }
     if assets.report is not None:
         manifest["report"] = assets.report.to_dict()
+    if assets.provenance is not None:
+        manifest["provenance"] = assets.provenance
     progress.step("rendered"
                   if assets.output else "built",
                   True,
@@ -543,9 +594,14 @@ def refused(action: str, *, story: str | Path | None = None,
     return manifest
 
 
-def actions_help() -> list[dict[str, str]]:
-    """The action list as data, so an agent can discover the contract."""
-    return [{"action": a, "does": ACTION_HELP[a]} for a in ACTIONS]
+def actions_help() -> list[dict[str, Any]]:
+    """The action list as data, so an agent can discover the contract.
+
+    ``stages`` is here as well as in the MCP tool because it is the answer to a
+    question an agent actually asks — "will this render anything?" — and answering
+    it with an absent key would make the caller guess.
+    """
+    return [{"action": a, "does": ACTION_HELP[a], "stages": stages_for(a)} for a in ACTIONS]
 
 
 def stages_for(action: str) -> Iterable[str] | None:

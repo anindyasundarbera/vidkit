@@ -105,10 +105,22 @@ stream copy, so nothing is re-encoded; with any other transition it becomes a ch
 - The mux is bounded by `project.max_seconds` (a hard `-t` ceiling).
 
 ### `verify`
-**Reads:** the output media, the guards, and the narration text.
+**Reads:** the output media, the guards, the narration text, and `provenance.json`.
 **Writes:** `OUT/_build/verify.json`; prints a PASS/FAIL table.
 **Purpose:** evaluate the acceptance checks (see [`verification.md`](../verification/verification.md)).
 **Exit code:** `vidkit build` returns `2` if any check fails, `0` otherwise.
+
+It *reads* provenance rather than writing it: it is describing a build somebody else made,
+and a record composed at read time would describe today while appearing to describe the build
+it was handed. The identifying fields are copied into `report.facts.provenance` so one
+`verify.json` is self-sufficient — see [`provenance.md`](../verification/provenance.md).
+
+### provenance (not a stage)
+After the last stage, `assembler.run` writes `OUT/_build/provenance.json` for **every**
+rendering action — not just `build`. It is not a stage, so it cannot be skipped by `--only`,
+and it is not a check, so it cannot fail a build. It is the build's own identity: the spec and
+its hash, the window, the provider and its hash, every tool with its version and path, the
+stages that ran, the dataset hashes, and the UTC time it finished.
 
 ## Running a subset
 
@@ -140,6 +152,8 @@ spec.captures ──► captures/<name>-take-N.png             │
                               video-track.mp4 ─────────┴──► render ──► out.mp4 + narration.srt
                                                                           │
                                                           guards ────────►► verify.json
+                                                                          │
+                                                     provenance ──────────►► provenance.json
 ```
 
 ## Idempotence and re-runs

@@ -118,12 +118,34 @@ correctly refuses to build a video whose numbers it cannot fetch.
 ls OUT/_build/data/      # the exact datasets used
 ls OUT/_build/panels/    # rendered SVG panels
 ls OUT/_capture/         # the raw captures
-cat OUT/_build/verify.json
+cat OUT/_build/verify.json      # is it honest?
+cat OUT/_build/provenance.json  # what is it, and what made it?
 ```
+
+`provenance.json` names the spec and its hash, the window, the provider and its hash, the
+version of every tool that rendered it, and when. Attach it when reporting a bug: it answers
+"which build was this?" without anyone having to guess.
 
 ## Resetting
 
 Delete `OUT` (or just `OUT/_build`, `OUT/_capture`) to start clean. There is no other state.
+
+## Platform notes
+
+vidkit is developed and CI-tested on **Linux**, and works on **macOS**. Windows is
+best-effort: the code has no POSIX-only calls on the build path, but it is not tested there.
+
+| Concern | Linux | macOS | Windows |
+|---|---|---|---|
+| `ffmpeg`, `rsvg-convert` | package manager (`apt install ffmpeg librsvg2-bin`) | `brew install ffmpeg librsvg` | `winget`/`choco`; ensure both are on `PATH` |
+| Chrome for capture | Playwright-managed, or a distro package | Playwright-managed, or the app bundle in `/Applications` | Playwright-managed, or `chrome.exe` on `PATH` |
+| The `SIGALRM` run timeout | works | works | **not installed** — an MCP call is simply unbounded |
+| PDF rasterising | `poppler-utils` or `ghostscript` | same (Homebrew) | same |
+| Paths | `/` | `/` | `\`; spec paths are resolved against the spec's own folder, so keep them relative |
+| Fonts | Liberation/DejaVu | DejaVu is present; Liberation is not, and the default theme falls through to it | none of the default families ship with Windows; set `theme.font` to a font you have (for example `Segoe UI`) |
+
+The timeout line is the one that matters in practice. It is not a silent degradation:
+`_deadline` yields "no alarm installed", and the manifest reports what the job actually did.
 
 ## Reporting a bug
 

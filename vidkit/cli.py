@@ -6,9 +6,11 @@
     vidkit tts    SPEC       (re)synthesize narration only
     vidkit capture SPEC      (re)capture screen recordings only
     vidkit verify SPEC       re-run the acceptance checks on the last render
+    vidkit provenance SPEC   show what made the last build, and when
     vidkit init   DIR        scaffold a runnable story (spec + narration + provider)
     vidkit run    ACTION     run a job and print its artifact manifest
     vidkit docs   [NAME]     print the docs router, or a named document
+    vidkit auth   URL        sign in once by hand; captures reuse the session
 
 ``--timeframe``/``--days``/``--as-of`` override the window declared by the spec or its
 ``story.yaml``, for every command that loads a spec. ``--days`` is a shorthand for
@@ -77,6 +79,28 @@ def _plan(spec_path: Path, timeframe: Timeframe | None = None) -> int:
     from .reports import format_plan, plan_report
 
     print(format_plan(plan_report(spec_path, timeframe=timeframe)))
+    return 0
+
+
+def _provenance(spec_path: Path, out: Path | None,
+                timeframe: Timeframe | None = None) -> int:
+    """The ``provenance`` verb: read the last build's record, print it, never write one.
+
+    It goes through the same job the other verbs use, so the text here and the
+    ``--json`` manifest cannot disagree about which build this is.
+    """
+    from .reports import format_provenance
+
+    manifest = run_job("provenance", story=str(spec_path), out=str(out) if out else None,
+                       timeframe=timeframe)
+    record = manifest.get("provenance")
+    if not manifest.get("ok") or record is None:
+        failure = manifest.get("failure") or {}
+        print(f"vidkit: error: {failure.get('message') or 'no readable provenance'}"
+              + (f"\nhint: {failure['hint']}" if failure.get("hint") else ""),
+              file=sys.stderr)
+        return 1
+    print(format_provenance(record))
     return 0
 
 
@@ -176,7 +200,8 @@ def _assets_to_json(assets: Assets) -> dict:
 #: construction rather than by two lists kept in step by hand.
 _COMMAND_ACTION = {
     "doctor": "doctor", "plan": "plan", "build": "build", "tts": "tts",
-    "capture": "capture", "verify": "verify", "init": "init",
+    "capture": "capture", "verify": "verify", "provenance": "provenance",
+    "init": "init",
 }
 
 
@@ -306,7 +331,8 @@ def main(argv: list[str] | None = None) -> int:
     for name, help_ in (("build", "run the full pipeline"),
                         ("tts", "synthesize narration only"),
                         ("capture", "capture screen recordings only"),
-                        ("verify", "re-run acceptance checks")):
+                        ("verify", "re-run acceptance checks"),
+                        ("provenance", "show what made the last build, and when")):
         p = sub.add_parser(name, parents=[common], help=help_)
         p.add_argument("spec")
         p.add_argument("--out", default=None, help="output directory (default: spec folder)")
@@ -413,6 +439,10 @@ def main(argv: list[str] | None = None) -> int:
             assets.report = verify_output(ctx, assets, {s.n: s.spoken for s in scripts})
             assets.report.print()
             return 0 if assets.report.ok else 2
+        if args.cmd == "provenance":
+            return _provenance(Path(args.spec).resolve(),
+                               Path(args.out) if args.out else None,
+                               _override(args))
     except VidkitError as exc:
         print(f"vidkit: error: {exc}", file=sys.stderr)
         return 1

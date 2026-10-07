@@ -231,6 +231,33 @@ jobs:
           assert d['timeline'], 'a verify must report the spans it looked at'
           "
 
+          # R-F8 — every build leaves an identity, and verify reads it rather than
+          # inventing a fresh one for somebody else's build
+          python -c "
+          import json
+          b = json.load(open('$probe/build.json'))
+          assert b['provenance'] and b['provenance']['action'] == 'build', b['provenance']
+          assert b['artifacts']['provenance_json']['ok'], b['artifacts']
+          v = json.load(open('$probe/verify.json'))
+          assert v['provenance']['action'] == 'build', v['provenance']
+          assert v['provenance']['spec_sha256'] == b['provenance']['spec_sha256']
+          assert v['report']['facts']['provenance']['spec_sha256'], v.get('report')
+          "
+          vidkit --json provenance "$probe/story/video.yaml" --out "$probe/out" > "$probe/provenance.json"
+          python -c "
+          import json
+          m = json.load(open('$probe/provenance.json'))
+          assert m['ok'] and m['action'] == 'provenance', m
+          d = m['provenance']
+          assert d['schema'] == 1 and d['tools'], d
+          assert {t['name'] for t in d['tools']} == {'ffmpeg','ffprobe','rsvg-convert','pdftoppm','gs'}
+          assert all('present' in t for t in d['tools']), 'absent tools are recorded, not dropped'
+          on_disk = json.load(open('$probe/out/_build/provenance.json'))
+          assert d == on_disk, 'the manifest must carry the record verbatim, not a summary of it'
+          b = json.load(open('$probe/build.json'))['provenance']
+          assert d['spec_sha256'] == b['spec_sha256'], 'every reader must name the same build'
+          "
+
           # a refusal is data, and it still names the window that was asked for
           vidkit --json run plan --story "$probe/story" --timeframe 3d \
             > "$probe/refused.json" || true
