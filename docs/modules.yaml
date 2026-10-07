@@ -41,11 +41,12 @@ modules:
 
   - id: capture
     title: Capture
-    summary: Recording real UI and real downloads with Playwright, asserting the state before the frame.
+    summary: Recording real UI, real downloads, and real terminal sessions.
     audience: both
     route: docs/capture/<doc>
     docs:
       - {file: capture/capture-guide.md, title: Capture guide, summary: Actions, assertions, downloads, artifacts, determinism, reliability tactics.}
+      - {file: capture/exec-guide.md, title: Exec guide, summary: Declaring, sandboxing, recording, and verifying real terminal commands.}
 
   - id: verification
     title: Verification

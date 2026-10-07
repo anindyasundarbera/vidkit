@@ -120,6 +120,32 @@ class Secrets:
                 out = out.replace(value, REDACTED)
         return out
 
+    def redact_bytes(self, data: bytes) -> bytes:
+        """Mask every resolved value appearing in ``data``, length-preserving.
+
+        The bytes overload of :meth:`redact`, and it exists for one reason: a
+        recorded terminal is a *published* terminal. A command that echoes an
+        environment variable — or that gets its token printed back at it by a
+        failing ``curl`` — would otherwise put the credential in the video and in
+        the ``.cast`` next to it.
+
+        Replacement is **in place and byte-for-byte the same length**, so the
+        recording stays playable: a cast is a stream of timed cursor movements,
+        and shortening it would shear every escape sequence that follows.
+        """
+        if not data:
+            return data
+        out = data
+        for value in sorted(self.values.values(), key=len, reverse=True):
+            if not value:
+                continue
+            raw = value.encode("utf-8")
+            if raw in out:
+                # a single-byte mask keeps the offset arithmetic intact; a
+                # multi-byte replacement would shift everything after it
+                out = out.replace(raw, b"*" * len(raw))
+        return out
+
     def describe(self) -> list[str]:
         """Masked, printable lines — one per declared need, for ``doctor``."""
         lines = []

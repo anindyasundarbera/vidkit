@@ -159,6 +159,74 @@ class Ffmpeg:
             "-pix_fmt", "yuv420p", str(out),
         ])
 
+    def frames_to_clip(
+        self, frames: Sequence[Path], out: Path, durations: Sequence[float], *,
+        size: tuple[int, int], fps: int, crf: int = 19,
+    ) -> None:
+        """Mux real PNG frames into a clip, each held for its **own** duration.
+
+        The frames are the *real* replayed screens — one per moment the recording
+        actually reached — and ``durations[i]`` is how much recording time passed
+        before frame ``i+1`` appeared. Holding each frame for that long is what
+        keeps the temporal claim true: a command that took forty seconds looks
+        like forty seconds. Compressing the pacing would show content that really
+        happened at a speed it never happened at — a smaller lie than a fake
+        terminal, but the same kind of lie, and this module exists to not tell it.
+
+        Durations are floored at one frame so a burst of output still produces a
+        visible frame rather than a skipped one.
+        """
+        if not frames:
+            raise ToolError("frames_to_clip called with no frames")
+        floor = 1.0 / max(fps, 1)
+        listfile = out.with_suffix(".txt")
+        lines = []
+        for i, p in enumerate(frames):
+            held = max(floor, durations[i] if i < len(durations) else floor)
+            lines.append(f"file '{p.resolve()}'\nduration {held:.4f}\n")
+        # the concat demuxer needs the last frame repeated, or ffmpeg drops it
+        lines.append(f"file '{frames[-1].resolve()}'\n")
+        listfile.write_text("".join(lines), encoding="utf-8")
+        self.shell.run([
+            "ffmpeg", "-y", "-loglevel", "error", "-f", "concat", "-safe", "0",
+            "-i", str(listfile),
+            "-vf", f"{fit_filters(size)},fps={fps},format=yuv420p",
+            "-c:v", "libx264", "-preset", "veryfast", "-crf", str(crf),
+            "-pix_fmt", "yuv420p", str(out),
+        ])
+
+    def fit_clip(
+        self, source: Path, out: Path, seconds: float, *,
+        size: tuple[int, int], fps: int, fit: str = "cover", crf: int = 19,
+    ) -> None:
+        """Re-encode a *video* source into a clip of exactly ``seconds``.
+
+        The sibling of :meth:`still_to_clip`, for a source that is already moving.
+        It reuses the same :func:`fit_filters`, so a video and a still of
+        identical geometry land in the frame identically and a viewer cannot tell
+        which stage produced the picture.
+
+        A source *shorter* than the slot is frozen on its last frame
+        (``tpad stop_mode=clone``). A source *longer* is cut. Both are stated here
+        rather than papered over: the recording is what it is, and the shot is the
+        part of it the scene had room for.
+        """
+        w, h = size
+        if fit == "contain":
+            geom = (f"scale={w}:{h}:force_original_aspect_ratio=decrease:flags=lanczos,"
+                    f"pad={w}:{h}:(ow-iw)/2:(oh-ih)/2:color={_PAD_COLOR},setsar=1")
+        else:
+            geom = fit_filters(size)
+        self.shell.run([
+            "ffmpeg", "-y", "-loglevel", "error",
+            "-i", str(source),
+            "-vf", f"{geom},tpad=stop_mode=clone:stop_duration={seconds:.3f},"
+                   f"fps={fps},format=yuv420p",
+            "-t", f"{seconds:.3f}",
+            "-c:v", "libx264", "-preset", "veryfast", "-crf", str(crf),
+            "-pix_fmt", "yuv420p", str(out),
+        ])
+
     def clip_geometry(self, path: Path) -> tuple[int, int]:
         """The real pixel size of a clip's frames — ffmpeg reads the file, so
         this is a fact about the output, not about the filter that made it."""

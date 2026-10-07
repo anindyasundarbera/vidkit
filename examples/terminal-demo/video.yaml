@@ -1,0 +1,71 @@
+# vidkit spec — terminal-demo (filming real commands, for real)
+#
+# This example is the *evidence* that the exec stage works end to end: a command
+# declared in the spec, run inside a bubblewrap sandbox with no network, recorded
+# through a real PTY, and rendered from the recording rather than drawn.
+#
+#   vidkit build examples/terminal-demo/video.yaml
+#
+# Unlike capture-kit this needs no browser and no server — only `bwrap(1)` and
+# ffmpeg — so it is wired into CI as a probe that asserts the report.
+#
+# Every screen in the finished film is a replay of bytes the command actually
+# wrote. Nothing here is an animation of a command that did not run.
+
+project:
+  title: "vidkit terminal-demo — filming a real command"
+  slug: terminal-demo
+  output: terminal-demo.mp4
+  size: [1280, 720]
+  fps: 24
+  min_seconds: 4
+  max_seconds: 60
+
+voice:
+  engine: none                # offline: lengths are estimated from the wording
+
+narration:
+  source: narration.md
+
+exec:
+  allow_network: false        # no command below may reach the network
+  max_timeout: 60
+  steps:
+    - label: count
+      cmd: "for i in 1 2 3 4 5; do printf 'step %s of 5\\n' $i; sleep 0.6; done"
+      backend: bubblewrap
+      timeout: 20
+      cols: 60
+      rows: 12
+    - label: listing
+      cmd: ["ls", "-1"]
+      backend: bubblewrap
+      timeout: 10
+      cols: 60
+      rows: 12
+    - label: expected_failure
+      cmd: "printf 'about to fail\\n'; exit 4"
+      backend: bubblewrap
+      timeout: 10
+      expect_exit: [4]        # a declared failure is a passing build
+      cols: 60
+      rows: 12
+
+scenes:
+  - n: 0
+    title: Recorded, not drawn
+    shots:
+      - {exec: count, effect: hold}
+  - n: 1
+    title: An argv, not a script
+    shots:
+      - {exec: listing, effect: hold}
+  - n: 2
+    title: An expected failure
+    shots:
+      - {exec: expected_failure, effect: hold}
+
+guard:
+  require_audio: false        # declared silent cut; there is no voice engine here
+  require_sandbox: true       # every command above ran under bwrap(1)
+  require_exec_success: true  # every exit code matched its `expect_exit`

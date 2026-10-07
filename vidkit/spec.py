@@ -63,12 +63,13 @@ class Narration:
 
 @dataclass
 class Shot:
-    """One visual beat. Exactly one of still/capture/chart is set."""
-    kind: str                             # "still" | "capture" | "chart"
-    ref: str                              # path, capture name, or chart name
+    """One visual beat. Exactly one of still/capture/chart/exec is set."""
+    kind: str                             # "still" | "capture" | "chart" | "exec"
+    ref: str                              # path, capture name, chart name, or exec step label
     effect: str = "hold"                  # "hold" | "zoom"
     fit: str = "cover"                    # "cover" (crop) | "contain" (letterbox)
     weight: float = 1.0                   # share of the scene's duration
+    at: float | None = None               # exec shots: which second of the recording to freeze
 
 
 @dataclass
@@ -174,6 +175,50 @@ class Chart:
     options: dict[str, Any] = field(default_factory=dict)
 
 
+#: Backends a spec may name. ``docker`` is M8; naming it before it exists would
+#: be a spec that promises an isolation it does not get.
+EXEC_BACKENDS = {"local", "bubblewrap"}
+
+
+@dataclass
+class Exec:
+    """One declared command, and the boundary it runs inside (R-E1).
+
+    This is the *spec's* half of ``vidkit.exec.ExecRequest``: it says what to run
+    and what it is allowed to touch, in the same declarative form as everything
+    else. Nothing in it executes at load time.
+
+    ``cmd`` may be a string — in which case the spec is declaring a shell script
+    and that is spelled out — or a list, which is run as an argv with no shell at
+    all.
+    """
+    label: str
+    cmd: list[str]
+    shell: list[str] = field(default_factory=list)
+    cwd: str = "."
+    env: dict[str, str] = field(default_factory=dict)
+    timeout: float = 60.0
+    backend: str = "bubblewrap"
+    network: bool = False
+    reads: list[str] = field(default_factory=list)
+    expect_exit: list[int] = field(default_factory=lambda: [0])
+    cols: int = 100
+    rows: int = 30
+    at: float | None = None               # which second of the recording a shot shows
+
+
+@dataclass
+class ExecPolicy:
+    """What the spec as a whole permits, as opposed to what one command asks for.
+
+    The two-layer shape is deliberate. A command says ``network: true`` and the
+    policy says whether that is even on the table, so widening one command cannot
+    quietly widen the build.
+    """
+    allow_network: bool = False
+    max_timeout: float = 300.0
+
+
 @dataclass
 class Guard:
     min_seconds: float | None = None
@@ -183,6 +228,8 @@ class Guard:
     require_live_mode: bool = False
     require_audio: bool = True                             # a silent cut must be declared, never accidental
     require_live_data: bool = False                        # a degraded dataset must be declared, never accidental
+    require_sandbox: bool = True                          # every exec step ran in a declared, isolated backend
+    require_exec_success: bool = True                      # every exec step exited as it declared
 
 
 @dataclass
@@ -252,6 +299,8 @@ class Spec:
     provider: ProviderSpec | None = None
     captures: list[Capture] = field(default_factory=list)
     charts: list[Chart] = field(default_factory=list)
+    exec: list[Exec] = field(default_factory=list)
+    exec_policy: ExecPolicy = field(default_factory=ExecPolicy)
     guard: Guard = field(default_factory=Guard)
     story: Story | None = None
     timeframe: Timeframe | None = None
@@ -265,6 +314,9 @@ class Spec:
 
     def chart(self, name: str) -> Chart | None:
         return next((c for c in self.charts if c.name == name), None)
+
+    def exec_step(self, label: str) -> Exec | None:
+        return next((e for e in self.exec if e.label == label), None)
 
     def scene(self, n: int) -> Scene | None:
         return next((s for s in self.scenes if s.n == n), None)
@@ -336,9 +388,9 @@ def load_story(root: Path | str, *, default_as_of: Any = None) -> Story:
 
 
 def _shots(raw: dict[str, Any], where: str) -> Shot:
-    present = [k for k in ("still", "capture", "chart") if k in raw]
+    present = [k for k in ("still", "capture", "chart", "exec") if k in raw]
     if len(present) != 1:
-        raise SpecError(f"{where}: a shot needs exactly one of still/capture/chart")
+        raise SpecError(f"{where}: a shot needs exactly one of still/capture/chart/exec")
     kind = present[0]
     fit = str(raw.get("fit", "cover"))
     if fit not in FITS:
@@ -348,7 +400,82 @@ def _shots(raw: dict[str, Any], where: str) -> Shot:
     return Shot(kind=kind, ref=str(raw[kind]),
                 effect=str(raw.get("effect", "hold")),
                 fit=fit,
-                weight=float(raw.get("weight", 1.0)))
+                weight=float(raw.get("weight", 1.0)),
+                at=None if raw.get("at") is None else float(raw["at"]))
+
+
+def _exec_step(raw: dict[str, Any], where: str) -> Exec:
+    """Parse one declared command.
+
+    The string/list distinction is the interesting part. A string command is
+    wrapped as ``["/bin/sh", "-c", <string>]`` and the shell is therefore
+    *declared*; a list is run as-is, with no interpreter. Both are honest — the
+    difference is that one of them says so in the spec.
+    """
+    if "label" not in raw:
+        raise SpecError(f"{where}: an exec step needs a `label` (shots reference it)")
+    if "cmd" not in raw:
+        raise SpecError(f"{where}: an exec step needs a `cmd`")
+    raw_cmd = raw["cmd"]
+    if isinstance(raw_cmd, str):
+        if not raw_cmd.strip():
+            raise SpecError(f"{where}: `cmd` is empty")
+        cmd, shell = [raw_cmd], ["/bin/sh", "-c"]
+    elif isinstance(raw_cmd, (list, tuple)):
+        cmd = [str(x) for x in raw_cmd]
+        if not cmd:
+            raise SpecError(f"{where}: `cmd` is an empty list")
+        shell = []
+    else:
+        raise SpecError(
+            f"{where}: `cmd` must be a string (run through a declared /bin/sh) or "
+            f"a list (run as an argv, no shell), not {type(raw_cmd).__name__}")
+    if raw.get("shell"):
+        raise SpecError(
+            f"{where}: `shell:` is not a spec field — write `cmd:` as a string to "
+            "declare a shell script, or as a list to run an argv directly")
+    backend = str(raw.get("backend", "bubblewrap"))
+    if backend not in EXEC_BACKENDS:
+        raise SpecError(
+            f"{where}: unknown backend {backend!r}; known: "
+            f"{', '.join(sorted(EXEC_BACKENDS))}"
+            + (" (docker arrives with the environment lab in M8)"
+               if backend == "docker" else ""))
+    env = raw.get("env") or {}
+    if not isinstance(env, dict):
+        raise SpecError(f"{where}: `env` must be a mapping of NAME: value")
+    expect = raw.get("expect_exit", [0])
+    if isinstance(expect, int):
+        expect = [expect]
+    reads = raw.get("reads") or []
+    if isinstance(reads, str):
+        reads = [reads]
+    return Exec(
+        label=str(raw["label"]),
+        cmd=cmd,
+        shell=shell,
+        cwd=str(raw.get("cwd", ".")),
+        env={str(k): str(v) for k, v in env.items()},
+        timeout=float(raw.get("timeout", 60.0)),
+        backend=backend,
+        network=bool(raw.get("network", False)),
+        reads=[str(x) for x in reads],
+        expect_exit=[int(x) for x in expect],
+        cols=int(raw.get("cols", 100)),
+        rows=int(raw.get("rows", 30)),
+        at=None if raw.get("at") is None else float(raw["at"]),
+    )
+
+
+def _exec_policy(raw: dict[str, Any], where: str) -> ExecPolicy:
+    if raw is None:
+        raw = {}
+    if not isinstance(raw, dict):
+        raise SpecError(f"{where}: `exec` must be a mapping of steps or policy")
+    return ExecPolicy(
+        allow_network=bool(raw.get("allow_network", False)),
+        max_timeout=float(raw.get("max_timeout", 300.0)),
+    )
 
 
 def _assert(raw: dict[str, Any], where: str) -> Assert:
@@ -517,6 +644,30 @@ def load_spec(path: Path | str, *,
                     options=dict(c.get("options") or {}))
               for c in (raw.get("charts") or [])]
 
+    # `exec:` is either a mapping of steps or a policy block. A mapping under
+    # `steps:` is a list of steps; anything else that is a list is one too. That
+    # covers the two shapes an author will write without needing a third.
+    raw_exec = raw.get("exec")
+    exec_steps: list[Exec] = []
+    exec_policy = ExecPolicy()
+    if raw_exec:
+        if not isinstance(raw_exec, dict):
+            raise SpecError("`exec` must be a mapping: `steps:` plus optional policy")
+        exec_policy = _exec_policy({k: v for k, v in raw_exec.items()
+                                    if k in ("allow_network", "max_timeout")},
+                                   "exec")
+        for i, step in enumerate(raw_exec.get("steps") or []):
+            if not isinstance(step, dict):
+                raise SpecError("exec.steps: each step must be a mapping")
+            exec_steps.append(_exec_step(step, f"exec step {i + 1}"))
+        seen_labels: set[str] = set()
+        for step in exec_steps:
+            if step.label in seen_labels:
+                raise SpecError(
+                    f"exec step {step.label!r}: a second step with the same label — "
+                    "shots reference a step by label, so two would be ambiguous")
+            seen_labels.add(step.label)
+
     scenes: list[Scene] = []
     for s in raw.get("scenes") or []:
         shots = [_shots(sh, f"scene {s.get('n')}") for sh in (s.get("shots") or [])]
@@ -537,13 +688,16 @@ def load_spec(path: Path | str, *,
                   required=[str(x) for x in (g.get("required") or [])],
                   require_live_mode=bool(g.get("require_live_mode", False)),
                   require_audio=bool(g.get("require_audio", True)),
-                  require_live_data=bool(g.get("require_live_data", False)))
+                  require_live_data=bool(g.get("require_live_data", False)),
+                  require_sandbox=bool(g.get("require_sandbox", True)),
+                  require_exec_success=bool(g.get("require_exec_success", True)))
 
     provider = _provider_spec(raw.get("provider"))
 
     root = path.parent.resolve()
     spec = Spec(project=project, scenes=scenes, voice=voice, narration=narration,
                 provider=provider, captures=captures, charts=charts,
+                exec=exec_steps, exec_policy=exec_policy,
                 guard=guard, root=root)
 
     spec.story = load_story(root, default_as_of=as_of)
@@ -614,6 +768,7 @@ def _validate(spec: Spec) -> None:
             "it, and nothing else")
     cap_names = {c.name for c in spec.captures}
     chart_names = {c.name for c in spec.charts}
+    exec_labels = {e.label for e in spec.exec}
     known_provider = spec.provider is not None
     for sc in spec.scenes:
         for sh in sc.shots:
@@ -627,6 +782,15 @@ def _validate(spec: Spec) -> None:
                 raise SpecError(f"scene {sc.n}: capture {sh.ref!r} is not defined")
             elif sh.kind == "chart" and sh.ref not in chart_names and not known_provider:
                 raise SpecError(f"scene {sc.n}: chart {sh.ref!r} is not defined")
+            elif sh.kind == "exec" and sh.ref not in exec_labels:
+                if not exec_labels:
+                    raise SpecError(
+                        f"scene {sc.n}: shows an exec shot but the spec declares no "
+                        "`exec:` steps — add an `exec:` block naming the commands")
+                raise SpecError(
+                    f"scene {sc.n}: exec step {sh.ref!r} is not declared — a shot "
+                    "must show a command the spec wrote down (declared: "
+                    + ", ".join(sorted(exec_labels)) + ")")
         ov = sc.overlay
         if ov is not None and ov.kind == "image" and ov.src:
             if not (spec.root / ov.src).exists() and not (spec.root / ".." / ov.src).exists():
@@ -638,6 +802,32 @@ def _validate(spec: Spec) -> None:
 
     _validate_captures(spec)
     _validate_timeframe(spec)
+    _validate_exec(spec)
+
+
+def _validate_exec(spec: Spec) -> None:
+    """Refuse commands that could only fail once the camera was rolling (R-E1).
+
+    Every reason a declared command cannot run as written is available at load
+    time: the working directory is on disk or it is not, the backend is installed
+    or it is not, the policy permits the network or it does not. Checking here
+    means ``vidkit plan`` already tells the truth about what a build will do.
+    """
+    from .exec import check_policy
+
+    if not spec.exec:
+        return
+    problems = check_policy(
+        [e for e in spec.exec], root=spec.root,
+        allow_network=spec.exec_policy.allow_network)
+    problems += [
+        f"exec step {e.label!r}: timeout {e.timeout:g}s exceeds the spec's "
+        f"exec.max_timeout of {spec.exec_policy.max_timeout:g}s — raise the policy "
+        "deliberately, or lower the command's timeout"
+        for e in spec.exec if e.timeout > spec.exec_policy.max_timeout
+    ]
+    if problems:
+        raise SpecError("; ".join(problems))
 
 
 def _validate_captures(spec: Spec) -> None:

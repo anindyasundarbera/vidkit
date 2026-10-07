@@ -159,6 +159,37 @@ def test_doctor_reports_the_spec_when_given_one():
     assert manifest["doctor"]["spec"]["scenes"] == 8
 
 
+def test_doctor_answers_the_sandbox_question_with_or_without_a_story():
+    """Whether a confined command can run here is a fact about the *host*, so a
+    caller must not have to hand over a spec to hear it. This is the fact whose
+    absence let `exec-probe` in CI run green on a machine where nothing was ever
+    sandboxed (defect G)."""
+    bare = run_job("doctor")["doctor"]["backends"]
+    with_spec = run_job("doctor", story=str(EXAMPLE))["doctor"]["backends"]
+
+    assert set(bare) >= {"ok", "declared", "available", "detail"}
+    # `available` is the host question and must not depend on the spec: a spec
+    # that declares nothing cannot make the sandbox work.
+    assert bare["available"] == with_spec["available"]
+    # ...while `ok` is the spec question, so `local`-only specs pass where the
+    # host itself cannot sandbox.
+    assert with_spec["ok"] is True
+    # hello-world declares no exec steps, so the two verdicts may differ; that
+    # difference is the entire reason both fields exist.
+    assert bare["ok"] == bare["available"]
+
+
+def test_a_sandbox_verdict_without_a_spec_is_not_a_crash_on_a_lean_host():
+    """On a machine with no bubblewrap, `doctor` is allowed to say `NO` — it is not
+    allowed to raise, because an agent probing the host is exactly what it is for."""
+    from vidkit.reports import format_doctor
+
+    report = run_job("doctor")["doctor"]
+    text = format_doctor(report)
+    assert "sandbox" in text
+    assert ("[yes] sandbox" in text) == report["backends"]["available"]
+
+
 def test_plan_carries_the_scenes_and_the_window():
     manifest = run_job("plan", story=str(EXAMPLE))
     plan = manifest["plan"]

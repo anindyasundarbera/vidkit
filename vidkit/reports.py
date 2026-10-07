@@ -56,6 +56,10 @@ def doctor_report(spec_path: Path | None = None, *,
         "spec": None,
         "spec_error": None,
         "panel_kinds": panel_kinds(),
+        # Always answered, spec or no spec: "can I run a confined command on this
+        # machine" is a question about the machine, and it is the first thing an
+        # author needs to know before writing `backend: bubblewrap` anywhere.
+        "backends": _backends_line(),
     }
 
     if spec_path:
@@ -72,6 +76,8 @@ def doctor_report(spec_path: Path | None = None, *,
             add("secrets", not missing, "declared by the provider", True,
                 ("not set: " + ", ".join(missing)) if missing else "all present")
             report["ok"] = report["ok"] and not missing
+        report["backends"] = _sandbox_needs(spec)
+        report["ok"] = report["ok"] and report["backends"]["ok"]
         report["spec"] = {
             "path": str(spec_path),
             "title": spec.project.title,
@@ -88,6 +94,51 @@ def doctor_report(spec_path: Path | None = None, *,
             "secrets": needs,
         }
     return report
+
+
+def _backends_line() -> dict[str, Any]:
+    """Sandbox capability with no spec in hand — a fact about this host."""
+    from .exec import bwrap_available
+
+    ok, detail = bwrap_available()
+    return {"ok": ok, "declared": ["bubblewrap"], "available": ok,
+            "detail": "bubblewrap can start a sandbox on this host" if ok else detail}
+
+
+def _sandbox_needs(spec) -> dict[str, Any]:
+    """Whether the spec's declared sandbox will actually work on this host (defect G).
+
+    ``doctor`` has to answer "can this machine run this story", and a spec whose
+    commands declare ``backend: bubblewrap`` on a host that cannot start a
+    namespace is a story this machine cannot run. Saying so here is the whole
+    point: otherwise the failure arrives as a ``SpecError`` in the middle of a
+    build, or — worse — never arrives, and the recording quietly documents a
+    sandbox that was not there.
+
+    ``available`` always answers the *host* question ("can bwrap start?"), never
+    the narrower "does this spec need it?", so a reader can tell a machine that
+    cannot sandbox from a spec that does not ask it to.
+    """
+    from .exec import bwrap_available
+
+    declared = sorted({step.backend for step in spec.exec})
+    ok, detail = bwrap_available()
+    needs_it = "bubblewrap" in declared
+    if not declared:
+        how = "no exec steps declared; bubblewrap is usable" if ok else (
+            f"no exec steps declared, but {detail}")
+    elif ok:
+        how = f"{', '.join(declared)} will run as declared"
+    elif needs_it:
+        how = f"declared {', '.join(declared)} cannot run: {detail}"
+    else:
+        how = f"declared {', '.join(declared)} run unconfined on this host"
+    return {
+        "ok": ok or not needs_it,
+        "declared": declared,
+        "available": ok,
+        "detail": how,
+    }
 
 
 def _secret_needs(spec) -> tuple[list[dict[str, Any]], list[str]]:
@@ -127,6 +178,15 @@ def format_doctor(report: dict[str, Any]) -> str:
         status = "yes" if t["present"] else ("NO " if t["required"] else "no ")
         detail = t["detail"] or t["note"]
         lines.append(f"  [{status}] {t['name']:16s} {detail}")
+    # Whether a confined command can run on this host is a question about the
+    # host, so it is answered even when no spec was given: `available: false`
+    # means the sandbox cannot start, not that bwrap(1) is missing (defect G).
+    backends = report.get("backends")
+    if backends:
+        declared = backends.get("declared") or ["bubblewrap"]
+        mark = "yes" if backends["available"] else "NO "
+        lines.append(f"  [{mark}] {'sandbox':16s} "
+                     f"confines {', '.join(declared)} — {backends['detail']}")
     if report.get("spec_error"):
         lines.append(f"  [NO ] spec              {report['spec_error']}")
     elif report.get("spec"):

@@ -54,7 +54,7 @@ Violating any of these is a bug, regardless of what it makes easier.
 | I4 | Captions are **≤ 2 lines, ≤ 42 characters per line**. | `narration.py` + `verify.py` |
 | I5 | **Measured audio is the master clock.** Clip lengths derive from real per-scene durations, never from estimates, when audio exists. | `tts.py`, `assembler.py` |
 | I6 | A **silent cut must be declared** (`guard.require_audio: false`), never accidental. | `verify.py` |
-| I7 | **Nothing fabricated is rendered.** Not a mock UI, not an invented number, not a restaged take. | `verify.py`, review |
+| I7 | **Nothing fabricated is rendered.** Not a mock UI, not an invented number, not a restaged take — and not a terminal transcript recorded off a pipe, where the program would have printed something else. | `verify.py`, `exec.py`, review |
 | I8 | Specs are **plain data**. A spec never executes arbitrary code; only the named provider is imported. | `spec.py` |
 | I9 | The **story lives in the consumer's repo**, never bundled into vidkit. Integration is **MCP-only, never vendored**. | [ROADMAP.md](ROADMAP.md) decision of record |
 | I10 | Provider **datasets are snapshotted** to `data/*.json`, so panels re-render without re-fetching. | `assembler.py` |
@@ -71,12 +71,14 @@ vidkit/
 ├─ CHANGELOG.md           release notes
 ├─ LICENSE                MIT
 ├─ pyproject.toml         packaging, extras, console scripts
-├─ vidkit/                the engine (24 modules)
-│    assembler.py         the 9-stage pipeline + Context/Assets wiring
+├─ vidkit/                the engine (26 modules)
+│    assembler.py         the 10-stage pipeline + Context/Assets wiring
 │    spec.py              dataclasses + loader + cross-reference validation
 │    context.py           Context/Assets: the paths every stage shares
 │    provider.py          provider plugin loading (datasets/panels/stills/register)
 │    capture.py           Playwright capture, action DSL, assert-before-shot
+│    exec.py              declared execution: PTY, bubblewrap sandbox, policy, records
+│    terminal.py          ANSI/CSI screen model + .cast recording -> frames
 │    panels.py            11 built-in panel kinds + register()
 │    svg.py               SVG primitives + the default Theme/PanelDoc
 │    narration.py         scene-script parsing, caption wrapping, SRT building
@@ -107,20 +109,23 @@ vidkit/
 │    test_ffmpeg.py       filter graphs + real pixels read back
 │    test_presentation.py fit/overlay/transition contracts (R-D)
 │    test_provenance.py   the build record: shape, refusals, read-only (R-F8)
+│    test_exec.py         the exec contract: policy, results, spans (R-E)
+│    test_terminal.py     the screen model: CSI, SGR, cast round-trip, SVG
 ├─ examples/
 │    hello-world/         offline CI fixture (no browser, no voice, no network)
 │    capture-kit/         a local fixture server the capture probe films
+│    terminal-demo/       a recorded, sandboxed terminal session (exec probe)
 ├─ docs/
 │    modules.yaml         machine-readable doc route table (agents resolve by stem)
 │    README.md            doc router
 │    foundations/         concepts, pipeline, architecture
 │    authoring/           spec-reference, provider-guide, panels-reference, narration-and-captions
-│    capture/             capture-guide
+│    capture/             capture-guide, exec-guide
 │    verification/        verification, provenance
 │    operations/          cli-reference, mcp-server, job-contract, troubleshooting, extracting-to-new-repo
 │    guides/              recipes, first-video
 │    plan/                PLAN.md, HISTORY.md, FEATURE-ROADMAP.md, DECISIONS.md, OPENMONTAGE.md
-└─ .github/workflows/     CI (lint + pytest + hello-world build)
+└─ .github/workflows/     CI (lint + pytest + hello-world + capture + exec probes)
 ```
 
 ---
@@ -198,6 +203,26 @@ python3 -m vidkit docs --index                             # JSON route table
   A known, documented minor inconsistency.
 - **This repo has a `build/` directory and `vidkit.egg-info/`** from an editable install.
   They are gitignored scratch; do not commit them.
+- **The exec stage films a PTY, never a pipe.** A program checks `isatty` and changes what it
+  prints when it is not on one, so piping would record a transcript that never happened
+  (I7). `test_run_is_handed_a_real_terminal_not_a_pipe` pins this.
+- **`terminal.replay_events(events, …)` is the engine's entry point; `replay(cast_text)` is
+  the cast-file one.** They are not interchangeable and must not be merged by sniffing the
+  input: a cast file carries its own timestamps, and recovering them from the stream loses
+  the measured pace.
+- **A recording's interior frames keep their *measured* spans; only the final frame is given
+  the time that remains.** Sampling on an interval means the last screen regularly falls
+  between samples, so the assembler appends it explicitly.
+- **`Secrets.redact_bytes` must be length-preserving.** A cast is timed cursor movements;
+  shortening one chunk shears every escape sequence after it.
+- **`guard.require_sandbox` defaults `True`.** A spec that wants to run a command unsandboxed
+  must say `guard.require_sandbox: false`, exactly as with `require_audio`.
+- **bwrap's refusal wording is not stable.** A path that is not mounted at all reports
+  `Directory nonexistent` (exit 2); only a path under a read-only mount reports a permission
+  error. Assert *the file is unchanged*, never a specific errno.
+- **`bwrap(1)` may exist where the render toolchain does not** (CI's `pytest` jobs are exactly
+  this case), so exec tests are split: pure-Python policy/renderer tests run everywhere,
+  anything that starts a process is `@pytest.mark.needs_render`.
 
 ---
 
@@ -236,22 +261,33 @@ Use exactly these, so they are greppable:
 
 ## 6. Current position (snapshot)
 
-> Snapshot taken 2026-10-07. If this disagrees with [docs/plan/PLAN.md](docs/plan/PLAN.md),
+> Snapshot taken 2026-10-08. If this disagrees with [docs/plan/PLAN.md](docs/plan/PLAN.md),
 > trust PLAN.md.
 
 - **Repo state:** public on GitHub (`anindyasundarbera/vidkit`), default branch `main`,
-  CI green. **M0–M6 are merged; the code is at v1.0.0.** M7 is the active phase.
-- **Tests:** `python3 -m pytest tests -q` → **359 passed** with `ffmpeg` + `rsvg-convert`
-  present, **337 passed / 22 skipped** without them.
-- **Engine:** host-free. 9 stages, **24 modules**, 11 panel kinds, **15 MCP tools**,
-  3 resources, 23 docs across 7 modules.
-- **Active phase:** **M7 — Executor & sandbox**
-  ([docs/plan/FEATURE-ROADMAP.md](docs/plan/FEATURE-ROADMAP.md) §10). If this line disagrees
-  with [docs/plan/PLAN.md](docs/plan/PLAN.md), trust PLAN.md.
-- **Biggest remaining gap:** there is still no **executor/sandbox** and no **Docker lab**,
-  so the studio cannot yet drive a real terminal on behalf of an agent. That is M7/M8.
+  CI green. **M0–M6 are merged.** M7 is code-complete and verified on branch
+  `phase/m7-executor-sandbox`, awaiting its PR and merge.
+- **Tests:** `python3 -m pytest tests -q` → **465 passed in ~385 s** with `ffmpeg` +
+  `rsvg-convert` present, **~430 passed / 35 skipped in ~2.5 s** without them. Run the lean
+  form while iterating — it is two orders of magnitude cheaper and it is what CI's `pytest`
+  jobs actually do. There are **two** skip markers and they are **independent**:
+  `needs_render` (ffmpeg + rsvg-convert) and `needs_sandbox` (a sandbox that really starts).
+  A test that needs one is not skipped by the presence of the other — that mistake is
+  defect G, and it cost a CI run.
+- **Engine:** host-free. **10 stages** (`data, panels, stills, capture, exec, narration,
+  clips, concat, render, verify`), **26 modules**, 11 panel kinds, **15 MCP tools**,
+  3 resources, 24 docs across 7 modules.
+- **Active phase:** **M8 — Docker & environment lab**
+  ([docs/plan/FEATURE-ROADMAP.md](docs/plan/FEATURE-ROADMAP.md) §11), once M7 merges. If this
+  line disagrees with [docs/plan/PLAN.md](docs/plan/PLAN.md), trust PLAN.md.
+- **Biggest remaining gap:** there is a **sandboxed terminal** but no **Docker lab**, so a
+  recorded command cannot yet run against a declared container image, and there is no
+  environment lifecycle to bring one up and tear it down. That is M8. Its capability gate
+  must be a `docker run --rm hello-world`, not a `which docker` (**D41**).
 - **The one item needing an owner decision:** the public **`v1.0.0` tag** — the code is at
-  `1.0.0` and merged, but the tag itself is a visible release and has not been pushed.
+  `1.0.0` and merged, but the tag itself is a visible release and has not been pushed. The
+  M7 work sits under `## [Unreleased]` in the CHANGELOG; whether that becomes `1.1.0` at
+  merge time is a second owner call.
 
 ---
 
