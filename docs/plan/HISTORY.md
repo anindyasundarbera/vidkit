@@ -843,3 +843,97 @@ from the shell, through the shim a user would actually type.
 `provenance.json` answers **"what is this?"** — it says what was built, from what, by what,
 and when. They are two questions and two files. Folding provenance into the report would mean
 a re-verify rewrites the build's identity, which is the drift the split exists to prevent.
+
+---
+
+## 2026-10-08 — M7 — Executor & sandbox
+
+**Branch** `phase/m7-executor-sandbox`, off `main` at `6987090`. Merged by PR. Closes
+[FEATURE-ROADMAP.md](FEATURE-ROADMAP.md) §10.
+
+**What was built.** A spec can now declare commands to run and film. Two new modules —
+`vidkit/exec.py` (26 modules total) — and the first new pipeline stage since M0, taking
+`STAGES` from 9 to 10 (`exec` sits between `capture` and `narration`). The whole contract,
+with its evidence:
+
+| Claim | Evidence |
+|---|---|
+| The exec contract is tested | `python3 -m pytest tests/test_exec.py -q` → **68 passed** |
+| The renderer is tested | `python3 -m pytest tests/test_terminal.py -q` → **33 passed in 0.20s** |
+| Nothing else regressed | `python3 -m pytest tests -q` → **460 passed in 376.30s** (was 359) |
+| Lean machines still work | lean `PATH` → **425 passed, 35 skipped in 2.51s** |
+| A real recording builds and verifies | `python3 -m vidkit build examples/terminal-demo/video.yaml` → **ALL PASS**, 11 checks |
+| The film really contains the recording | the finished `.mp4` sampled at 17 timestamps, each decoded to RGB and matched to its intended frame → **MAE 1.7–3.3**, i.e. pixel-accurate |
+| The 4 recorded frames are distinct | `sha256sum` of each PNG differs |
+| The sandbox is real | `bwrap --unshare-all` live: network off by default, `sleep 30` → `timed_out=True` at 1.5s with the process group killed |
+| CI's exec job runs what it claims | every `run:` block extracted with PyYAML and executed locally → all exit 0 |
+
+**The three defects that only a real render could find.** Each was invisible to the unit
+tests, and each produced a *green* build. They are recorded because "a passing verify.json"
+was, in all three cases, not evidence that the code worked.
+
+| # | Symptom | Cause | Fix |
+|---|---|---|---|
+| A | Every exec shot rendered **one blank frame** | `_exec_frames` handed the concatenated raw payload *stream* to `terminal.replay()`, which parses *cast-file text*; `read_cast` returned `[]` | Split the API: `replay_events(events, …)` for the engine, `replay(cast_text)` for files |
+| B | The **final** screen never appeared | `replay_events` samples on an interval, so the last screen regularly fell between samples | Append `(events[-1][0], screen)` when `moments[-1][0] < events[-1][0]` |
+| C | The final frame was held for **exactly 0.0s** | A print-then-exit command's last frame has a measured span of zero | Interior frames keep their *measured* spans; the **last** frame takes whatever time remains |
+
+Defect A deserves the note: the first fix attempt made `replay()` *sniff* its input format
+and dispatch. It was reverted. A cast file carries its own timestamps, and recovering them
+from a byte stream loses the measured pace — the film would have been re-timed by an
+invisible amount to save one function signature.
+
+**Two more defects, found while writing the tests.** Both are the same shape: **a claim that
+could only be verified by a human reading the source**.
+
+| # | Symptom | Cause | Fix |
+|---|---|---|---|
+| D | The actionable "you declared no `exec:` steps" message was unreachable | The scene-shot loop raised a vaguer error first; `_validate_exec`'s branch was dead | Moved the message into the loop; the dead branch is now a bare `return` |
+| E | A **passing** `verify.json` could not attest that the commands ran | `every declared command ran` was added to the report only when it *failed* — indistinguishable from "not applicable" | Emitted whenever `declared` is non-empty, with `"N command(s), all recorded"` on success |
+
+Defect E then exposed a sixth while the CI job was being written:
+
+| # | Symptom | Cause | Fix |
+|---|---|---|---|
+| F | `playback: null` meant **two different things** | It was null both for a recording replayed as a single held screen *and* for one never shown as a take at all | `report.facts.exec` now also carries `frames`, so "shown as one screen" and "played at 1.0x" read differently |
+
+**Defect F is the same error as E one level down.** E was an attestation that existed only as
+an absence; F was a fact whose *null* covered a real distinction. Both make a report that
+looks complete while withholding the one thing the reader needs.
+
+**Test authoring.** `tests/test_terminal.py` (33) and `tests/test_exec.py` (68). Eleven
+initial failures in `test_exec.py` were diagnosed as **nine test-authoring mistakes and two
+genuine engine defects** (D and, separately, the `every declared command ran` check). The
+mistakes are worth naming because they were all the same mistake in different clothes —
+*testing a function through a path that never reaches it*:
+
+- `check_policy` reports almost every refusal that the *loader* also reports, so a spec round
+  trip raised before the function under test ran. Tests now build `Exec` objects directly.
+- `argv()` lives on `ExecRequest`, not on the spec's `Exec`.
+- A policy test using `max_timeout: 10` failed at load, because steps default to `timeout: 60`.
+
+The parser was probed empirically before its tests were written, and two of the initial
+expectations were wrong — both mine, not the engine's. `feed(b"first")` then `feed(b"\rlast")`
+leaves `"lastt"`, not `"last"`: a carriage return does not erase a longer previous line
+without an `\x1b[K`. Both behaviours are now pinned as-is, with the reason written down.
+
+**One test that was itself dishonest.** The bwrap write-refusal test asserted a permission
+error. It was not a permission error: the target path was outside the sandbox's mounts
+entirely (tmpfs `/tmp` versus a repo-relative `.pytest-tmp`), so the shell reported
+`Directory nonexistent` (exit 2). The test was rewritten to assert the *honest* claim — the
+file is unchanged — and a second test was added targeting `/usr/share/…`, which **is**
+mounted read-only, so the permission half is still pinned. **bwrap's refusal wording is not
+stable and must not be asserted.**
+
+**Documentation.** `docs/capture/exec-guide.md` (new, routed: 24 docs / 7 modules);
+`docs/authoring/spec-reference.md` (the `exec` block and shots, four new guard rows);
+`docs/verification/verification.md` (three new checks); `docs/modules.yaml`; `AGENTS.md`
+(the two new modules, the 10 stages, §6 snapshot, and six new §4.4 gotchas); `CHANGELOG.md`;
+`FEATURE-ROADMAP.md` §10. `pyte` was considered for the screen model and **deliberately not
+taken** as a dependency.
+
+**CI.** A fourth job, `exec-probe`, installs `bubblewrap` and asserts the recording is
+really in the film. All of its `run:` blocks were extracted and executed locally before
+being pushed, which is how defect F was found.
+
+**Decisions taken.** **D33**–**D40**.

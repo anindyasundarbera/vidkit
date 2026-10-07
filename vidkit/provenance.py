@@ -90,6 +90,7 @@ class Provenance:
     provider: str | None = None
     provider_sha256: str | None = None
     story: str | None = None
+    commands: list[dict[str, Any]] = field(default_factory=list)
     tools: list[Tool] = field(default_factory=list)
     stages: list[str] = field(default_factory=list)
     datasets: dict[str, str] = field(default_factory=dict)
@@ -123,6 +124,7 @@ class Provenance:
             "provider": self.provider,
             "provider_sha256": self.provider_sha256,
             "timeframe": self.timeframe,
+            "commands": [dict(c) for c in self.commands],
             "runtime": {"python": self.python, "platform": self.platform,
                         "machine": self.machine},
             "tools": [t.to_dict() for t in self.tools],

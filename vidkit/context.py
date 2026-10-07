@@ -111,6 +111,11 @@ class Context:
         return self.build / "panels"
 
     @property
+    def execs(self) -> Path:
+        """Recorded command streams — one asciinema v2 ``.cast`` per exec step."""
+        return self.build / "exec"
+
+    @property
     def clips(self) -> Path:
         return self.build / "clips"
 
@@ -132,7 +137,8 @@ class Context:
 
     def ensure_dirs(self) -> None:
         for d in (self.out_dir, self.build, self.captures, self.capture_artifacts,
-                  self.stills, self.panels_dir, self.clips, self.wavs, self.data_dir):
+                  self.stills, self.panels_dir, self.clips, self.wavs, self.data_dir,
+                  self.execs):
             d.mkdir(parents=True, exist_ok=True)
 
     def facts(self) -> dict[str, Any]:

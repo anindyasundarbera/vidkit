@@ -52,13 +52,20 @@ class Report:
 
 
 # --------------------------------------------------------------------------- #
-def _collect_text(ctx: Context, scenes_text: dict[int, str], srt: Path | None) -> str:
+def _collect_text(ctx: Context, scenes_text: dict[int, str], srt: Path | None,
+                  assets=None) -> str:
     parts = list(scenes_text.values())
     if srt and srt.exists():
         # strip cue numbers and timestamps, keep caption text
         for block in srt.read_text(encoding="utf-8").split("\n\n"):
             lines = block.splitlines()[2:]
             parts.extend(lines)
+    # A recorded command's own output is part of what the film says, so a banned
+    # or required phrase hides just as well in a terminal as in a caption. Put the
+    # transcripts in the same haystack the checks search (R-E5).
+    for result in (getattr(assets, "exec_results", None) or {}).values():
+        parts.append(result.stdout)
+        parts.append(result.stderr)
     return "\n".join(parts)
 
 
@@ -91,7 +98,7 @@ def verify_output(ctx: Context, assets, scenes_text: dict[int, str]) -> Report:
         rep.add("audio present", True, "silent cut (declared: guard.require_audio false)")
 
     # text-level guards
-    haystack = _collect_text(ctx, scenes_text, assets.srt)
+    haystack = _collect_text(ctx, scenes_text, assets.srt, assets)
     low = haystack.lower()
     for phrase in guard.banned:
         hits = low.count(phrase.lower())
@@ -195,6 +202,64 @@ def verify_output(ctx: Context, assets, scenes_text: dict[int, str]) -> Report:
         bad = list(dict.fromkeys(bad))          # one line per distinct disagreement
         rep.add("timeframe consistent with spec", not bad,
                 "; ".join(bad) if bad else f"matches {tf.label()}")
+
+    # the commands that ran, and the sandbox they ran in (R-E5). Two things are
+    # proved here that nothing else can: that every command did what the spec said
+    # it would, and that isolation was *real* rather than merely requested.
+    exec_results = getattr(assets, "exec_results", None) or {}
+    if exec_results or spec.exec:
+        casts = getattr(assets, "exec_casts", None) or {}
+        playback = getattr(assets, "exec_playback", None) or {}
+        frames = getattr(assets, "exec_take_frames", None) or {}
+        rep.facts["exec"] = [
+            {
+                "label": result.request.label,
+                "cmd": result.request.argv(),
+                "backend": result.backend,
+                "network": result.request.network,
+                "exit_code": result.exit_code,
+                "expect_exit": list(result.request.expect_exit),
+                "expected": result.expected,
+                "timed_out": result.timed_out,
+                "refused": result.refused,
+                "seconds": round(result.seconds, 3),
+                "truncated": dict(result.truncated),
+                "cast": (casts[result.request.label].name
+                         if result.request.label in casts else None),
+                # `None` frames means the recording was not shown as a moving take
+                # (a single screen, or an effect that took it as a still) — which is
+                # a different claim from "replayed at 1.0x" and must read differently.
+                "frames": frames.get(result.request.label),
+                "playback": playback.get(result.request.label),
+                "stdout_excerpt": result.stdout.strip().splitlines()[-8:],
+            }
+            for result in exec_results.values()
+        ]
+        declared = [e.label for e in spec.exec]
+        unrun = [label for label in declared if label not in exec_results]
+        if declared:
+            # Emitted whether or not it passes. An attestation that exists only as
+            # an absence cannot be told apart from a check that never applied.
+            rep.add("every declared command ran", not unrun,
+                    f"the `exec` stage did not run for: {unrun}" if unrun
+                    else f"{len(declared)} command(s), all recorded")
+
+    if guard.require_exec_success and exec_results:
+        failed = [r.request.label for r in exec_results.values() if not r.ok]
+        rep.add("every command exited as declared", not failed,
+                f"not as expected: {failed}" if failed
+                else f"{len(exec_results)} command(s), all as declared")
+
+    if guard.require_sandbox and exec_results:
+        # An attestation, not a preference. `backend: local` means the command ran
+        # unconfined on the machine — a spec that asks for a sandbox and gets one
+        # anyway only because the host happened to have it has proved nothing, so
+        # this reads what the runner actually used, not what the spec asked for.
+        unconfined = [r.request.label for r in exec_results.values()
+                      if r.backend != "bubblewrap"]
+        rep.add("commands ran sandboxed", not unconfined,
+                f"not sandboxed: {unconfined}" if unconfined
+                else f"{len(exec_results)} command(s) under bubblewrap")
 
     # provenance (R-F8): what this *is*, as opposed to whether it is honest. It is
     # reported as a fact rather than a check — there is no passing or failing an

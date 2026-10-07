@@ -5,6 +5,59 @@ All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **Declared execution (R-E1…R-E5)** — a spec can now name commands to run and film, and
+  the film is a replay of the recording: `exec: {steps: [...]}` plus `exec` shots. A command
+  is `cmd:` (argv, or a shell script when written as a string), with `cwd`/`env`/`timeout`/
+  `network`/`reads`/`expect_exit`. Every one of them is recorded as an asciinema `.cast`
+  *before* any frame is drawn, so the picture and the recording cannot tell different
+  stories.
+- **`vidkit/exec.py`** — the bounded, auditable execution environment. Commands run under
+  `bwrap(1)` with `--unshare-all`, the network off unless the *command* asks for it *and*
+  the *spec* allows it, `/usr` and friends mounted read-only, and the repo bind-mounted as
+  the working directory. Falls back to `local` only when the spec says so. A policy refusal
+  is a result (`refused=`, exit 126), never an exception.
+- **`vidkit/terminal.py`** — a hand-rolled ANSI/CSI screen model (SGR colour, cursor
+  positioning, erase-in-line modes, scroll, tabs, 8-bit-safe UTF-8) that replays a recording
+  into frames and renders each as SVG. `pyte` was considered and deliberately not taken as
+  a dependency.
+- **The two-layer network policy** — a command may ask for the network and the spec may
+  permit it; either alone is not enough, and the refusal names `exec.allow_network` so the
+  author knows which layer to change.
+- **`guard.require_sandbox`** (default `true`) and **`guard.require_exec_success`** (default
+  `true`) — the run must be sandboxed, and exit codes must match `expect_exit`, unless the
+  spec declares otherwise.
+- Three new verify checks: `every declared command ran`, `every command exited as
+  declared`, `commands ran sandboxed` — each emitted whether it passes or fails, with the
+  commands, their exit codes and their sandbox in `report.facts.exec`.
+- `examples/terminal-demo/` — a recorded, sandboxed session (a counting shell
+  script, an argv command, and a declared failure) that builds with no browser and no
+  voice, and is probed by CI.
+- `docs/capture/exec-guide.md` — what "recorded" means, the `exec:` block, the two command
+  forms, backends, the network policy, the guard promises, and what execution is *not*.
+
+### Changed
+
+- `provenance.json` records the commands a build ran, so the record of *how* a film was
+  made includes what it filmed.
+- The pipeline is now 10 stages (`exec` sits between `capture` and `narration`).
+
+### Fixed
+
+- A recording that only ever showed one screen used to be indistinguishable in `verify.json`
+  from one that was replayed as a moving take: `playback` was `null` for both. The report now
+  carries `frames` as well, so "shown as a single held screen" and "played at its real pace"
+  read differently.
+- `every declared command ran` was added to the report only when it *failed*, so a passing
+  `verify.json` could not attest that the commands ran — a passing check and an inapplicable
+  one were indistinguishable. The check is now always emitted when commands are declared.
+- The message for "a scene shows an `exec` shot but the spec declares no `exec:` steps" was
+  unreachable: a vaguer error was raised first. The actionable message is now the one an
+  author sees.
+
 ## [1.0.0] - 2026-10-07
 
 ### Added

@@ -24,6 +24,7 @@ then `ROOT/..`, then the current directory.
 | `timeframe` | — | mapping | the window of time the story is about; see below |
 | `captures` | — | list | screen recordings |
 | `charts` | — | list | data panels |
+| `exec` | — | mapping | commands to run and film in a real terminal |
 | `guard` | — | mapping | acceptance checks |
 
 ---
@@ -309,6 +310,51 @@ captures:
 
 ---
 
+## `exec`
+
+Declares the commands a build may run and film in a real terminal. A shot names one by
+`label`. Full guide: [exec guide](../capture/exec-guide.md).
+
+| Field | Required | Type | Default | Meaning |
+|---|---|---|---|---|
+| `allow_network` | — | bool | `false` | whether any command's `network: true` is honoured |
+| `max_timeout` | — | number | `300` | ceiling for a single command's `timeout` |
+| `steps` | ✅ | list | — | the declared commands |
+
+### `exec.steps[]`
+
+| Field | Required | Type | Default | Meaning |
+|---|---|---|---|---|
+| `label` | ✅ | string | — | referenced by `shots[].exec`; must be unique |
+| `cmd` | ✅ | string or list | — | string = a shell script; list = an argv run with no shell |
+| `cwd` | — | string | `"."` | working directory, relative to the spec's directory |
+| `backend` | — | `"bubblewrap"` \| `"local"` | `"bubblewrap"` | isolation; `bwrap(1)` must be on `PATH` |
+| `network` | — | bool | `false` | asks to open the network; needs `exec.allow_network` too |
+| `timeout` | — | number | `60` | seconds; must be `> 0` and `≤ max_timeout` |
+| `expect_exit` | — | int or list[int] | `[0]` | exit codes that count as a passing build |
+| `env` | — | mapping | `{}` | added to a fixed base environment |
+| `reads` | — | string or list | `[]` | extra read-only mounts |
+| `cols` | — | int | `100` | recorded terminal width |
+| `rows` | — | int | `30` | recorded terminal height |
+
+There is no `shell:` field: the string/list form of `cmd` already says whether the command
+is a script, and a third spelling would only allow the question to be answered twice.
+
+```yaml
+exec:
+  allow_network: false
+  max_timeout: 120
+  steps:
+    - label: test
+      cmd: "pytest -q"
+      timeout: 90
+    - label: broken
+      cmd: ["pytest", "--nonsense"]
+      expect_exit: [4]
+```
+
+---
+
 ## `charts[]`
 
 | Field | Required | Type | Default | Meaning |
@@ -346,11 +392,13 @@ charts:
 | `still` | one of these | string | — | path to an SVG/PNG asset |
 | `capture` | | string | — | name of a `captures[]` entry |
 | `chart` | | string | — | name of a `charts[]` (or provider) panel |
+| `exec` | | string | — | label of an `exec.steps[]` entry |
+| `at` | — | number | end of recording | with `exec`, which second of the recording to show |
 | `effect` | — | `"hold"` \| `"zoom"` | `"hold"` | static vs. slow push-in |
 | `weight` | — | number | `1.0` | share of the scene's duration |
 | `fit` | — | `"cover"` \| `"contain"` | `"cover"` | how the still is fitted to the frame |
 
-**Constraint:** exactly one of `still`/`capture`/`chart`.
+**Constraint:** exactly one of `still`/`capture`/`chart`/`exec`.
 
 Scene duration = the measured narration duration of that scene. Each shot gets
 `duration × weight / Σweights`.
@@ -363,6 +411,9 @@ scenes:
       - {capture: context, effect: hold, weight: 0.6}
       - {still: assets/two-streams.svg, effect: zoom, weight: 0.4}
 ```
+
+An `exec` shot shows a recording, so `effect: zoom` has nothing to push into and falls back
+to a single still. See the [exec guide](../capture/exec-guide.md).
 
 ### `overlay`
 
@@ -406,6 +457,9 @@ scenes:
 | `required` | list[string] | `[]` | substrings that **must** appear |
 | `require_live_mode` | bool | `false` | every declared capture must have been captured |
 | `require_live_data` | bool | `false` | no dataset may be degraded (a declared fallback counts as degraded) |
+| `require_audio` | bool | `true` | the build must have measured audio unless the silent cut is declared |
+| `require_sandbox` | bool | `true` | every `exec` step ran in a declared, isolated backend |
+| `require_exec_success` | bool | `true` | every `exec` step exited as it declared |
 
 Matching is case-insensitive over the union of scene text and caption text. See
 [`verification.md`](../verification/verification.md).

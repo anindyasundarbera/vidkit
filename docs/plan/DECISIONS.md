@@ -870,3 +870,186 @@ a future portability bug has a documented baseline to be measured against.
 | D30 | Progress is the pipeline's own narration, delivered only through a hook | DECIDED |
 | D31 | Provenance is written by the build and only read by everything else | DECIDED |
 | D32 | Platform support is stated, not implied | DECIDED |
+| D33 | Execution is a declared environment, not shell access | DECIDED |
+| D34 | A recording is filmed through a PTY, never a pipe | DECIDED |
+| D35 | The sandbox is `bwrap`, and a refusal is a result | DECIDED |
+| D36 | The network needs two permissions, and the refusal names the missing one | DECIDED |
+| D37 | The engine chooses the interpreter; the spec only chooses a form | DECIDED |
+| D38 | The screen model is hand-rolled; `pyte` is not a dependency | DECIDED |
+| D39 | A recording keeps its measured pace; only the last frame is a remainder | DECIDED |
+| D40 | An attestation must be emitted when it passes, and a `null` means one thing | DECIDED |
+
+---
+
+## D33 — Execution is a declared environment, not shell access
+
+**2026-10-08.** Context: M7.
+
+The instinct that began this work was "give vidkit shell access". That phrasing has no trust
+boundary in it — it names a capability without naming its limits, and an agent driving a
+studio needs to be told what it is allowed to do, not what it can do.
+
+**Decision.** vidkit executes nothing that the spec has not declared. An `exec:` block names
+each command, its backend, its working directory, its environment, its timeout, whether it
+may reach the network, and which extra roots it may read. `ExecRequest` is the runtime's
+type and carries only things that can be honoured; `spec.Exec` is the author's type and
+carries what a *shot* needs. Nothing reaches into the runner from the spec.
+
+**Alternatives.** (a) A general shell tool on the MCP server — rejected: it makes the server's
+blast radius the host's, and it makes the video's provenance impossible to state. (b) A shell
+tool off by default and enabled by an env var — rejected: the permission then lives outside
+the artifact, so the same spec renders differently on two machines with no record of why.
+
+**Consequences.** A spec is the complete statement of what a build does — which is what makes
+`provenance.json` able to say what made a film. Adding a capability (a Docker container, say)
+means adding a *declaration* to the spec language, not a flag to the runner.
+
+---
+
+## D34 — A recording is filmed through a PTY, never a pipe
+
+**2026-10-08.** Context: M7, invariant I7.
+
+This is the decision the whole stage exists for. A program checks `isatty` and changes what it
+prints when it is not on one: progress bars collapse to a final line, colour is dropped,
+prompts are suppressed, and line buffering changes what arrives when. A recording made off a
+pipe is a transcript the program never produced.
+
+**Decision.** Commands run on a real pseudo-terminal (`pty.fork()`), with a declared window
+size set on it. Output is read with `select()`, timed by `time.monotonic()`, and written to
+both the frame renderer and the `.cast` from the same in-memory event list.
+
+**Alternatives.** (a) `subprocess.PIPE` — rejected: it is cheaper, it passes every test that
+only checks the exit code, and it makes a *plausible* terminal rather than a *real* one.
+(b) Recording with `script(1)` and post-processing — rejected as a dependency on a second
+process's quirks when `pty` is in the standard library.
+
+**Consequences.** The PTY is load-bearing, not cosmetic: `test_run_is_handed_a_real_terminal_not_a_pipe`
+uses `tty >/dev/null` to pin it, and any future refactor to a pipe fails that test rather than
+quietly changing what the audience sees.
+
+---
+
+## D35 — The sandbox is `bwrap`, and a refusal is a result
+
+**2026-10-08.** Context: M7, R-E2.
+
+**Decision.** The default backend is `bwrap(1)`: `--unshare-all`, `/usr` and its friends
+mounted read-only, the repo bind-mounted as the working directory, and the network unshared
+unless asked for. `local` exists and must be declared. `docker` is reserved for M8.
+`resolve_backend()` refuses a name the host does not have, and `check_policy()` runs *before*
+anything starts, so a spec that cannot be honoured says so while the camera is still off.
+
+**A refusal is a result, not an exception.** It carries `refused=` with the reason and
+`exit_code=126`, and the build continues. An unrun command is then reported by the same
+`every declared command ran` check that reports a crashed one.
+
+**Alternatives.** (a) `firejail` — not present on the CI runner. (b) Raising `ToolError` —
+rejected: an agent driving the studio needs a machine-readable reason far more than it needs a
+traceback, and a build that dies halfway leaves no `verify.json` to explain itself.
+
+**Consequences.** `bwrap` may be present where the render toolchain is not (CI's `pytest`
+jobs are exactly this case), so exec tests are split: policy and renderer are pure Python,
+anything that starts a process is `@pytest.mark.needs_render`.
+
+---
+
+## D36 — The network needs two permissions, and the refusal names the one that is missing
+
+**2026-10-08.** Context: M7, R-E3.
+
+**Decision.** A *command* may say `network: true`, and the *spec's* `exec.allow_network` says
+whether that is on the table at all. Either alone is not enough. The refusal text names
+`exec.allow_network` specifically, because there are two ways to fix it and the author has to
+be told which layer they are standing in.
+
+**Alternatives.** A single switch on the step — rejected: it makes the widened permission
+invisible at the top of the file, which is where a reader looks to ask "what can this build
+reach?".
+
+**Consequences.** Widening the network for one command is a visible, greppable edit to the
+spec's `exec:` block, and `provenance.json` can record it.
+
+---
+
+## D37 — The engine chooses the interpreter; the spec only chooses a *form*
+
+**2026-10-08.** Context: M7, R-E1.
+
+**Decision.** `cmd:` written as a **string** is a shell script and runs under
+`["/bin/sh", "-c"]`. `cmd:` written as a **list** is an argv and runs directly. A `shell:` field
+is explicitly refused. `ExecRequest.cmd` is always a list, and `argv()` exists to hand the
+concrete argv to the runner.
+
+**Alternatives.** Letting the spec name the interpreter — rejected: it turns "what is filmed"
+into "what is installed", makes a spec non-portable for no expressive gain, and creates a
+path from the spec to an arbitrary binary. A shell script is a legitimate thing to film; the
+point is that the engine decided to run one, and the two forms make that decision visible in
+the spec's own syntax.
+
+**Consequences.** The convenient form announces that it is a shell script; the safe form is
+the default one.
+
+---
+
+## D38 — The screen model is hand-rolled; `pyte` is not a dependency
+
+**2026-10-08.** Context: M7, R-E4.
+
+**Decision.** `vidkit/terminal.py` implements the ANSI/CSI subset a terminal recording
+actually uses: SGR colour and attributes, cursor positioning, erase-in-line modes 0/1/2,
+scrolling at the bottom margin, tab stops, and 8-bit-safe UTF-8 decoding. Unknown CSI
+sequences are dropped silently. `pyte` was evaluated and rejected.
+
+**Alternatives.** `pyte` — a mature, correct library. Rejected for three reasons: it is an
+extra runtime dependency for the *core* engine, which currently needs only PyYAML; the
+subset needed here is small enough to specify; and the parts that matter most (how a
+half-written escape at a buffer boundary behaves, what happens to a carriage return over a
+longer line) are exactly the parts a *test* should pin by name rather than inherit.
+
+**Consequences.** Two behaviours are pinned as-is with their reasoning written down, because
+they surprise people: `\r` does not erase a longer previous line without a following
+`\x1b[K`, and `replay_events(every=1.0)` on events at 0.0/2.5/3.0 snapshots only 0.0 and 2.5 —
+which is *why* the assembler appends the final screen itself.
+
+---
+
+## D39 — A recording keeps its measured pace; only the last frame is a remainder
+
+**2026-10-08.** Context: M7, defect C.
+
+**Decision.** Interior frames of a recording are held for the spans **measured** between them.
+The final frame is held for whatever time is left in the shot. If the interior spans overrun
+the take, they are compressed by a reported factor and the build **warns** — because a
+screencast that quietly plays at 2x is a film claiming a four-second build took half a second.
+
+**Alternatives.** (a) Divide the shot evenly across the frames — rejected: it destroys the
+timing the recording was made to capture, which is the whole evidence value of M7.
+(b) Re-time silently — rejected on invariant grounds.
+
+**Consequences.** `_exec_span` returns `paths`, `held` and `speed`, index-aligned. The
+index-alignment is itself a fixed defect: an earlier form returned the two lists with
+different lengths, handing ffmpeg a duration for a frame that did not exist.
+
+---
+
+## D40 — An attestation must be emitted when it passes, and a fact must not use `null` for two meanings
+
+**2026-10-08.** Context: M7, defects E and F.
+
+**Decision.** Two rules about `verify.json`, both general:
+
+1. **A check that applies is emitted whether it passes or fails.** `every declared command
+   ran` used to be added to the report only on failure, which made a *passing* report
+   indistinguishable from a check that never applied. An attestation that exists only as an
+   absence attests to nothing.
+2. **A `null` must mean one thing.** `facts.exec[].playback` was `null` both for a recording
+   replayed at 1.0x as a single held screen *and* for one never shown as a take. The report
+   now carries `frames` too, so the two read differently.
+
+**Alternatives.** Documenting the ambiguity — rejected. The file exists to be read by a
+machine and by a stranger; a distinction that lives only in the source is not in the artifact.
+
+**Consequences.** This is the same error twice at two levels — a claim that can only be
+verified by reading the implementation. Any new check is now expected to state its success
+case, and any new fact is expected to distinguish "none" from "not measured".

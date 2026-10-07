@@ -31,8 +31,10 @@ external capable agent can drive to produce software demo videos *and* movies, w
 2. vidkit cannot *show work*. Everything it renders is a static frame or a chart. There is no
    way to record a real terminal session, a real container, or a real multi-step interaction.
 
-Phase **M1** fixes (1). Phases **M7–M9** fix (2). Everything between is making what exists
-trustworthy.
+Phase **M1** fixed (1) — story and timeframe both landed. Phase **M7** fixed the first half of
+(2): a spec can now run declared commands in a sandbox and film the recording. Phases **M8–M9**
+finish it, with containers and multi-step interaction. Everything between was making what
+exists trustworthy.
 
 ---
 
@@ -63,7 +65,7 @@ M4  Presentation v2             ← DONE, P0/P1      make output look right
 M5  Agent surface               ← DONE, P0         make it drivable
 M6  Hardening & v1.0            ← DONE, P0/P1      make it shippable
 ───────────── v1.0 line ─────────────
-M7  Executor & sandbox                P0           terminal, files, isolation
+M7  Executor & sandbox         ← DONE, P0           terminal, files, isolation
 M8  Docker & environment lab          P1           real containers on camera
 M9  Movie mode                        P1           narrative, not just demo
 M10 Studio surface v2                 P1           session-oriented MCP tools
@@ -332,7 +334,7 @@ terminals for demos that cannot yet be specified. See [DECISIONS.md](DECISIONS.m
 
 ---
 
-## 10. M7 — Executor & sandbox  *(P0)*
+## 10. M7 — Executor & sandbox  *(P0)* — **DONE**
 
 **Purpose.** Let vidkit record **real work in a real terminal**, safely.
 
@@ -360,6 +362,51 @@ authentic evidence, and it is cheaper to build than a convincing fake.
 **Exit.** A spec can declare a command, run it in a sandbox, and the finished video shows the
 real output, with the command and exit code attested in `verify.json`. A non-zero exit fails
 the build unless the spec explicitly expects it.
+
+**Delivered** (branch `phase/m7-executor-sandbox`, merged by PR). Two new modules and the
+first stage added to the pipeline since M0:
+
+- **R-E1…R-E3 — `vidkit/exec.py`.** `ExecRequest`/`ExecResult`, the `Executor` surface as
+  `stream()` + `run()`, and `resolve_backend()`. `bwrap(1)` is the default: `--unshare-all`,
+  `/usr` and friends read-only, the repo bind-mounted as the working directory, network off
+  unless the *command* asks for it *and* the *spec* permits it. `local` exists and must be
+  declared. **A refusal is a result, not an exception** — `refused=`, exit 126 — so a spec
+  that trips the policy still produces a `verify.json` explaining why.
+- **R-E4 — `vidkit/terminal.py`.** A hand-rolled ANSI/CSI screen model: SGR colour and
+  attributes, cursor positioning, erase-in-line modes, scrolling, tab stops, 8-bit-safe
+  UTF-8. `feed()` → `Screen`, `replay_events()` → frames, `render_svg()` → SVG.
+  `write_cast()`/`read_cast()` round-trip the asciinema format. **`pyte` is not a dependency.**
+- **The PTY is load-bearing, not cosmetic (I7).** A program checks `isatty` and changes what
+  it prints when it is not on one — progress bars collapse, colours vanish, prompts are
+  suppressed. Recording a pipe would film a transcript that never happened.
+- **Spec surface (R-E1).** `exec: {steps: [...], allow_network, max_timeout}` and an `exec`
+  shot with an `at:` moment. `cmd:` as a string is a shell script, `cmd:` as a list is an
+  argv, and a `shell:` field is explicitly refused — the engine chooses the interpreter, not
+  the spec.
+- **Audit (R-E5).** Each command is recorded to `_build/exec/<label>.cast` **before** any
+  frame is drawn, from the same in-memory events, so the picture and the recording cannot
+  disagree. `report.facts.exec` carries the command, backend, network flag, exit code,
+  `expect_exit`, timeout and truncation flags, the cast name, and whether it was shown as a
+  moving take.
+- **Three new verify checks**, each emitted whether it passes or fails: `every declared
+  command ran`, `every command exited as declared` (guarded by `require_exec_success`),
+  `commands ran sandboxed` (guarded by `require_sandbox`, which defaults **true**).
+- **`examples/terminal-demo/`** — a counting shell script, an argv command, and a declared
+  failure, built with no browser and no voice, probed by a fourth CI job (`exec-probe`) that
+  installs `bubblewrap` and asserts the recording is really in the film.
+- **`docs/capture/exec-guide.md`** — the author-facing guide.
+
+Evidence: `docs/plan/HISTORY.md`. Design consequences: **D33–D40**.
+
+**Deferred.** The `docker` backend is explicitly M8's — `resolve_backend()` knows the name
+and refuses it when it is not installed, so the seam is real rather than a promise. Filming a
+PTY with a *moving* camera effect (a zoom over a recording) is deliberately not supported:
+the recording already moves, and two motions fighting is a picture that lies about neither.
+
+**Risks.** `bwrap` is present on CI's ubuntu runner, but the render toolchain is not installed
+in the two `pytest` jobs, so exec tests are split into pure-Python and `needs_render` halves.
+The render side is real, but it is only proved on Linux; macOS/Windows support is *stated*,
+not implied.
 
 ---
 
