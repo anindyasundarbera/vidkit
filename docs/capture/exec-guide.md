@@ -111,15 +111,29 @@ on. With no `at:`, the shot ends on the final screen.
 | `bubblewrap` | Linux user/mount/PID/network namespaces via `bwrap(1)`. System roots are mounted **read-only**; only the working directory is writable. No daemon, no root. | the default |
 | `local` | none — the command runs unconfined on this host | when you genuinely need the host, and say so |
 
-`bubblewrap` is the default because it is a single unprivileged binary. If `bwrap(1)` is not
-installed, `vidkit plan` says so at **load time** rather than failing once the camera is
-rolling:
+`bubblewrap` is the default because it is a single unprivileged binary. If the sandbox
+cannot run, `vidkit plan` says so at **load time** rather than failing once the camera is
+rolling. There are two ways it can fail, and they are not the same failure:
 
 ```
-a: the spec declares `backend: bubblewrap`, but bwrap(1) is not on PATH.
-   Install bubblewrap, or declare `backend: local` to say honestly that the
-   command runs unconfined on this host.
+a: the spec declares `backend: bubblewrap`, but the sandbox cannot run on this host:
+   bwrap(1) is not on PATH. Fix the environment, or declare `backend: local` to say
+   honestly that the command runs unconfined here.
 ```
+
+```
+a: the spec declares `backend: bubblewrap`, but the sandbox cannot run on this host:
+   bwrap: setting up uid map: Permission denied — the kernel is refusing unprivileged
+   user namespaces, which on Ubuntu 24.04 is the AppArmor restriction. Lift it with
+   `sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0`, or declare
+   `backend: local` to run unconfined on purpose.
+```
+
+The second is the one worth knowing about, because it looks like a broken install and is
+not: `bubblewrap` is present and correct, and the kernel will not let it make a namespace.
+`vidkit doctor` reports it directly, along with the workaround, and **`available: false` in
+its `backends` block means "cannot run", not "not found"** — the check actually starts a
+sandbox around `/bin/true` rather than looking for the binary.
 
 ### Read is wide, write is narrow
 
@@ -199,6 +213,7 @@ playable.
 | Message | Cause | Fix |
 |---|---|---|
 | `bwrap(1) is not on PATH` | bubblewrap not installed | install it, or declare `backend: local` **and** `guard.require_sandbox: false` |
+| `setting up uid map: Permission denied` / `Failed RTM_NEWADDR` | bubblewrap is installed, but Ubuntu 24.04's AppArmor rule denies unprivileged user namespaces | `sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0`, or `backend: local` |
 | `the command declares network: true but the spec's exec.allow_network is false` | one-layer permission | add `exec.allow_network: true` if the network really is required |
 | `timeout 600s exceeds the spec's exec.max_timeout of 300s` | a command outlives the policy ceiling | raise `exec.max_timeout`, or lower the command's `timeout` |
 | `working directory does not exist` | `cwd:` is relative to the spec's directory | fix the path; the loader checks it before the build |

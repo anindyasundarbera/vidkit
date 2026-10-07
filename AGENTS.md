@@ -267,10 +267,13 @@ Use exactly these, so they are greppable:
 - **Repo state:** public on GitHub (`anindyasundarbera/vidkit`), default branch `main`,
   CI green. **M0–M6 are merged.** M7 is code-complete and verified on branch
   `phase/m7-executor-sandbox`, awaiting its PR and merge.
-- **Tests:** `python3 -m pytest tests -q` → **460 passed in 376 s** with `ffmpeg` +
-  `rsvg-convert` present, **425 passed / 35 skipped in 2.5 s** without them. Run the lean
+- **Tests:** `python3 -m pytest tests -q` → **465 passed in ~385 s** with `ffmpeg` +
+  `rsvg-convert` present, **~430 passed / 35 skipped in ~2.5 s** without them. Run the lean
   form while iterating — it is two orders of magnitude cheaper and it is what CI's `pytest`
-  jobs actually do.
+  jobs actually do. There are **two** skip markers and they are **independent**:
+  `needs_render` (ffmpeg + rsvg-convert) and `needs_sandbox` (a sandbox that really starts).
+  A test that needs one is not skipped by the presence of the other — that mistake is
+  defect G, and it cost a CI run.
 - **Engine:** host-free. **10 stages** (`data, panels, stills, capture, exec, narration,
   clips, concat, render, verify`), **26 modules**, 11 panel kinds, **15 MCP tools**,
   3 resources, 24 docs across 7 modules.
@@ -279,7 +282,8 @@ Use exactly these, so they are greppable:
   line disagrees with [docs/plan/PLAN.md](docs/plan/PLAN.md), trust PLAN.md.
 - **Biggest remaining gap:** there is a **sandboxed terminal** but no **Docker lab**, so a
   recorded command cannot yet run against a declared container image, and there is no
-  environment lifecycle to bring one up and tear it down. That is M8.
+  environment lifecycle to bring one up and tear it down. That is M8. Its capability gate
+  must be a `docker run --rm hello-world`, not a `which docker` (**D41**).
 - **The one item needing an owner decision:** the public **`v1.0.0` tag** — the code is at
   `1.0.0` and merged, but the tag itself is a visible release and has not been pushed. The
   M7 work sits under `## [Unreleased]` in the CHANGELOG; whether that becomes `1.1.0` at

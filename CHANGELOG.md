@@ -44,9 +44,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `provenance.json` records the commands a build ran, so the record of *how* a film was
   made includes what it filmed.
 - The pipeline is now 10 stages (`exec` sits between `capture` and `narration`).
+- `vidkit doctor` now reports a **sandbox** row, with or without a spec — whether a confined
+  command can run here is a fact about the host, not about the story. `available: false` in
+  its `backends` block means the sandbox **cannot start**, which is a different answer from
+  "the binary is missing": the check starts a real sandbox around `/bin/true` (14 ms,
+  memoised) rather than looking for `bwrap` on `PATH`.
 
 ### Fixed
 
+- **A backend that is present but cannot run is now a refusal, not a silent downgrade.**
+  `bubblewrap` was reported available whenever the binary existed, but Ubuntu 24.04 installs
+  it and then denies the unprivileged user namespaces it needs under
+  `/proc/sys/kernel/apparmor_restrict_unprivileged_userns = 1`, so every invocation failed
+  with `setting up uid map: Permission denied` while vidkit said the sandbox was fine. The
+  refusal and `doctor` now distinguish the two cases, and name the
+  `sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0` workaround.
+- The load-time refusal for an unusable backend is reported **once per backend**, not once
+  per command that declares it — three commands on a machine that cannot sandbox is one
+  problem, and repeating it buried the per-command refusals underneath.
 - A recording that only ever showed one screen used to be indistinguishable in `verify.json`
   from one that was replayed as a moving take: `playback` was `null` for both. The report now
   carries `frames` as well, so "shown as a single held screen" and "played at its real pace"

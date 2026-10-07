@@ -33,3 +33,6 @@ build/
 # editor / OS
 .DS_Store
 *.swp
+
+# pytest scratch base temp (config.option.basetemp)
+.pytest-tmp/

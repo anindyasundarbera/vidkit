@@ -1,11 +1,23 @@
 """Tests for the declared-execution contract (R-E1…R-E5).
 
-Split deliberately in two. The **policy** half — what a spec may declare, what
-gets refused before a camera rolls, how a result is judged — is pure Python and
-runs everywhere, including the lean CI job that installs no ffmpeg. The
-**sandbox** half actually starts a process, so it is marked ``needs_render``:
-the sandbox needs the same host plumbing a render does, and a unit test that
-hangs is worse than one that skips.
+Split deliberately in three.
+
+The **policy** half — what a spec may declare, what gets refused before a camera
+rolls, how a result is judged — is pure Python, but most of it builds a spec that
+declares no backend, which means it takes the default one. If this host has no
+usable sandbox, that spec is refused at load time and the test fails for a reason
+that has nothing to do with what it is asserting. So those carry
+``needs_sandbox``, which is a *probe* rather than a ``PATH`` lookup: a bubblewrap
+that the kernel refuses is not a sandbox.
+
+The **sandbox** half actually starts a confined process, so it needs both the
+sandbox and the render toolchain's host plumbing.
+
+The **terminal** third starts a process with ``backend: local`` and reads bytes
+off a PTY. It needs neither ffmpeg nor bubblewrap — a unit test that skips
+because an unrelated tool is missing is a test that stops doing its job the
+moment the environment gets lean, and this one hangs if the PTY handling is
+wrong, which is precisely when it is worth having.
 
 The one test that matters most is
 :func:`test_run_is_handed_a_real_terminal_not_a_pipe`. The whole reason this
@@ -31,6 +43,18 @@ from vidkit.secrets import Secrets
 # --------------------------------------------------------------------------- #
 # helpers
 # --------------------------------------------------------------------------- #
+@pytest.fixture(autouse=True)
+def _fresh_probe():
+    """`bwrap_available` memoises, because it runs at load time once per process.
+
+    Tests monkeypatch `shutil.which` and `subprocess.run` out from under it, so
+    without this the cache would carry one test's lie into the next — the same
+    class of bug the probe exists to fix."""
+    ex._PROBE_CACHE.clear()
+    yield
+    ex._PROBE_CACHE.clear()
+
+
 def _yaml(tmp_path: Path, *, steps: list | None = None,
           policy: dict | None = None, guard: dict | None = None,
           shots: list | None = None) -> Path:
@@ -61,6 +85,7 @@ def _yaml(tmp_path: Path, *, steps: list | None = None,
 # --------------------------------------------------------------------------- #
 # the spec surface (R-E1)
 # --------------------------------------------------------------------------- #
+@pytest.mark.needs_sandbox
 def test_exec_defaults_are_stated_not_implied(tmp_path):
     spec = sp.load_spec(_yaml(tmp_path, steps=[{"label": "run it", "cmd": ["echo", "hi"]}]))
     step = spec.exec[0]
@@ -72,6 +97,7 @@ def test_exec_defaults_are_stated_not_implied(tmp_path):
     assert (step.cols, step.rows) == (100, 30)
 
 
+@pytest.mark.needs_sandbox
 def test_a_string_command_declares_a_shell_and_a_list_does_not(tmp_path):
     """The difference is the whole point of the two forms: one says out loud that
     it is a shell script, the other is an argv. Neither is a surprise at runtime."""
@@ -140,6 +166,7 @@ def test_an_exec_shot_with_no_exec_block_is_refused(tmp_path):
         sp.load_spec(path)
 
 
+@pytest.mark.needs_sandbox
 def test_the_policy_is_parsed_and_defaults_to_no_network(tmp_path):
     """Two layers, and this pins the safe default of the outer one: a command
     asking for the network is not enough, the spec has to have allowed it."""
@@ -153,6 +180,7 @@ def test_the_policy_is_parsed_and_defaults_to_no_network(tmp_path):
     assert opened.exec_policy.max_timeout == 120.0
 
 
+@pytest.mark.needs_sandbox
 def test_expect_exit_accepts_a_bare_int_or_a_list(tmp_path):
     spec = sp.load_spec(_yaml(tmp_path, steps=[
         {"label": "a", "cmd": "ls", "expect_exit": 1},
@@ -162,6 +190,7 @@ def test_expect_exit_accepts_a_bare_int_or_a_list(tmp_path):
     assert spec.exec[1].expect_exit == [0, 1]
 
 
+@pytest.mark.needs_sandbox
 def test_reads_accepts_a_bare_string(tmp_path):
     spec = sp.load_spec(_yaml(tmp_path, steps=[
         {"label": "a", "cmd": "ls", "reads": "/srv/data"}]))
@@ -176,6 +205,7 @@ def test_a_timeout_beyond_the_policy_ceiling_is_refused(tmp_path):
 # --------------------------------------------------------------------------- #
 # what the guard promises (R-E5)
 # --------------------------------------------------------------------------- #
+@pytest.mark.needs_sandbox
 def test_a_build_claims_the_sandbox_by_default(tmp_path):
     """Honest by default. A spec that runs commands says they were contained
     unless it explicitly says otherwise, so the interesting claim takes an act of
@@ -185,6 +215,7 @@ def test_a_build_claims_the_sandbox_by_default(tmp_path):
     assert spec.guard.require_exec_success is True
 
 
+@pytest.mark.needs_sandbox
 def test_a_spec_that_runs_unconfined_must_say_so(tmp_path):
     spec = sp.load_spec(_yaml(tmp_path, steps=[{"label": "a", "cmd": "ls"}],
                               guard={"require_sandbox": False}))
@@ -217,11 +248,13 @@ def _cmd_of(step) -> list[str]:
     return ["/bin/sh", "-c", raw] if isinstance(raw, str) else list(raw)
 
 
+@pytest.mark.needs_sandbox
 def test_check_policy_passes_a_command_that_can_run(tmp_path):
     reqs, spec = _requests(tmp_path, [{"label": "ok", "cmd": ["ls"]}])
     assert ex.check_policy(reqs, root=spec.root, allow_network=False) == []
 
 
+@pytest.mark.needs_sandbox
 def test_check_policy_names_the_command_it_is_complaining_about(tmp_path):
     """A build with eight commands must say *which* one is wrong. The label is
     the only handle the author has."""
@@ -238,12 +271,14 @@ def test_check_policy_refuses_a_missing_working_directory(tmp_path):
         reqs, root=spec.root, allow_network=False)[0]
 
 
+@pytest.mark.needs_sandbox
 def test_check_policy_accepts_a_directory_that_exists(tmp_path):
     (tmp_path / "sub").mkdir()
     reqs, spec = _requests(tmp_path, [{"label": "a", "cmd": "ls", "cwd": "sub"}])
     assert ex.check_policy(reqs, root=spec.root, allow_network=False) == []
 
 
+@pytest.mark.needs_sandbox
 def test_check_policy_refuses_network_the_spec_never_allowed(tmp_path):
     """The refusal has to explain *why* it is a refusal, not just that it is one,
     or the author widens the wrong thing."""
@@ -254,6 +289,7 @@ def test_check_policy_refuses_network_the_spec_never_allowed(tmp_path):
     assert "allow_network" in problems[0] and "network: true" in problems[0]
 
 
+@pytest.mark.needs_sandbox
 def test_check_policy_allows_the_network_once_the_spec_widens_it(tmp_path):
     reqs, spec = _requests(tmp_path, [{"label": "curl", "cmd": ["curl", "https://x"],
                                        "network": True}])
@@ -268,6 +304,7 @@ def test_check_policy_refuses_a_backend_this_host_does_not_have(tmp_path, monkey
     assert "backend: local" in problems[0]
 
 
+@pytest.mark.needs_sandbox
 def test_check_policy_reports_every_bad_command_not_just_the_first(tmp_path):
     reqs, spec = _requests(tmp_path, [{"label": "a", "cmd": "ls", "cwd": "no"},
                                       {"label": "b", "cmd": "ls", "cwd": "no"}])
@@ -288,12 +325,48 @@ def test_check_policy_rejects_an_empty_command_or_expectation():
     assert any("at least one exit code" in p for p in problems)
 
 
+def test_a_broken_host_backend_is_reported_once_not_once_per_command(monkeypatch):
+    """Three commands on a machine that cannot sandbox is *one* problem.
+
+    Reporting it per command buries the real refusals under identical text and
+    tells the author their command is wrong when their host is. The backend is a
+    fact about the host, so it is stated once and separately.
+    """
+    monkeypatch.setattr(ex, "bwrap_available",
+                        lambda **k: (False, "bwrap(1) is not on PATH"))
+    requests = [ex.ExecRequest(cmd=["/bin/true"], label=f"step {i}")
+                for i in range(3)]
+
+    problems = ex.check_policy(requests, root=Path("/"), allow_network=False)
+
+    assert len(problems) == 1, problems
+    assert "backend bubblewrap" in problems[0]
+    assert "bwrap(1) is not on PATH" in problems[0]
+
+
+def test_the_host_backend_verdict_does_not_swallow_the_command_refusals(monkeypatch):
+    """The backend line is appended *after* the per-command reasons, so a spec with
+    both a missing sandbox and a bad working directory is told both things."""
+    monkeypatch.setattr(ex, "bwrap_available",
+                        lambda **k: (False, "bwrap(1) is not on PATH"))
+    requests = [
+        ex.ExecRequest(cmd=["/bin/true"], label="good", cwd="nope"),
+        ex.ExecRequest(cmd=[], label="empty"),
+    ]
+
+    problems = ex.check_policy(requests, root=Path("/tmp"), allow_network=False)
+
+    assert any("working directory does not exist" in p for p in problems)
+    assert any("no command declared" in p for p in problems)
+    assert sum("bwrap(1) is not on PATH" in p for p in problems) == 1
+
+
 # --------------------------------------------------------------------------- #
 # resolve_backend: a missing backend is a refusal, never a silent downgrade
 # --------------------------------------------------------------------------- #
 def test_resolve_backend_keeps_local_and_bubblewrap():
     assert ex.resolve_backend("local") == "local"
-    if shutil.which("bwrap"):
+    if ex.bwrap_available()[0]:
         assert ex.resolve_backend("bubblewrap") == "bubblewrap"
 
 
@@ -301,9 +374,56 @@ def test_resolve_backend_refuses_a_backend_that_is_not_installed(monkeypatch):
     """The dangerous failure is not `docker is missing`, it is `docker is missing
     so we quietly ran it on the host`. The result would be true and the claim
     would be false."""
-    monkeypatch.setattr(shutil, "which", lambda name: None)
+    monkeypatch.setattr(ex, "bwrap_available",
+                        lambda **k: (False, "bwrap(1) is not on PATH"))
     with pytest.raises(ToolError, match="bwrap\\(1\\) is not on PATH"):
         ex.resolve_backend("bubblewrap")
+
+
+def test_discovery_says_bwrap_is_missing_when_it_is(monkeypatch):
+    """The other half of the refusal, and the half that is not a mock: with no
+    binary on PATH at all, the probe has to arrive at "missing" by itself."""
+    monkeypatch.setattr(shutil, "which", lambda name: None)
+    ok, detail = ex.bwrap_available(refresh=True)
+    assert ok is False and "not on PATH" in detail
+
+
+def test_a_sandbox_that_cannot_start_is_refused_even_though_bwrap_is_installed(monkeypatch):
+    """Defect G, and the reason this test exists rather than a ``which`` check.
+
+    Ubuntu 24.04 installs bubblewrap and then denies the user namespace it needs,
+    so ``shutil.which("bwrap")`` succeeds while every invocation fails. Answering
+    "available" to a presence check there is not a conservative approximation of
+    the truth — it is the false claim invariant I7 forbids, arriving via an
+    environment check instead of a rendered frame.
+    """
+    ex.bwrap_available(refresh=True)
+    monkeypatch.setattr(shutil, "which", lambda name: "/usr/bin/bwrap")
+
+    class Blocked:
+        returncode = 1
+        stderr = b"bwrap: setting up uid map: Permission denied\n"
+        stdout = b""
+
+    monkeypatch.setattr(ex.subprocess, "run", lambda *a, **k: Blocked())
+    ok, detail = ex.bwrap_available(refresh=True)
+    assert ok is False
+    assert "apparmor_restrict_unprivileged_userns" in detail, detail
+    with pytest.raises(ToolError, match="cannot run on this host"):
+        ex.resolve_backend("bubblewrap")
+
+
+def test_the_probe_runs_the_engines_own_sandbox_around_something_harmless():
+    """A probe that invented its own argv would answer a question about itself.
+    Whatever bwrap is asked to prove, it must be asked in the shape the pipeline
+    actually uses — namespaces, read-only roots, the lot."""
+    argv = ex._bwrap_probe_argv()
+    assert argv[0] == "bwrap"
+    assert "--unshare-all" in argv and "--die-with-parent" in argv
+    assert argv[-1] == "/bin/true"
+    for root in ex.READ_ROOTS:
+        if Path(root).exists():
+            assert str(Path(root)) in argv
 
 
 def test_resolve_backend_refuses_a_name_it_has_never_heard_of():
@@ -318,6 +438,11 @@ def test_backends_report_says_what_this_host_can_do():
     # it arrives with the environment lab
     assert names == {"local", "bubblewrap"}
     assert all("available" in b and "detail" in b for b in report)
+    # `available` answers "can it run", so it must agree with the refusal that
+    # decides whether a spec declaring this backend loads at all.
+    bubblewrap = next(b for b in report if b["name"] == "bubblewrap")
+    assert bubblewrap["available"] == ex.bwrap_available()[0]
+    assert bubblewrap["detail"] != "bwrap(1) not found (apt install bubblewrap)" or not bubblewrap["available"]
 
 
 # --------------------------------------------------------------------------- #
@@ -444,6 +569,7 @@ def _frames(*times):
     return a
 
 
+@pytest.mark.needs_sandbox
 def test_span_needs_two_frames_or_the_shot_is_a_still(tmp_path):
     from vidkit.assembler import _exec_span
     ctx = _span_ctx(tmp_path)
@@ -451,6 +577,7 @@ def test_span_needs_two_frames_or_the_shot_is_a_still(tmp_path):
     assert _exec_span(ctx, _frames(), sp.Shot(kind="exec", ref="a"), 5.0) is None
 
 
+@pytest.mark.needs_sandbox
 def test_interior_frames_keep_their_measured_pace(tmp_path):
     """A command that paused for two seconds paused for two seconds. Re-timing it
     to look brisk would be the recording lying about how long the work took."""
@@ -463,6 +590,7 @@ def test_interior_frames_keep_their_measured_pace(tmp_path):
     assert sum(held) == pytest.approx(10.0, abs=1e-6)
 
 
+@pytest.mark.needs_sandbox
 def test_the_final_frame_takes_whatever_time_is_left(tmp_path):
     """The common case: a command prints its result and exits, so its final screen
     has a measured span of exactly zero. A shot that held it for zero seconds would
@@ -475,6 +603,7 @@ def test_the_final_frame_takes_whatever_time_is_left(tmp_path):
     assert sum(held) == pytest.approx(6.0, abs=1e-6)
 
 
+@pytest.mark.needs_sandbox
 def test_at_chooses_the_moment_the_shot_is_about(tmp_path):
     """`at:` is how a spec films a step of a long command rather than its end."""
     from vidkit.assembler import _exec_span
@@ -485,6 +614,7 @@ def test_at_chooses_the_moment_the_shot_is_about(tmp_path):
     assert sum(held) == pytest.approx(8.0, abs=1e-6)
 
 
+@pytest.mark.needs_sandbox
 def test_at_before_the_first_moment_still_shows_something(tmp_path):
     from vidkit.assembler import _exec_span
     ctx = _span_ctx(tmp_path)
@@ -494,6 +624,7 @@ def test_at_before_the_first_moment_still_shows_something(tmp_path):
     assert sum(held) == pytest.approx(4.0, abs=1e-6)
 
 
+@pytest.mark.needs_sandbox
 def test_no_frame_is_ever_held_for_zero_seconds(tmp_path):
     from vidkit.assembler import _exec_span
     ctx = _span_ctx(tmp_path)
@@ -503,6 +634,7 @@ def test_no_frame_is_ever_held_for_zero_seconds(tmp_path):
         assert min(held) >= 1.0 / 30, f"a frame vanished from a {seconds}s shot"
 
 
+@pytest.mark.needs_sandbox
 def test_a_recording_that_overruns_its_take_is_compressed_and_says_so(tmp_path, capsys):
     """Honest re-timing. A screencast at 2x is fine as long as the build says 2x;
     quietly claiming a four-second build took half a second is not."""
@@ -516,6 +648,7 @@ def test_a_recording_that_overruns_its_take_is_compressed_and_says_so(tmp_path, 
     assert "WARN" in out and "playing at" in out and "exec a" in out
 
 
+@pytest.mark.needs_sandbox
 def test_a_recording_that_fits_is_not_reported_as_re_timed(tmp_path, capsys):
     from vidkit.assembler import _exec_span
     ctx = _span_ctx(tmp_path)
@@ -525,6 +658,7 @@ def test_a_recording_that_fits_is_not_reported_as_re_timed(tmp_path, capsys):
     assert "WARN" not in capsys.readouterr().out
 
 
+@pytest.mark.needs_sandbox
 def test_the_frames_are_index_aligned_with_their_durations(tmp_path):
     """The bug this pins: the older form returned `paths` and `held` with different
     lengths, so ffmpeg was handed a duration for a frame that did not exist."""
@@ -536,20 +670,19 @@ def test_the_frames_are_index_aligned_with_their_durations(tmp_path):
 
 
 # --------------------------------------------------------------------------- #
-# the sandbox itself: these start a process, so they need the render toolchain
+# the terminal: a real process on a real PTY, unconfined, so no sandbox needed
+#
+# These were marked `needs_render`, which skipped them in the lean CI job for a
+# reason that has nothing to do with what they test: none of them runs ffmpeg.
+# A skip that hides a test behind an unrelated dependency is a test that stops
+# working exactly when the environment is least like a developer's.
 # --------------------------------------------------------------------------- #
-pytestmark_render = pytest.mark.needs_render
-
-_HAVE_BWRAP = shutil.which("bwrap") is not None
-
-
 def _root(tmp_path: Path) -> Path:
     root = tmp_path / "work"
     root.mkdir(exist_ok=True)
     return root
 
 
-@pytest.mark.needs_render
 def test_run_records_what_the_command_printed(tmp_path):
     root = _root(tmp_path)
     req = ex.ExecRequest(cmd=["/bin/echo", "measured"], backend="local")
@@ -559,7 +692,6 @@ def test_run_records_what_the_command_printed(tmp_path):
     assert result.exit_code == 0 and result.seconds > 0
 
 
-@pytest.mark.needs_render
 def test_run_is_handed_a_real_terminal_not_a_pipe(tmp_path):
     """The reason this module uses a PTY at all. `tty` exits 1 on a pipe and 0 on a
     terminal, so this assertion is the difference between filming a terminal and
@@ -572,7 +704,6 @@ def test_run_is_handed_a_real_terminal_not_a_pipe(tmp_path):
         "program would never have printed to a real one")
 
 
-@pytest.mark.needs_render
 def test_run_reports_the_exit_code_a_spec_declared_as_expected(tmp_path):
     root = _root(tmp_path)
     req = ex.ExecRequest(cmd=["/bin/sh", "-c", "exit 3"], backend="local",
@@ -581,7 +712,6 @@ def test_run_reports_the_exit_code_a_spec_declared_as_expected(tmp_path):
     assert result.exit_code == 3 and result.expected and result.ok
 
 
-@pytest.mark.needs_render
 def test_run_kills_the_whole_process_group_on_timeout(tmp_path):
     """`sleep 30` under a 1.5s timeout must be *gone*, not merely abandoned. A live
     orphan holding a port is how a build leaves a machine in a state no one meant."""
@@ -597,7 +727,6 @@ def test_run_kills_the_whole_process_group_on_timeout(tmp_path):
     assert not marker.exists(), "the process group survived the timeout"
 
 
-@pytest.mark.needs_render
 def test_stream_reaches_a_killed_command_but_run_still_returns_a_result(tmp_path):
     root = _root(tmp_path)
     req = ex.ExecRequest(cmd=["/bin/sh", "-c", "echo half; exit 9"], backend="local",
@@ -608,7 +737,6 @@ def test_stream_reaches_a_killed_command_but_run_still_returns_a_result(tmp_path
     assert b"half" in b"".join(chunks)
 
 
-@pytest.mark.needs_render
 def test_run_refuses_a_missing_working_directory_without_running_anything(tmp_path):
     root = _root(tmp_path)
     result = ex.run(ex.ExecRequest(cmd=["/bin/echo", "no"], cwd="gone",
@@ -617,8 +745,7 @@ def test_run_refuses_a_missing_working_directory_without_running_anything(tmp_pa
     assert result.stdout == ""
 
 
-@pytest.mark.skipif(not (_HAVE_BWRAP), reason="bwrap(1) not installed")
-@pytest.mark.needs_render
+@pytest.mark.needs_sandbox
 def test_bwrap_sandbox_cannot_write_outside_the_declared_directory(tmp_path):
     """Read is granted from the system roots; *write* is granted only to the bound
     working directory. The asymmetry is the point: a command may read a library and
@@ -641,8 +768,7 @@ def test_bwrap_sandbox_cannot_write_outside_the_declared_directory(tmp_path):
         f"{result.stdout!r}")
 
 
-@pytest.mark.skipif(not (_HAVE_BWRAP), reason="bwrap(1) not installed")
-@pytest.mark.needs_render
+@pytest.mark.needs_sandbox
 def test_bwrap_sandbox_cannot_write_to_the_read_only_system_roots(tmp_path):
     """The other half of the asymmetry: a path that *is* visible is still
     read-only, so the refusal there is a permission failure rather than a missing
@@ -656,8 +782,7 @@ def test_bwrap_sandbox_cannot_write_to_the_read_only_system_roots(tmp_path):
     assert not Path(target).exists()
 
 
-@pytest.mark.skipif(not _HAVE_BWRAP, reason="bwrap(1) not installed")
-@pytest.mark.needs_render
+@pytest.mark.needs_sandbox
 def test_the_sandbox_has_no_network_unless_the_command_declared_it(tmp_path):
     """Built network-less first and opened by the flag, so an author who forgets
     gets the safe behaviour rather than the unsafe one."""
@@ -676,8 +801,7 @@ def test_the_sandbox_has_no_network_unless_the_command_declared_it(tmp_path):
         f"got {on.stdout!r} (refused={on.refused!r})")
 
 
-@pytest.mark.skipif(not _HAVE_BWRAP, reason="bwrap(1) not installed")
-@pytest.mark.needs_render
+@pytest.mark.needs_sandbox
 def test_the_sandbox_runs_the_command_in_the_declared_directory(tmp_path):
     root = _root(tmp_path)
     (root / "sub").mkdir(exist_ok=True)
@@ -687,8 +811,7 @@ def test_the_sandbox_runs_the_command_in_the_declared_directory(tmp_path):
     assert result.ok
 
 
-@pytest.mark.skipif(not _HAVE_BWRAP, reason="bwrap(1) not installed")
-@pytest.mark.needs_render
+@pytest.mark.needs_sandbox
 def test_a_sandboxed_command_may_write_inside_the_bound_directory(tmp_path):
     root = _root(tmp_path)
     result = ex.run(ex.ExecRequest(cmd=["/bin/sh", "-c", "echo hi > made.txt"],
@@ -697,8 +820,7 @@ def test_a_sandboxed_command_may_write_inside_the_bound_directory(tmp_path):
     assert (root / "made.txt").read_text(encoding="utf-8").strip() == "hi"
 
 
-@pytest.mark.skipif(not _HAVE_BWRAP, reason="bwrap(1) not installed")
-@pytest.mark.needs_render
+@pytest.mark.needs_sandbox
 def test_the_environment_a_command_sees_is_the_declared_one(tmp_path, monkeypatch):
     """A recorded environment is a published environment, so the sandbox gets the
     declared environment rather than the builder's."""
@@ -711,8 +833,7 @@ def test_the_environment_a_command_sees_is_the_declared_one(tmp_path, monkeypatc
     assert "[unset]" in result.stdout
 
 
-@pytest.mark.skipif(not _HAVE_BWRAP, reason="bwrap(1) not installed")
-@pytest.mark.needs_render
+@pytest.mark.needs_sandbox
 def test_a_declared_read_root_is_visible_inside_the_sandbox(tmp_path):
     root = _root(tmp_path)
     extra = tmp_path / "extra"
@@ -751,6 +872,7 @@ def _exec_verified(tmp_path, steps, *, playback=None, frames=None, casts=None):
     return verify_output(ctx, assets, {0: "hello"})
 
 
+@pytest.mark.needs_sandbox
 def test_a_check_that_passed_is_still_written_down(tmp_path):
     """Defect E. `every declared command ran` used to appear only when it *failed*,
     so a green verify.json said nothing at all about whether the commands ran —
@@ -763,6 +885,7 @@ def test_a_check_that_passed_is_still_written_down(tmp_path):
     assert "2 command(s), all recorded" in ran.detail
 
 
+@pytest.mark.needs_sandbox
 def test_a_command_in_the_spec_that_never_recorded_is_an_actual_failure(tmp_path):
     """The other half of defect E: now that the check always exists, it must also
     be able to fail. A declared command with no result is the one thing this
@@ -783,6 +906,7 @@ def test_a_command_in_the_spec_that_never_recorded_is_an_actual_failure(tmp_path
     assert "['b']" in ran.detail
 
 
+@pytest.mark.needs_sandbox
 def test_the_report_says_which_recordings_were_shown_as_a_moving_take(tmp_path):
     """Defect F. `playback` was `None` both for a recording replayed at 1.0x as a
     single held screen and for one never shown as a take at all — the reader could
@@ -795,6 +919,7 @@ def test_the_report_says_which_recordings_were_shown_as_a_moving_take(tmp_path):
     assert facts["b"]["frames"] is None and facts["b"]["playback"] is None
 
 
+@pytest.mark.needs_sandbox
 def test_a_recording_shown_as_one_screen_does_not_claim_a_playback_speed(tmp_path):
     """The distinction the fact exists to make. One screen is not a take played
     slowly — it is a take that was never a take, and the report says so by leaving

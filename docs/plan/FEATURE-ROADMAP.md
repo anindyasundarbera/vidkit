@@ -396,17 +396,29 @@ first stage added to the pipeline since M0:
   installs `bubblewrap` and asserts the recording is really in the film.
 - **`docs/capture/exec-guide.md`** — the author-facing guide.
 
-Evidence: `docs/plan/HISTORY.md`. Design consequences: **D33–D40**.
+Evidence: `docs/plan/HISTORY.md`. Design consequences: **D33–D41**.
 
 **Deferred.** The `docker` backend is explicitly M8's — `resolve_backend()` knows the name
 and refuses it when it is not installed, so the seam is real rather than a promise. Filming a
 PTY with a *moving* camera effect (a zoom over a recording) is deliberately not supported:
 the recording already moves, and two motions fighting is a picture that lies about neither.
 
-**Risks.** `bwrap` is present on CI's ubuntu runner, but the render toolchain is not installed
-in the two `pytest` jobs, so exec tests are split into pure-Python and `needs_render` halves.
-The render side is real, but it is only proved on Linux; macOS/Windows support is *stated*,
-not implied.
+**Risks.** Two, and the first one was measured rather than guessed. **The CI runner cannot
+sandbox anything.** `ubuntu-24.04` does not preinstall `bubblewrap` at all, and once it is
+installed the kernel still refuses it: `/proc/sys/kernel/apparmor_restrict_unprivileged_userns`
+is `1`, so *every* `bwrap` invocation fails — including one with no namespace flags — with
+`setting up uid map: Permission denied`. `exec-probe` therefore lifts the restriction with
+`sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0` before the sandbox gate, and
+the gate *runs* the sandbox rather than looking for the binary. The same restriction affects
+any Ubuntu 24.04 machine, which is why `vidkit doctor` now reports it with the workaround in
+the message (see `docs/capture/exec-guide.md`).
+
+Second, the exec tests are split by *capability*, not by tool: `needs_render` for the
+pipeline (ffmpeg + rsvg-convert) and `needs_sandbox` for a command that declares
+`backend: bubblewrap`, probed rather than looked up. The two are independent, so a host with
+ffmpeg and no usable bubblewrap runs the PTY tests and skips the confinement ones — and
+neither marker hides a test behind a dependency it does not use. The render side is real, but
+it is only proved on Linux; macOS/Windows support is *stated*, not implied.
 
 ---
 

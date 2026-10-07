@@ -937,3 +937,99 @@ really in the film. All of its `run:` blocks were extracted and executed locally
 being pushed, which is how defect F was found.
 
 **Decisions taken.** **D33**–**D40**.
+---
+
+## M7 CI findings — a presence check is not a capability check (defect G)
+
+**2026-10-08.** Context: M7, PR #7, first push.
+
+The M7 branch passed locally and failed CI in three jobs at once. Root-causing them took
+longer than writing the fixes, and the reason is worth recording: **they looked like one
+failure and were three, and the third was in the workflow rather than the engine.**
+
+### What was actually wrong
+
+| # | Job | Symptom | Cause |
+|---|---|---|---|
+| 1 | `pytest (3.10)` and `pytest (3.12)` | the *same* 26 failures | the `needs_render` skip key was the wrong key. Those 26 tests need a **sandbox**, not a renderer, so a job that installs no ffmpeg skipped the wrong set — and would have skipped them in a job that installs one |
+| 2 | `exec-probe` | the build succeeded, the film was made, and all three recorded commands exited 1 | `bwrap: loopback: Failed RTM_NEWADDR: Operation not permitted` |
+| 3 | `exec-probe` | the job's own "the sandbox really is here" gate **passed** on a runner where no sandbox could start | the gate asked where the file was rather than whether it ran |
+
+**Reproduced byte-for-byte before any fix.** A directory holding symlinks to everything but
+`bwrap` (`/tmp/lean7`) turned 26 failures up locally where CI saw 26:
+`38 passed / 33 skipped` after the fix, `26 failed / 35 passed / 7 skipped` before.
+
+### What the runner is
+
+Established with a temporary diagnostic workflow (four commits, deleted before merge):
+
+- `ubuntu-latest` is `ubuntu-24.04` image `20260927.320.1`, and it does **not** preinstall
+  `bubblewrap`. An earlier note in `ci.yml` and `FEATURE-ROADMAP.md` claiming it did was
+  simply wrong and has been corrected.
+- `/proc/sys/kernel/apparmor_restrict_unprivileged_userns` is **`1`**. Consequently *every*
+  rung of the ladder fails, including the bare `bwrap --dev /dev --ro-bind / / /bin/true`:
+  `bwrap: setting up uid map: Permission denied`.
+- `--unshare-user-try` does not help. Wrapping the whole thing in an outer
+  `unshare --user --map-root-user` does not help.
+- `sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0` **does** work
+  (`before: 1` → `after: 0`), and the runner grants passwordless `sudo`.
+
+This is a fact about the host, not a defect in vidkit. But it made a defect in vidkit
+visible: `bwrap` being installed and `bwrap` being *usable* are different questions, and
+vidkit was answering the first while acting on the second.
+
+### The fourth bug, which nobody reported
+
+While wiring the fix, `grep -rn backends_ vidkit/` returned **only the definitions**. The
+docstring of `backends_report()` said "for doctor and provenance" and **no code called it**.
+So `vidkit doctor` never mentioned the sandbox, and a spec declaring `backend: bubblewrap` on
+Ubuntu 24.04 died mid-build with a `SpecError` instead of being refused up front. This is
+defect G's other half, and it was invisible precisely because the function worked.
+
+### Defect G — `available` meant "is the file there?"
+
+Fixed in five places:
+
+1. **`exec.py`** — `bwrap_available()` actually starts a sandbox around `/bin/true`, through
+   the engine's *own* `_bwrap_argv`, so the probe answers a question about the engine and not
+   about itself. Memoised in `_PROBE_CACHE` (a real probe costs **14.1 ms**; a whole-pipeline
+   probe would cost ~2 s — this is why the probe tests one harmless command rather than the
+   pipeline). `_explain_bwrap_failure()` recognises the AppArmor signature and names the
+   sysctl. `resolve_backend()` consumes it, so the load-time refusal now distinguishes
+   *missing* from *cannot start*.
+2. **`reports.py`** — `doctor_report` gains a `backends` block that gates `ok`, and
+   `format_doctor` prints a `sandbox` line. It is answered **with or without a spec**,
+   because it is a fact about the host: `available` is the host question, `ok` is the spec
+   question, and a `local`-only spec passes where the host itself cannot sandbox.
+3. **`tests/conftest.py`** — a `needs_sandbox` marker, probed by the engine. The two markers
+   are now applied **independently**: the old `pytest_collection_modifyitems` early-returned
+   as soon as render tools were present, which is exactly the bug class it was written to
+   prevent, one layer up.
+4. **`tests/test_exec.py`** — the autouse `_fresh_probe` fixture, because `_PROBE_CACHE` is
+   memoised and a test that patches `shutil.which` must invalidate it. The six PTY tests lost
+   `needs_render`: they use `backend: local` and absolute binaries, so the marker was hiding
+   them from the lean job for no reason. The old `skipif(not _HAVE_BWRAP)` guards — a
+   *presence* check — are gone.
+5. **`ci.yml`** — a `Let unprivileged user namespaces exist` step and a gate that calls
+   `bwrap_available(refresh=True)` and fails honestly.
+
+### Also fixed at the same time
+
+`check_policy` reported the host's backend refusal **once per command**. Three commands on a
+machine that cannot sandbox is one problem, and repeating it buried the real per-command
+refusals under identical text. It is now stated once, last, as `backend bubblewrap: …`.
+
+### Evidence
+
+```
+pytest tests/test_exec.py -q                 → 71 passed in 4.24s
+env -i PATH=/tmp/lean7 … pytest             → 38 passed, 33 skipped   (was 26 failed)
+     … and the 6 PTY tests PASSED, not skipped
+env -i PATH=<bwrap + python3 only> …        → 71 passed   (the markers are independent)
+python3 -m pytest tests -q                  → 463 passed in 382.10s
+vidkit build examples/hello-world/video.yaml --out _hwcheck   → exit 0
+examples/terminal-demo/_build/verify.json   → ok: true, 11 checks, all PASS
+```
+
+Decisions taken: **D41**. The diagnostic workflow was deleted before the merge.
+

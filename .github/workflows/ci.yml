@@ -544,8 +544,16 @@ jobs:
     # cannot assert that the finished film is a replay of the bytes the command
     # wrote. This job runs the command for real and then reads the report back.
     #
-    # bubblewrap ships with the Ubuntu runner, so unlike capture-probe this needs
-    # no browser and no network.
+    # This job has to *build* the sandbox, not merely find it. The ubuntu-24.04
+    # runner does not preinstall bubblewrap at all, and once installed the kernel
+    # still refuses it: /proc/sys/kernel/apparmor_restrict_unprivileged_userns is
+    # 1, so every bwrap invocation fails with "setting up uid map: Permission
+    # denied", even without a single namespace flag. The sysctl below is what
+    # lifts that. Without it the gate fails — which is the correct outcome, and
+    # it is why the gate probes instead of checking `which bwrap`.
+    #
+    # No browser and no network: unlike capture-probe, nothing here leaves the
+    # machine.
     name: run a real command and film it
     runs-on: ubuntu-latest
 
@@ -562,6 +570,17 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends ffmpeg librsvg2-bin bubblewrap
 
+      - name: Let unprivileged user namespaces exist
+        run: |
+          # Ubuntu 24.04 ships an AppArmor rule that denies unprivileged user
+          # namespaces, which is the mechanism bubblewrap is built on. The runner
+          # has passwordless sudo, so the restriction can be lifted for this job.
+          # Printing before/after makes a future failure diagnosable without a
+          # diagnostic workflow: if "after" is still 1 the fix stopped working.
+          echo "before: $(cat /proc/sys/kernel/apparmor_restrict_unprivileged_userns)"
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          echo "after:  $(cat /proc/sys/kernel/apparmor_restrict_unprivileged_userns)"
+
       - name: Install vidkit
         run: |
           python -m pip install --upgrade pip
@@ -570,19 +589,16 @@ jobs:
       - name: The sandbox is really there, and really off the network
         run: |
           set -eu
-          if ! command -v bwrap >/dev/null; then
-            echo "bwrap(1) is missing; the exec-probe would prove nothing" >&2
-            exit 1
-          fi
           python - <<'PY'
           import sys
           sys.path.insert(0, ".")
           from vidkit import exec as ex
-          report = ex.backends_report()
-          sandbox = next(b for b in report if b["name"] == "bubblewrap")
-          if not sandbox["available"]:
-              sys.exit(f"bubblewrap not usable: {sandbox}")
-          print("sandbox OK —", sandbox)
+          ok, detail = ex.bwrap_available(refresh=True)
+          if not ok:
+              sys.exit(
+                  "the sandbox cannot run on this runner, so this job would prove "
+                  "nothing about confinement: " + detail)
+          print("sandbox OK —", next(b for b in ex.backends_report() if b["name"] == "bubblewrap"))
           PY
 
       - name: Build the terminal demo

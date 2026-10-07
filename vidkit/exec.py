@@ -80,6 +80,16 @@ READ_ROOTS = ("/usr", "/bin", "/sbin", "/lib", "/lib64", "/etc")
 #: gigabyte is a command that fills a disk, so the cap is not politeness.
 MAX_CAPTURE_BYTES = 256 * 1024
 
+#: How long the sandbox capability probe may take. It binds the whole of ``/``
+#: read-only and runs ``/bin/true``; measured at ~14 ms, so this is ~100x headroom
+#: for a loaded machine, and still short enough to sit in front of ``doctor``.
+PROBE_TIMEOUT = 1.5
+
+#: The mount layout the probe builds, so that a probe which passes proves the
+#: *engine's* sandbox works and not merely that some other bwrap invocation does.
+#: Kept identical in spirit to :func:`_bwrap_argv`, and pinned by a test.
+PROBE_ARGV = ["/bin/true"]
+
 
 @dataclass
 class ExecRequest:
@@ -178,21 +188,117 @@ class ExecResult:
 # --------------------------------------------------------------------------- #
 # the environment
 # --------------------------------------------------------------------------- #
+# --------------------------------------------------------------------------- #
+# can this host actually sandbox? (defect G)
+#
+# The question "is bwrap available?" has two answers and only one of them is the
+# one anybody means. `shutil.which("bwrap")` answers "is the file there". What a
+# spec declaring `backend: bubblewrap` is asking is "will the sandbox actually
+# confine the command". On Ubuntu 24.04 those answers differ: bubblewrap is
+# installed and every invocation fails, because
+# /proc/sys/kernel/apparmor_restrict_unprivileged_userns is 1, so the kernel
+# refuses the user namespace bwrap needs to exist at all.
+#
+# That made three things lie at once: `doctor` said the environment was ready,
+# `resolve_backend` accepted a spec it could not honour, and CI's own
+# "the sandbox is really there" gate passed on a host where the sandbox could
+# not start. So availability is now *demonstrated* — the probe runs the engine's
+# own sandbox around /bin/true — and the proof costs ~14 ms.
+#
+# The probe is memoised because it runs at load time, once per process, and the
+# answer cannot change within a process. Nothing here caches across processes;
+# a host that gains the capability mid-session is a restart away.
+# --------------------------------------------------------------------------- #
+_PROBE_CACHE: dict[str, tuple[bool, str]] = {}
+
+
+def _bwrap_probe_argv() -> list[str]:
+    """The engine's sandbox, around a command that does nothing.
+
+    Deliberately built through the *same* helpers a real request uses. A probe
+    that invented its own argv would answer a question about itself.
+    """
+    req = ExecRequest(cmd=list(PROBE_ARGV), backend="bubblewrap")
+    argv = _bwrap_argv(req, Path("/"))
+    # No host PATH lookup for the binary itself: `shutil.which` already told us
+    # where it is, and re-deriving it here is what would let the probe drift.
+    return argv
+
+
+def bwrap_available(*, refresh: bool = False) -> tuple[bool, str]:
+    """Can this host run the sandbox, and if not, why not — as a sentence.
+
+    The second element is written to be shown to a person, because "available:
+    False" on its own sends an author looking for a missing binary that is
+    sitting right there on PATH.
+    """
+    if not refresh and "bubblewrap" in _PROBE_CACHE:
+        return _PROBE_CACHE["bubblewrap"]
+
+    binary = shutil.which("bwrap")
+    if binary is None:
+        verdict = (False, "bwrap(1) is not on PATH")
+        _PROBE_CACHE["bubblewrap"] = verdict
+        return verdict
+
+    argv = _bwrap_probe_argv()
+    argv[0] = binary
+    try:
+        proc = subprocess.run(
+            argv, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE, timeout=PROBE_TIMEOUT)
+    except subprocess.TimeoutExpired:
+        verdict = (False, f"{binary} did not return within {PROBE_TIMEOUT}s")
+    except OSError as exc:
+        verdict = (False, f"{binary} could not be started: {exc}")
+    else:
+        if proc.returncode == 0:
+            verdict = (True, f"{binary} ran a confined command")
+        else:
+            why = proc.stderr.decode("utf-8", "replace").strip().splitlines()
+            verdict = (False, _explain_bwrap_failure(why[-1] if why else ""))
+
+    _PROBE_CACHE["bubblewrap"] = verdict
+    return verdict
+
+
+def _explain_bwrap_failure(line: str) -> str:
+    """Turn bwrap's kernel-level complaint into something an author can act on.
+
+    Ubuntu 24.04 ships an AppArmor rule that denies unprivileged user namespaces,
+    which is the single most common reason a *correctly installed* bubblewrap
+    cannot run. Detecting it by its symptom rather than by reading the sysctl
+    keeps this correct on hosts where the sysctl is unreadable.
+    """
+    text = line or "bwrap exited non-zero"
+    if "uid map" in text or "RTM_NEWADDR" in text or "Operation not permitted" in text:
+        return (
+            f"{text} — the kernel is refusing unprivileged user namespaces, which "
+            "on Ubuntu 24.04 is the AppArmor restriction. Lift it with "
+            "`sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0`, "
+            "or declare `backend: local` to run unconfined on purpose."
+        )
+    return text
+
+
 def resolve_backend(name: str) -> str:
     """The backend actually used, or a refusal explaining why the named one cannot run.
 
     A spec that asks for ``docker`` and silently gets ``local`` produces evidence
-    that is true and a claim that is false. So a missing backend is a refusal, and
-    it says which binary is missing.
+    that is true and a claim that is false. So a backend that cannot run is a
+    refusal, and it says what is wrong — including when the binary is present and
+    the kernel will not let it work, which is the case this used to get wrong.
     """
     if name == "local":
         return "local"
     if name == "bubblewrap":
-        if shutil.which("bwrap") is None:
+        ok, detail = bwrap_available()
+        if not ok:
             raise ToolError(
-                "the spec declares `backend: bubblewrap`, but bwrap(1) is not on "
-                "PATH. Install bubblewrap, or declare `backend: local` to say "
-                "honestly that the command runs unconfined on this host.")
+                f"the spec declares `backend: bubblewrap`, but the sandbox cannot "
+                f"run on this host: {detail}. Fix the environment, or declare "
+                "`backend: local` to say honestly that the command runs "
+                "unconfined here.")
         return "bubblewrap"
     raise SpecError(
         f"unknown exec backend {name!r}; known: local, bubblewrap "
@@ -417,6 +523,11 @@ def check_policy(requests: Sequence[ExecRequest], *, root: Path,
     from a stack trace halfway through a render.
     """
     problems: list[str] = []
+    # A backend that cannot run is a fact about the *host*, not about the command
+    # that happened to name it, so it is reported once however many commands
+    # declare it. Repeating "bwrap cannot run" per command buries the other
+    # refusals and reads as though three separate things were wrong.
+    backend_problem: dict[str, str] = {}
     for req in requests:
         where = req.label or " ".join(req.cmd) or "(empty command)"
         if not req.cmd:
@@ -434,21 +545,28 @@ def check_policy(requests: Sequence[ExecRequest], *, root: Path,
                 "`exec.allow_network` is false — a command that reaches the "
                 "network is a promise about a machine, so widen the spec "
                 "deliberately rather than by accident")
+        if req.backend in backend_problem:
+            continue
         try:
             resolve_backend(req.backend)
         except (SpecError, ToolError) as exc:
-            problems.append(f"{where}: {exc}")
-    return problems
+            names = sorted({r.backend for r in requests if r.backend == req.backend})
+            backend_problem[req.backend] = (
+                f"backend {', '.join(names)}: {exc}")
+    return problems + list(backend_problem.values())
 
 
 def backends_report() -> list[dict]:
-    """Which backends this host can actually use, for ``doctor`` and provenance."""
-    out = [{"name": "local", "available": True, "detail": "runs unconfined on the host"}]
-    bwrap = shutil.which("bwrap")
-    out.append({
-        "name": "bubblewrap",
-        "available": bwrap is not None,
-        "detail": bwrap or "bwrap(1) not found (apt install bubblewrap)",
-    })
-    return out
+    """Which backends this host can actually *use*, for ``doctor`` and provenance.
+
+    ``available`` means "a command declared with this backend will run confined",
+    which is the only reading anyone has ever wanted from it. The bubblewrap row
+    costs one ~14 ms probe; the local row is a fact about the design.
+    """
+    ok, detail = bwrap_available()
+    return [
+        {"name": "local", "available": True,
+         "detail": "runs unconfined on the host"},
+        {"name": "bubblewrap", "available": ok, "detail": detail},
+    ]
 

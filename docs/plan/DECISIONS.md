@@ -878,6 +878,7 @@ a future portability bug has a documented baseline to be measured against.
 | D38 | The screen model is hand-rolled; `pyte` is not a dependency | DECIDED |
 | D39 | A recording keeps its measured pace; only the last frame is a remainder | DECIDED |
 | D40 | An attestation must be emitted when it passes, and a `null` means one thing | DECIDED |
+| D41 | A backend is available when it *runs*, not when it is installed | DECIDED |
 
 ---
 
@@ -1053,3 +1054,46 @@ machine and by a stranger; a distinction that lives only in the source is not in
 **Consequences.** This is the same error twice at two levels — a claim that can only be
 verified by reading the implementation. Any new check is now expected to state its success
 case, and any new fact is expected to distinguish "none" from "not measured".
+
+---
+
+## D41 — A backend is available when it *runs*, not when it is installed
+
+**2026-10-08.** Context: M7, defect G, found while fixing PR #7's CI.
+
+**Decision.** `bubblewrap` counts as available only if a probe **actually starts a sandbox**
+on this host. The probe runs the engine's own `_bwrap_argv` around `/bin/true`, costs 14.1 ms,
+and is memoised per process. `resolve_backend()` refuses on the probe's answer, and
+`doctor`'s `available` field reports it. `doctor` answers the question with **or without a
+spec**, and separates two fields on purpose: `available` is "can this host sandbox?", `ok` is
+"does the spec's declaration work here?".
+
+**Alternatives.**
+
+- *Ask `shutil.which("bwrap")`* — rejected, and this was the bug. On Ubuntu 24.04 the binary
+  is present and every invocation fails with `setting up uid map: Permission denied`, so a
+  presence check answers `True` to a question whose true answer is `False`. That is not a
+  conservative approximation; it is the false claim invariant I7 forbids, arriving through an
+  environment check instead of a rendered frame.
+- *Silently downgrade to `local`* — rejected outright. `verify`'s `commands ran sandboxed`
+  check reads `result.backend`, so a silent downgrade would make that check **pass** while
+  the command ran unconfined. A true film and a false attestation.
+- *Fix CI only (install the sysctl, leave the engine alone)* — rejected. It would have left
+  every Ubuntu 24.04 user with a `doctor` that says the sandbox is fine, a build that dies
+  with a `SpecError` mid-render, and no way to tell a missing binary from a kernel that will
+  not cooperate. CI was the messenger, not the problem.
+- *Probe the whole pipeline instead of one command* — rejected on cost: ~2 s, which is too
+  slow for `doctor`. `/bin/true` under the real mount layout exercises exactly the capability
+  the pipeline needs.
+
+**Consequences.** A user-visible `doctor` line and a ~14 ms subprocess in it. The load-time
+refusal is unchanged in kind and better in message: *missing* and *cannot start* now read
+differently, and the latter names the `sudo sysctl -w
+kernel.apparmor_restrict_unprivileged_userns=0` workaround. `tests/conftest.py` gains a
+`needs_sandbox` marker applied independently of `needs_render`, and CI carries a sysctl step
+with a gate that calls the probe rather than looking for a file.
+
+**The general rule, because this will recur:** *when a capability gate decides whether an
+honest build is possible, it must demonstrate the capability, not observe a precondition of
+it.* The same question will be asked of Docker in M8, and the answer there must be a
+`docker run --rm hello-world`, not a `which docker`.
