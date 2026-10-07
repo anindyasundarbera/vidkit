@@ -135,6 +135,18 @@ pip install -e ".[dev]"          # core + pytest
 pytest tests -q                  # 337 tests, ~50 s; no external tools needed
 ```
 
+**Two test environments, one suite.** CI runs `pytest` twice on a machine with no
+`ffmpeg` and no `rsvg-convert` at all — that job checks Python logic and nothing else —
+and separately builds `examples/hello-world` on a machine that has both. A test that
+reaches the pipeline must be marked `@pytest.mark.needs_render`; `tests/conftest.py`
+registers the marker and skips those tests when the toolchain is absent. Without the
+marker a test passes here and fails in CI for a reason unrelated to the code — which
+happened, in M5, to four tests.
+
+Corollary for `doctor`: whether the machine is *complete* is a verdict, not a crash. Assert
+`manifest["ok"] == manifest["doctor"]["ok"]`, never `ok is True`, or the test only holds on
+a fully equipped box.
+
 ### 4.2 Commands that must keep working
 
 ```bash

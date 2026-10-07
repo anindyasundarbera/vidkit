@@ -696,3 +696,30 @@ unit tests arranged around the code's own assumptions cannot.
 
 **D29** a job answers with a manifest, and never raises for an expected refusal.
 **D30** progress is the pipeline's own narration, delivered only through a hook.
+
+### A third defect, found by CI rather than locally — the test environment
+
+The first PR for M5 came back red on both `pytest` jobs and green on `build hello-world end
+to end` and `film a real page and a real download`. Four tests failed:
+
+| Test | Why |
+|---|---|
+| `test_verify_reports_the_spans_it_looked_at` | reaches the pipeline; there is no `rsvg-convert` on the `pytest` runner |
+| `test_doctor_runs_without_a_story` | asserted `ok is True`; a lean machine is allowed to report a missing required tool |
+| `test_json_doctor_needs_no_story` | asserted exit `0`; the same verdict |
+| `test_json_matches_plain_run_for_every_read_only_action` | the same, via `doctor` |
+
+None of these are wrong *assertions about the code*; they are assertions about *the machine
+the test happens to run on*. The `pytest` job deliberately installs only `-e ".[dev]"` —
+fast, and available everywhere — and the render job installs `ffmpeg` and `librsvg2-bin` and
+does the building. Every test that reaches the pipeline has to say so.
+
+Fixed by a `needs_render` marker, registered in `tests/conftest.py` and applied by
+`pytest_collection_modifyitems` when `ffmpeg` or `rsvg-convert` is absent; by comparing the
+two `doctor` paths to each other rather than to zero; and by asserting
+`manifest["ok"] == manifest["doctor"]["ok"]`. Reproduced first with a lean `PATH` holding
+every binary except `ffmpeg`, `ffprobe` and `rsvg-convert` — 4 failed, 318 passed — and then
+fixed until the same command gave 321 passed, 16 skipped.
+
+The lesson is the M5 lesson again, one level up: a green local suite can still be testing
+the wrong machine. `AGENTS.md` §4.1 now states the two environments.

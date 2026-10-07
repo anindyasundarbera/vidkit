@@ -39,8 +39,13 @@ def test_json_plan_prints_a_parseable_manifest(capsys):
 def test_json_doctor_needs_no_story(capsys):
     code, out, _ = call(capsys, "--json", "doctor")
 
-    assert code == 0
+    assert out["action"] == "doctor"
     assert out["doctor"]["tools"]
+    assert out["spec"] is None
+    # A machine that is missing a tool is a *verdict*, not a crash. The exit code
+    # has to agree with the report either way, so this test is honest on a lean
+    # machine and on a fully equipped one.
+    assert (code == 0) == out["doctor"]["ok"]
 
 
 def test_json_init_then_plan_round_trip(capsys, tmp_path):
@@ -148,6 +153,11 @@ def test_json_run_init_really_inits(capsys):
 
 
 def test_json_matches_plain_run_for_every_read_only_action(capsys):
+    """`--json` is a shape, not a second behaviour: the two paths must agree.
+
+    The verdict is whatever the machine can honestly say, so the exit codes are
+    compared to each other rather than to zero.
+    """
     import tempfile
 
     target = Path(tempfile.mkdtemp()) / "story"
@@ -156,8 +166,9 @@ def test_json_matches_plain_run_for_every_read_only_action(capsys):
         json_code, json_out, _ = call(capsys, "--json", "run", action, "--story", str(target))
         plain_code = cli.main(["run", action, "--story", str(target)])
         capsys.readouterr()
-        assert json_code == plain_code == 0
-        assert json_out["action"] == action and json_out["ok"] is True
+        assert json_code == plain_code
+        assert json_out["action"] == action
+        assert json_out["ok"] == (plain_code == 0)
 
 
 def test_plain_plan_still_prints_prose(capsys):

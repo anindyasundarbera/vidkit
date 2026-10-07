@@ -48,6 +48,7 @@ def test_a_refusal_still_reports_the_window_it_was_about():
     assert manifest["timeframe"]["days"] == 7
 
 
+@pytest.mark.needs_render
 def test_verify_reports_the_spans_it_looked_at(tmp_path):
     """A verify with an empty timeline would be describing a film it never read."""
     story = tmp_path / "story"
@@ -138,14 +139,18 @@ def test_verifying_nothing_is_its_own_answer(tmp_path):
 # doctor and plan render nothing
 # --------------------------------------------------------------------------- #
 def test_doctor_runs_without_a_story():
-    """The machine can be checked before a story exists — that is the point."""
+    """The machine can be checked before a story exists — that is the point.
+
+    The *verdict* is deliberately not asserted: on a machine without ffmpeg this
+    job is allowed to say so, and it must still answer rather than raise.
+    """
     manifest = run_job("doctor")
 
-    assert manifest["ok"] is True
     assert manifest["doctor"]["tools"]
     assert manifest["doctor"]["panel_kinds"]
     assert manifest["artifacts"] == {}
     assert manifest["spec"] is None
+    assert manifest["ok"] == manifest["doctor"]["ok"]
 
 
 def test_doctor_reports_the_spec_when_given_one():
