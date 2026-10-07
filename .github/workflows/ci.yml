@@ -1059,11 +1059,34 @@ jobs:
         run: |
           set -eu
           python - <<'PY'
-          import anyio, json
+          import anyio, contextlib, json
           from pathlib import Path
 
-          from mcp.shared.memory import create_connected_server_and_client_session
+          from mcp.client.session import ClientSession
+          from mcp.shared.memory import create_client_server_memory_streams
           from vidkit import mcp_server as m
+
+          @contextlib.asynccontextmanager
+          async def mcp_session(server):
+              """Drive the real low-level server over the stable in-memory transport."""
+              async with create_client_server_memory_streams() as (client_side, server_side):
+                  client_read, client_write = client_side
+                  server_read, server_write = server_side
+                  raw = next((getattr(server, name, None)
+                              for name in ("_mcp_server", "_lowlevel_server")
+                              if getattr(server, name, None) is not None), None)
+                  assert raw is not None, f"no low-level MCP server in {type(server).__name__}"
+                  async with anyio.create_task_group() as tg:
+                      tg.start_soon(raw.run, server_read, server_write,
+                                    raw.create_initialization_options())
+                      try:
+                          client = ClientSession(read_stream=client_read,
+                                                 write_stream=client_write)
+                          async with client:
+                              await client.initialize()
+                              yield client
+                      finally:
+                          tg.cancel_scope.cancel()
 
           out = Path("studio-out").resolve()
           story = Path("studio-story")
@@ -1089,11 +1112,12 @@ jobs:
           async def go():
               async def call(client, name, args):
                   answered = await client.call_tool(name, {"out": str(out), **args})
-                  assert not answered.isError, (name, answered.content)
+                  is_error = getattr(answered, "isError",
+                                     getattr(answered, "is_error", False))
+                  assert not is_error, (name, answered.content)
                   return json.loads(answered.content[0].text)
 
-              async with create_connected_server_and_client_session(
-                      m.build_server()) as client:
+              async with mcp_session(m.build_server()) as client:
                   opened = await call(client, "session_open",
                                       {"spec": str(story / "video.yaml")})
                   sid = opened["id"]
