@@ -9,6 +9,7 @@ executes code; the optional ``provider`` module supplies data and custom panels.
 from __future__ import annotations
 
 import json
+import math
 import shlex
 from dataclasses import dataclass, field, replace
 from datetime import date
@@ -57,6 +58,43 @@ class Voice:
 
 
 @dataclass
+class Score:
+    """A music bed under the narration (R-G3).
+
+    The field names say what the mix *does*, not how it is implemented, because the
+    whole point of the mix is that it is **derived from** narration's measured spans
+    rather than competing with them for the role of master clock (I5). ``duck_db`` is
+    the level the bed is taken down *to* while someone is speaking; between spans it
+    returns to ``volume``.
+    """
+    src: str
+    volume: float = 0.35                  # the bed's own gain, when nobody is speaking
+    duck_db: float = -14.0                # how far under the voice it sits while speaking
+    ramp: float = 0.25                    # seconds to fade in and out of a duck
+    fade_in: float = 1.0
+    fade_out: float = 1.5
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"src": self.src, "volume_db": round(self.volume, 2),
+                "duck_db": round(self.duck_db, 2), "ramp": self.ramp,
+                "fade_in": self.fade_in, "fade_out": self.fade_out}
+
+
+def _score_db(value: Any, where: str, field: str) -> float:
+    """Read a gain as dB. A value above 0 is read as a *linear* multiplier.
+
+    Both spellings are accepted because both are idiomatic — ``0.35`` "means" the same
+    thing as ``-9.1`` to two different authors, and silently interpreting one as the
+    other would be a 9 dB error. A number ≤ 0 is dB; a positive number is linear, and
+    is converted here so that everything downstream works in dB.
+    """
+    n = float(value)
+    if n <= 0:
+        return n
+    return 20.0 * math.log10(n)
+
+
+@dataclass
 class Narration:
     source: str | None = None             # markdown file with "## Scene N …" + **bold** spoken lines
     inline: dict[int, str] = field(default_factory=dict)  # scene n -> text
@@ -64,13 +102,71 @@ class Narration:
 
 @dataclass
 class Shot:
-    """One visual beat. Exactly one of still/capture/chart/exec is set."""
-    kind: str                             # "still" | "capture" | "chart" | "exec"
-    ref: str                              # path, capture name, chart name, or exec step label
-    effect: str = "hold"                  # "hold" | "zoom"
+    """One visual beat. Exactly one of still/capture/chart/exec/card/solid is set.
+
+    The last two are *declared artwork* rather than pictures of anything: a card
+    is typography the engine draws from words the spec contains, and a solid is a
+    flat field. Both exist so that a film can open on a title and rest between
+    beats without an author having to ship a PNG for a rectangle. Neither invents
+    a fact — the card states what the spec said, and ``verify`` classifies both as
+    declared assets, exactly as it classifies a live capture as live.
+    """
+    kind: str                             # "still" | "capture" | "chart" | "exec" | "card" | "solid"
+    ref: str                              # path, capture name, chart name, exec label, card text, or colour
+    effect: str = "hold"                  # "hold" | "zoom" | "pan"
     fit: str = "cover"                    # "cover" (crop) | "contain" (letterbox)
     weight: float = 1.0                   # share of the scene's duration
     at: float | None = None               # exec shots: which second of the recording to freeze
+    motion: "Motion | None" = None        # explicit camera move; overrides `effect`
+    seconds: float | None = None          # explicit length; overrides duration-by-weight
+    kicker: str = ""                      # card shots: the eyebrow line above the title
+    backdrop: str | None = None           # card shots: a declared picture behind the words
+
+
+# how a still's camera moves. ``hold`` is a static frame; ``zoom`` pushes in;
+# ``pan`` slides across a picture that has been scaled up to leave room.
+MOTIONS = frozenset({"hold", "zoom", "pan"})
+
+# which way a pan travels, and which way a zoom's subject drifts. Named for the
+# direction the *viewer's* eye moves, so `left` means the camera travels left and
+# the subject appears to move right — the plain reading of "pan left".
+DIRECTIONS = frozenset({
+    "left", "right", "up", "down",
+    "in", "out",
+})
+
+
+@dataclass
+class Motion:
+    """A camera move over one picture (R-G1).
+
+    Declared rather than inferred because a move is a *claim about the picture*:
+    a slow push-in says "this is the thing to look at", and a film that makes that
+    claim over a fabricated frame has made the fabrication more convincing rather
+    than less. Naming the move in the spec is what lets ``verify`` count it and a
+    reviewer see it.
+    """
+    kind: str = "hold"                    # see MOTIONS
+    direction: str = "in"                # see DIRECTIONS
+    amount: float = 0.10                 # zoom: how far in (0.10 = 10%); pan: how far across
+    span: float = 1.0                    # fraction of the clip the move occupies
+    #: which part of the clip the move occupies: "start" (default) begins moving
+    #: immediately, "end" settles into a held frame, "full" moves for the lot.
+    at: str = "start"
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"kind": self.kind, "direction": self.direction,
+                "amount": round(self.amount, 4), "span": round(self.span, 4),
+                "at": self.at, "label": self.label()}
+
+    def label(self) -> str:
+        """The move as one phrase, for a report that has to stay readable."""
+        if self.kind == "hold":
+            return "holds"
+        return f"{self.kind} {self.direction} {self.amount * 100:.0f}% ({self.at})"
+
+
+MOTION_AT = frozenset({"start", "end", "full"})
 
 
 @dataclass
@@ -107,6 +203,9 @@ class Scene:
     shots: list[Shot]
     title: str = ""
     overlay: Overlay | None = None
+    #: explicit length for the whole scene. When set, narration is *not* the clock
+    #: for this scene and the spec says so out loud — see ``Spec.timing_source``.
+    seconds: float | None = None
 
 
 @dataclass
@@ -132,6 +231,26 @@ class Action:
 
 # how a still is fitted to the frame (R-D5)
 FITS = {"cover", "contain"}
+
+# a colour the engine will hand to ffmpeg or an SVG fill. Names are limited to the
+# ones both `ffmpeg -f lavfi color=` and SVG agree on, so one spelling works in
+# both places rather than being quietly reinterpreted by whichever drew it.
+_COLOUR_NAMES = frozenset({
+    "black", "white", "red", "green", "blue", "yellow", "cyan", "magenta",
+    "gray", "grey", "orange", "purple", "brown", "pink", "navy", "teal",
+    "olive", "maroon", "silver", "lime", "aqua", "fuchsia",
+})
+
+
+def _is_colour(value: str) -> bool:
+    """True for ``#RGB``/``#RRGGBB`` or a conservative set of CSS colour names."""
+    s = value.strip().lower()
+    if not s:
+        return False
+    if s.startswith("#"):
+        body = s[1:]
+        return len(body) in (3, 6) and all(c in "0123456789abcdef" for c in body)
+    return s in _COLOUR_NAMES
 
 ACTION_KINDS = frozenset({
     "select", "click", "fill", "press", "wait", "wait_for", "scroll", "eval",
@@ -338,6 +457,7 @@ class Spec:
     exec_policy: ExecPolicy = field(default_factory=ExecPolicy)
     environments: list[Environment] = field(default_factory=list)
     guard: Guard = field(default_factory=Guard)
+    score: Score | None = None
     story: Story | None = None
     timeframe: Timeframe | None = None
     root: Path = field(default_factory=Path.cwd)
@@ -369,6 +489,28 @@ class Spec:
 
     def scene(self, n: int) -> Scene | None:
         return next((s for s in self.scenes if s.n == n), None)
+
+    @property
+    def timing_source(self) -> str:
+        """What sets this film's pace: ``"narration"`` or ``"spec"``.
+
+        Before M9 there was one answer, and it was not worth a name. There are now
+        two, and they are *not* interchangeable: ``narration`` means measured audio
+        is the master clock (I5) and a scene's length is whatever the voice took;
+        ``spec`` means an author wrote a length down and the voice was cut to fit
+        it. A reader of ``verify.json`` is entitled to know which one they are
+        looking at, because only the first one proves the runtime against the real
+        recording.
+        """
+        if any(sc.seconds is not None for sc in self.scenes):
+            return "spec"
+        if any(sh.seconds is not None for sc in self.scenes for sh in sc.shots):
+            return "spec"
+        return "narration"
+
+    def timed_scenes(self) -> list[int]:
+        """Scene numbers whose length was declared rather than measured."""
+        return [sc.n for sc in self.scenes if sc.seconds is not None]
 
     @property
     def size(self) -> tuple[int, int]:
@@ -436,21 +578,97 @@ def load_story(root: Path | str, *, default_as_of: Any = None) -> Story:
                  description=str(raw.get("description", "")))
 
 
+def _motion(raw: Any, where: str, effect: str) -> "Motion | None":
+    """Parse a shot's camera move. ``None`` means "nothing was asked for".
+
+    ``effect:`` is the M4 spelling and stays valid — a ``zoom`` effect *is* a push
+    in, and every spec written before this field existed must keep rendering the
+    same frames. When both are given, ``motion:`` wins and the effect's own move is
+    suppressed, because two camera moves over one picture is one move too many.
+    """
+    if raw is None:
+        return None
+    if not isinstance(raw, dict):
+        # `motion: pan` and `motion: {kind: pan}` are the same request
+        raw = {"kind": str(raw)}
+    kind = str(raw.get("kind", "hold"))
+    if kind not in MOTIONS:
+        raise SpecError(
+            f"{where}: motion must be one of {', '.join(sorted(MOTIONS))}, not {kind!r}")
+    direction = str(raw.get("direction", "in"))
+    if direction not in DIRECTIONS:
+        raise SpecError(
+            f"{where}: motion direction must be one of "
+            f"{', '.join(sorted(DIRECTIONS))}, not {direction!r}")
+    if kind == "pan" and direction in ("in", "out"):
+        raise SpecError(
+            f"{where}: a pan moves across the frame — direction must be "
+            "left, right, up or down (got 'in'/'out')")
+    at = str(raw.get("at", "start"))
+    if at not in MOTION_AT:
+        raise SpecError(
+            f"{where}: motion.at must be one of {', '.join(sorted(MOTION_AT))}, not {at!r}")
+    motion = Motion(kind=kind, direction=direction,
+                    amount=float(raw.get("amount", 0.10)),
+                    span=float(raw.get("span", 1.0)), at=at)
+    if not 0.0 < motion.span <= 1.0:
+        raise SpecError(f"{where}: motion.span is the fraction of the clip to move in, "
+                        f"so it must be within (0, 1]; got {motion.span}")
+    if motion.kind == "pan" and motion.amount <= 0:
+        raise SpecError(
+            f"{where}: a pan needs a positive amount — it is how far across the "
+            f"picture the camera travels; got {motion.amount}")
+    if effect not in ("hold", "", None) and motion.kind != "hold":
+        raise SpecError(
+            f"{where}: `effect: {effect}` and `motion:` both describe a camera move; "
+            "keep one. Drop `effect` and write the move as `motion:`")
+    return motion
+
+
+#: Every shot kind, named once. ``verify`` keeps a parallel table of which of the
+#: three honest sources each one draws from, and a test pins the two together — a
+#: new kind may not be added without deciding where its picture comes from.
+SHOT_KINDS = ("still", "capture", "chart", "exec", "card", "solid")
+
+
 def _shots(raw: dict[str, Any], where: str) -> Shot:
-    present = [k for k in ("still", "capture", "chart", "exec") if k in raw]
+    present = [k for k in SHOT_KINDS if k in raw]
     if len(present) != 1:
-        raise SpecError(f"{where}: a shot needs exactly one of still/capture/chart/exec")
+        raise SpecError(
+            f"{where}: a shot needs exactly one of {'/'.join(SHOT_KINDS)}")
     kind = present[0]
     fit = str(raw.get("fit", "cover"))
     if fit not in FITS:
         raise SpecError(
             f"{where}: fit must be one of {', '.join(sorted(FITS))}, not {fit!r}"
         )
+    effect = str(raw.get("effect", "hold"))
+    seconds = None if raw.get("seconds") is None else float(raw["seconds"])
+    if seconds is not None and seconds <= 0:
+        raise SpecError(f"{where}: `seconds: {seconds}` — a shot's length must be "
+                        "positive; remove the field to divide the scene by weight")
+    kicker = str(raw.get("kicker", "")).strip()
+    backdrop = None if raw.get("backdrop") is None else str(raw["backdrop"]).strip()
+    if kind not in ("card", "solid"):
+        # A field the engine would ignore is worse than one it refuses: `backdrop:`
+        # on a `still:` reads as "put this picture behind the words" and silently
+        # does nothing, so the author ships a card they did not get. Caught here
+        # rather than at render, where it would already have cost a build.
+        for field, value in (("kicker", kicker), ("backdrop", backdrop)):
+            if value:
+                raise SpecError(
+                    f"{where}: `{field}:` describes a *card*, but this is a "
+                    f"`{kind}` shot — write the words as `card: ...` (a card may "
+                    "sit over a declared picture via `backdrop:`)")
     return Shot(kind=kind, ref=str(raw[kind]),
-                effect=str(raw.get("effect", "hold")),
+                effect=effect,
                 fit=fit,
                 weight=float(raw.get("weight", 1.0)),
-                at=None if raw.get("at") is None else float(raw["at"]))
+                at=None if raw.get("at") is None else float(raw["at"]),
+                motion=_motion(raw.get("motion"), where, effect),
+                seconds=seconds,
+                kicker=kicker,
+                backdrop=backdrop)
 
 
 def _exec_step(raw: dict[str, Any], where: str) -> Exec:
@@ -811,10 +1029,16 @@ def load_spec(path: Path | str, *,
         if not shots:
             raise SpecError(f"scene {s.get('n')} has no shots")
         ov = s.get("overlay")
+        scene_seconds = None if s.get("seconds") is None else float(s["seconds"])
+        if scene_seconds is not None and scene_seconds <= 0:
+            raise SpecError(
+                f"scene {s.get('n')}: `seconds: {scene_seconds}` — a scene's length "
+                "must be positive; remove the field to derive it from narration")
         scenes.append(Scene(n=int(s["n"]), shots=shots,
                             title=str(s.get("title", "")),
                             overlay=_overlay(ov, f"scene {s.get('n')}")
-                            if ov is not None else None))
+                            if ov is not None else None,
+                            seconds=scene_seconds))
     if not scenes:
         raise SpecError("spec defines no scenes")
     scenes.sort(key=lambda x: x.n)
@@ -831,12 +1055,14 @@ def load_spec(path: Path | str, *,
 
     provider = _provider_spec(raw.get("provider"))
 
+    score = _score_spec(raw.get("score"))
+
     root = path.parent.resolve()
     spec = Spec(project=project, scenes=scenes, voice=voice, narration=narration,
                 provider=provider, captures=captures, charts=charts,
                 exec=exec_steps, exec_policy=exec_policy,
                 environments=environments,
-                guard=guard, root=root)
+                guard=guard, score=score, root=root)
 
     spec.story = load_story(root, default_as_of=as_of)
     spec.timeframe = _resolve_timeframe(raw, spec, timeframe, as_of)
@@ -846,6 +1072,47 @@ def load_spec(path: Path | str, *,
 
     _validate(spec)
     return spec
+
+
+def _score_spec(raw: Any) -> Score | None:
+    """Read ``score:`` — a music bed under the narration.
+
+    Returns ``None`` for an absent *or* empty block: a `score:` key with nothing in it
+    describes no score, and a silent film stays silent. A declared `src` is not checked
+    for existence here — it is resolved against the spec root, and refusing at load time
+    would make an offline edit of the spec impossible without the audio present.
+    """
+    if raw is None:
+        return None
+    if isinstance(raw, str):
+        raw = {"src": raw}
+    if not isinstance(raw, dict):
+        raise SpecError("score: must be a file path or a mapping")
+    if not raw:
+        return None
+    unknown = sorted(set(raw) - {"src", "volume", "duck_db", "ramp",
+                                 "fade_in", "fade_out"})
+    if unknown:
+        raise SpecError("score: unknown key(s): " + ", ".join(unknown)
+                        + " — expected src, volume, duck_db, ramp, fade_in, fade_out")
+    src = str(raw.get("src") or "").strip()
+    if not src:
+        raise SpecError("score: needs a `src:` — the audio file to play under the voice")
+    volume = _score_db(raw.get("volume", 0.35), "score", "volume")
+    duck_db = float(raw.get("duck_db", -14.0))
+    if volume > 0.0:
+        raise SpecError("score: `volume:` is a gain of at most 1 "
+                        f"(got {raw.get('volume')!r}) — a bed that is louder than the "
+                        "voice it sits under is not a bed")
+    if duck_db > 0.0:
+        raise SpecError("score: `duck_db:` must be at or below 0 dB "
+                        f"(got {duck_db:+.1f}) — ducking raises nobody")
+    ramp = float(raw.get("ramp", 0.25))
+    if ramp < 0.0:
+        raise SpecError("score: `ramp:` cannot be negative")
+    return Score(src=src, volume=volume, duck_db=duck_db, ramp=ramp,
+                 fade_in=float(raw.get("fade_in", 1.0)),
+                 fade_out=float(raw.get("fade_out", 1.5)))
 
 
 def _provider_spec(raw: Any) -> ProviderSpec | None:
@@ -916,6 +1183,31 @@ def _validate(spec: Spec) -> None:
                     # tolerate provider-supplied stills only if a provider exists
                     if not known_provider:
                         raise SpecError(f"scene {sc.n}: still not found: {sh.ref}")
+            elif sh.kind in ("card", "solid"):
+                # Neither is a file, so neither may be excused by a provider. If a
+                # card slipped into the `still` branch above, a spec with a provider
+                # could name artwork that does not exist and render a blank frame —
+                # an absence wearing the costume of a declared asset.
+                if sh.kind == "card" and not sh.ref.strip():
+                    raise SpecError(
+                        f"scene {sc.n}: a `card` shot needs its words — `card: ...` "
+                        "is drawn by the engine, so the text is the whole asset")
+                if sh.kind == "card" and sh.backdrop:
+                    # A backdrop is a *declared picture*, so it must exist — and,
+                    # like the card itself, a provider may not supply it. If it could,
+                    # a spec could name artwork that is not there and render a title
+                    # over nothing: an absence dressed as a declared asset.
+                    bd = spec.root / sh.backdrop
+                    if not bd.exists() and not (spec.root / ".." / sh.backdrop).exists():
+                        raise SpecError(
+                            f"scene {sc.n}: card backdrop not found: {sh.backdrop} "
+                            "(a card's `backdrop:` is a declared picture beside the "
+                            "spec, not a provider asset)")
+                if sh.kind == "solid" and not _is_colour(sh.ref):
+                    raise SpecError(
+                        f"scene {sc.n}: `solid: {sh.ref}` is not a colour — use "
+                        "#RRGGBB, #RGB, or a name like 'black' (alpha via "
+                        "`fit`/overlays, not in the colour)")
             elif sh.kind == "capture" and sh.ref not in cap_names and not known_provider:
                 raise SpecError(f"scene {sc.n}: capture {sh.ref!r} is not defined")
             elif sh.kind == "chart" and sh.ref not in chart_names and not known_provider:

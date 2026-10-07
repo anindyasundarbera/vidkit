@@ -30,7 +30,9 @@ from pathlib import Path
 from typing import Iterable
 
 from . import capture as _capture
+from . import card
 from . import exec as _exec
+from . import ffmpeg as _ffmpeg
 from . import overlay as _overlay
 from . import panels as _panels
 from . import provider as _provider
@@ -78,6 +80,14 @@ class Assets:
     scene_audio: list[_tts.SceneAudio] = field(default_factory=list)
     video_track: Path | None = None
     audio_track: Path | None = None
+    #: the finished mix: narration plus the declared score, ducked against the measured
+    #: narration spans. ``None`` when the spec declares no score, in which case
+    #: ``audio_track`` is what gets muxed and the render is byte-identical to M8.
+    mix: Path | None = None
+    #: what the mix actually did — how long the bed was held down for, and whether the
+    #: ducking branch ran at all. On a silent cut it did not, and saying otherwise is
+    #: the kind of claim this toolkit exists to refuse.
+    mix_result: _ffmpeg.MixResult | None = None
     srt: Path | None = None
     output: Path | None = None
     report: Report | None = None
@@ -255,6 +265,17 @@ def run(spec_path: Path | str, *, only: Iterable[str] | None = None,
                 assets.stills.setdefault(src.stem, png)
             else:
                 assets.stills.setdefault(ref, src)
+        # Declared artwork the engine draws itself. A card's whole asset is the
+        # words in the spec, so there is nothing to look up and nothing that can go
+        # stale; a card *may* name a backdrop picture, which was checked to exist at
+        # load time. Rendered before `clips`, like a panel, so a failure costs a build
+        # rather than a half-finished film.
+        for sc in spec.scenes:
+            for sh in sc.shots:
+                if sh.kind == "card":
+                    _render_card(ctx, assets, spec, sc, sh)
+                elif sh.kind == "solid":
+                    _render_solid(ctx, assets, spec, sc, sh)
         ctx.info(f"stills: {len(assets.stills)}")
 
     # -- capture ----------------------------------------------------------- #
@@ -696,6 +717,92 @@ def _spans(audio: list[_tts.SceneAudio]) -> list[tuple[int, float, float]]:
     return spans
 
 
+def _plan_scripts(spec: Spec) -> list:
+    """Per-scene spoken text for planning, read the way the narration stage reads it.
+
+    ``_scripts_for`` needs a :class:`Context` because it resolves ``narration.source``
+    against the spec *root*; a planner has only a spec, so the same lookup is done here.
+    Falling back to ``narration.inline`` alone made every scene that keeps its words in
+    a markdown file look like it had none: ``plan_audio`` divided 0 words by 2.5 and
+    every shot planned at ``0.0s`` while the film actually built 98.8s long.
+    """
+    from .narration import SceneScript
+    by_n: dict[int, str] = {}
+    if spec.narration.source:
+        src = None
+        for base in (spec.root, spec.root.parent, Path.cwd()):
+            p = (base / spec.narration.source)
+            if p.exists():
+                src = p
+                break
+        if src is not None:
+            by_n = {s.n: s.spoken
+                    for s in parse_scene_script(src.read_text(encoding="utf-8"))}
+    return [SceneScript(n=sc.n,
+                        spoken=spec.narration.inline.get(sc.n) or by_n.get(sc.n, ""))
+            for sc in spec.scenes]
+
+
+def plan_audio(spec: Spec, texts: dict[int, str] | None = None) -> list[_tts.SceneAudio]:
+    """Per-scene narration lengths to plan against, without needing a Context.
+
+    ``tts._FALLBACK_WPS`` (2.5) and not ``reports.WORDS_PER_SECOND`` (2.78): this has to
+    agree with what the *audio stage* produces, and with no voice engine present that
+    stage estimates every scene at ``words / _FALLBACK_WPS``. The two constants have
+    disagreed since M0 and the disagreement is documented; using the estimator's own
+    rate here is what keeps the plan from re-introducing it somewhere that now decides
+    how long a shot is.
+
+    ``texts`` is an override for a caller that has already parsed the narration file.
+    """
+    spoken = texts if texts is not None else {s.n: s.spoken for s in _plan_scripts(spec)}
+    out: list[_tts.SceneAudio] = []
+    for sc in spec.scenes:
+        text = spoken.get(sc.n) or spec.narration.inline.get(sc.n) or ""
+        out.append(_tts.SceneAudio(sc.n, None, round(word_count(text) / 2.5, 3),
+                                   word_count(text)))
+    return out
+
+
+def plan_shots(spec: Spec, audio: list[_tts.SceneAudio]) -> list[tuple[Scene, int, Shot, float]]:
+    """How long each shot will be, given the narration spans it has to cover.
+
+    This is the *one* rule that decides a shot's length, and it is here rather than in
+    ``_clip_plan`` because two callers need it and they must not disagree: the
+    assembler, which renders to it, and ``reports.plan_report``, which tells the author
+    what will be rendered. When the two were separate the plan said a 4s shot would be
+    6.1s — the estimate from the narration wording — and the film came back 16.0s.
+
+    A declared ``seconds:`` on a **scene** replaces its measured narration span for the
+    purposes of dividing the work. A declared ``seconds:`` on a **shot** is taken out of
+    the scene total *before* the remainder is split by weight, because an authored
+    length is an instruction rather than another vote to average against its
+    neighbours. With no ``seconds:`` anywhere this reproduces the old arithmetic
+    exactly: every shot gets ``span * weight / total_weight``.
+    """
+    spans = _spans(audio)
+    by_n = {n: (a, b) for n, a, b in spans}
+    plan: list[tuple[Scene, int, Shot, float]] = []
+    for sc in spec.scenes:
+        if sc.n not in by_n and sc.seconds is None:
+            continue
+        start, end = by_n.get(sc.n, (0.0, 0.0))
+        total = sc.seconds if sc.seconds is not None else (end - start)
+        declared = sum(sh.seconds for sh in sc.shots if sh.seconds is not None)
+        if declared > total:
+            raise SpecError(
+                f"scene {sc.n}: its shots declare {declared:.2f}s in total but the "
+                f"scene is {total:.2f}s long — a shot would be truncated, and a "
+                f"truncated take is a shot that does not exist")
+        wsum = sum(s.weight for s in sc.shots if s.seconds is None) or 1
+        for idx, shot in enumerate(sc.shots):
+            seconds = shot.seconds if shot.seconds is not None \
+                else (total - declared) * (shot.weight / wsum)
+            if seconds > 0:
+                plan.append((sc, idx, shot, seconds))
+    return plan
+
+
 def _resolve_exec_frame(ctx: Context, assets: Assets, shot) -> Path:
     """The frame an ``exec`` shot shows: the one nearest ``at``, else the last.
 
@@ -717,8 +824,64 @@ def _resolve_exec_frame(ctx: Context, assets: Assets, shot) -> Path:
     return min(frames, key=lambda item: abs(item[0] - shot.at))[1]
 
 
-def _resolve_shot_still(ctx: Context, assets: Assets, shot) -> Path:
-    if shot.kind == "capture":
+def _artwork_name(sc, shot) -> str:
+    """The still name for a drawn shot.
+
+    Scene-and-index rather than the shot's words: a card's text is a *sentence*,
+    and a sentence is not a filename. Keying on position also means two scenes may
+    carry the same title without one overwriting the other's PNG.
+    """
+    idx = sc.shots.index(shot) if shot in sc.shots else 0
+    return f"{shot.kind}-{sc.n:02d}-{idx:02d}"
+
+
+def _card_backdrop(ctx: Context, spec: Spec, sc, shot) -> Path | None:
+    """Absolute path to a card's backdrop, or ``None``.
+
+    Absolutised on purpose: the card SVG is written into ``build/stills``, and rsvg
+    resolves a relative ``xlink:href`` against the *SVG's* directory — so a relative
+    path would resolve to a file that is not there and the card would render over
+    an empty frame without erroring.
+    """
+    if not shot.backdrop:
+        return None
+    for base in (ctx.root, ctx.root.parent, Path.cwd()):
+        p = (base / shot.backdrop)
+        if p.exists():
+            return p.resolve()
+    raise SpecError(f"scene {sc.n}: card backdrop not found: {shot.backdrop}")
+
+
+def _render_card(ctx: Context, assets: Assets, spec: Spec, sc, shot) -> None:
+    name = _artwork_name(sc, shot)
+    svg = ctx.stills / f"{name}.svg"
+    # the absolute backdrop is interpolated straight into the SVG; rsvg resolves an
+    # absolute href, so a card may sit over a picture anywhere on disk
+    svg.write_text(card.card_svg(shot.ref, size=spec.size, kicker=shot.kicker,
+                                backdrop=_card_backdrop(ctx, spec, sc, shot)),
+                   encoding="utf-8")
+    png = ctx.stills / f"{name}.png"
+    ctx.rsvg.render(svg, png, spec.size)
+    assets.stills.setdefault(name, png)
+
+
+def _render_solid(ctx: Context, assets: Assets, spec: Spec, sc, shot) -> None:
+    name = _artwork_name(sc, shot)
+    svg = ctx.stills / f"{name}.svg"
+    svg.write_text(card.solid_svg(shot.ref, spec.size), encoding="utf-8")
+    png = ctx.stills / f"{name}.png"
+    ctx.rsvg.render(svg, png, spec.size)
+    assets.stills.setdefault(name, png)
+
+
+def _resolve_shot_still(ctx: Context, assets: Assets, sc, shot) -> Path:
+    if shot.kind in ("card", "solid"):
+        # the engine drew these a stage earlier, under a positional name — a card's
+        # text is a sentence, and a sentence is not a filename
+        p = assets.stills.get(_artwork_name(sc, shot))
+        if p is not None and Path(p).exists():
+            return Path(p)
+    elif shot.kind == "capture":
         p = assets.capture_stills.get(shot.ref) or (
             ctx.captures / f"{shot.ref}.png")
     elif shot.kind == "exec":
@@ -775,20 +938,13 @@ def _clip_plan(ctx: Context, assets: Assets):
     durations. That matters because narration is the master clock — a video
     track that quietly lost half a second per dissolve would drift out of sync
     with the voice, and drift is a lie about timing.
+
+    A declared ``seconds:`` wins over the arithmetic. The rule itself lives in
+    :func:`plan_shots`, which takes the spec alone, because ``reports.plan_report``
+    has to show the author the same numbers this renders to and two copies of a
+    timing rule is two chances to disagree.
     """
-    spec = ctx.spec
-    by_n = {n: (a, b) for n, a, b in _spans(assets.scene_audio)}
-    plan = []
-    for sc in spec.scenes:
-        if sc.n not in by_n:
-            continue
-        start, end = by_n[sc.n]
-        wsum = sum(s.weight for s in sc.shots) or 1
-        for idx, shot in enumerate(sc.shots):
-            seconds = (end - start) * (shot.weight / wsum)
-            if seconds > 0:
-                plan.append((sc, idx, shot, seconds))
-    return plan
+    return plan_shots(ctx.spec, assets.scene_audio)
 
 
 def _exec_span(ctx: Context, assets: Assets, shot,
@@ -865,7 +1021,7 @@ def _build_clips(ctx: Context, assets: Assets, scripts) -> None:
         # which is what a dissolve means.
         pad = (spec.project.transition_seconds
                if dissolving and i < len(plan) - 1 else 0.0)
-        png = _resolve_shot_still(ctx, assets, shot)
+        png = _resolve_shot_still(ctx, assets, sc, shot)
         frames: tuple[list, list, float] | None = None
         if shot.kind == "exec":
             span = _exec_span(ctx, assets, shot, seconds + pad)
@@ -896,9 +1052,14 @@ def _build_clips(ctx: Context, assets: Assets, scripts) -> None:
             ctx.ffmpeg.frames_to_clip(frames[0], target, frames[1], size=spec.size,
                                       fps=spec.project.fps)
         else:
+            # `motion:` and `effect:` are the same idea at two ages: both are a
+            # camera move over one picture. `motion:` is the fuller spelling and
+            # supersedes `effect:` when both are present, so a spec can migrate
+            # one shot at a time without a flag day. `still_to_clip` does the
+            # precedence, so an undeclared motion leaves `effect:` in charge.
             ctx.ffmpeg.still_to_clip(png, target, seconds + pad, size=spec.size,
                                      fps=spec.project.fps, effect=shot.effect,
-                                     fit=shot.fit)
+                                     fit=shot.fit, motion=shot.motion)
         if graphic is not None:
             ov = sc.overlay
             ctx.ffmpeg.overlay_clip(target, graphic, clip,
@@ -929,6 +1090,51 @@ def _concat(ctx: Context, assets: Assets) -> None:
     ctx.info(f"concat: {len(clips)} clips, audio={'yes' if assets.audio_track else 'no'}")
 
 
+def _mix_score(ctx: Context, assets: Assets, total: float) -> Path | None:
+    """Lay the declared score under the narration (R-G3).
+
+    Returns ``None`` when the spec declares no score, so a spec that says nothing about
+    music produces a bit-identical file to M8 — the feature is additive by construction.
+
+    The ducking windows are the **measured** narration spans, which is why this happens
+    after the audio stage rather than being threaded through it: the mix has to obey the
+    same clock the pictures do (I5), and a mix built from declared estimates would drift
+    against the voice the moment the voice disagreed with the estimate.
+    """
+    sc = ctx.spec.score
+    if sc is None:
+        return None
+    src = Path(sc.src)
+    if not src.is_absolute():
+        src = ctx.spec.root / src
+    src = src.resolve()
+    if not src.exists():
+        # the spec promised music; a missing file is a broken promise, not a silent cut.
+        # A silent cut is *declared* (I6); this is not.
+        raise SpecError(f"score: {sc.src!r} does not exist — looked in {src.parent}")
+
+    narration = assets.audio_track or (ctx.build / "narration.wav")
+    narration = Path(narration) if Path(narration).exists() else None
+    spans = [(start, end) for _, start, end in _spans(assets.scene_audio)]
+
+    out = ctx.build / "mix.wav"
+    # The result is kept rather than discarded. The run's own account of what it mixed
+    # is the only thing `verify` has to report; a report derived from the *spec* would
+    # claim "ducked for 16s" about a mix that, on a silent cut, never ducked at all.
+    result = ctx.ffmpeg.mix(narration, src, spans, out, duration=total,
+                           volume_db=sc.volume, duck_db=sc.duck_db, ramp=sc.ramp,
+                           fade_in=sc.fade_in, fade_out=sc.fade_out)
+    if result.ducked:
+        ctx.info(f"score: {src.name} at {sc.volume:+.1f} dB, ducked {result.seconds:.1f}s "
+                 f"to {sc.duck_db:+.1f} dB -> {out.name}")
+    else:
+        ctx.info(f"score: {src.name} at {sc.volume:+.1f} dB, no voice to duck under "
+                 f"-> {out.name}")
+    assets.mix = out
+    assets.mix_result = result
+    return out
+
+
 def _render(ctx: Context, assets: Assets, scripts) -> None:
     spec = ctx.spec
     if assets.video_track is None:
@@ -938,12 +1144,23 @@ def _render(ctx: Context, assets: Assets, scripts) -> None:
     audio = assets.audio_track or (ctx.build / "narration.wav")
     audio = audio if Path(audio).exists() else None
 
-    # captions retimed to the real scene spans
+    # captions retimed to the real scene spans — and the mix built from those same
+    # spans, so the ducking cannot disagree with the subtitles about when someone spoke
+    spans = _spans(assets.scene_audio)
     scenes_text = {s.n: s.spoken for s in scripts}
-    srt_text = build_srt(scenes_text, _spans(assets.scene_audio))
+    srt_text = build_srt(scenes_text, spans)
     assets.srt = ctx.out_dir / "narration.srt"
     assets.srt.write_text(srt_text, encoding="utf-8")
     ctx.info(f"captions: {len(srt_text.splitlines())} lines -> {assets.srt.name}")
+
+    # the film's real length: the video track, not a sum of estimates. A declared
+    # `seconds:` on a shot or a scene moves this number and the score has to follow it.
+    total = ctx.ffmpeg.duration(assets.video_track)
+    if total <= 0:
+        total = sum(a.seconds for a in assets.scene_audio)
+    mixed = _mix_score(ctx, assets, total)
+    if mixed is not None:
+        audio = mixed
 
     out = ctx.out_dir / spec.project.output
     ctx.ffmpeg.mux_captioned(assets.video_track, audio, assets.srt, out,

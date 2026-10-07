@@ -72,6 +72,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `docs/capture/exec-guide.md` — what "recorded" means, the `exec:` block, the two command
   forms, backends, the network policy, the guard promises, and what execution is *not*.
 
+**Movie mode (M9) — a film, not a demo.** The engine can now make a scored, captioned film
+with **no capture, no provider and no browser**, entirely from declared pictures:
+
+- **Camera motion.** A shot may declare `motion: {kind: zoom|pan, direction: …, amount: …}`.
+  The engine builds the ffmpeg expression, and `motion:` is refused alongside a non-`hold`
+  `effect:` because the two are the same statement made twice.
+- **Pictures the engine draws (R-D9).** Two new shot kinds. `card:` renders a title from the
+  shot's own words — a kicker, a rule, a wrapped body, an optional scrim over a `backdrop:`
+  that is resolved and checked at load time — so a film needs no artwork it did not ship.
+  `solid:` is one flat field.
+- **An expressed clock.** `seconds:` is accepted on a **scene** and on a **shot**, and when
+  every length is declared `facts.timing_source` is `"spec"`: the film is cut to its own
+  number rather than to an estimate of how long someone might talk.
+- **A music bed.** A top-level `score: {src, volume, duck_db, ramp, fade_in, fade_out}` is
+  looped to the film's real length and ducked under the measured narration spans. Silence
+  and the score are mutually exclusive — a cut with no voice plays the bed alone.
+- `plan_shots(spec, audio)` is the **one** timing rule, read by both the renderer and
+  `vidkit plan`, so the plan cannot disagree with the film it predicts.
+- Four new verify checks — `every picture has an honest source`, `every camera move is
+  accounted for`, `shot timing is expressed, not measured`, `declared score is in the mix` —
+  and two new fact blocks, `artwork` and `motion`, alongside `score` and `timing_source`.
+- `examples/movie-demo/` — the exit proof: five scenes, 16.01 s, a drawn card, a drawn field,
+  declared artwork, an authored zoom, a looping score, and no browser at all. Probed by a new
+  `movie-probe` CI job.
+
 ### Changed
 
 - `exec.steps[]` gained `environment:`; `backend:` gained `docker`. A `docker` step that
@@ -94,6 +119,51 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   memoised) rather than looking for `bwrap` on `PATH`.
 
 ### Fixed
+
+**Movie mode (M9) — defects found while proving it.** Eight, three of one class. They are
+grouped here rather than folded into the M8 list below because they were all found by
+building `examples/movie-demo` and by writing tests whose job was to disagree with the
+report:
+
+- **A camera move was reported as fact without ever being looked at.** The check compared a
+  list of moving shots against a filter of that same list, so it could not fail, and M9's
+  whole claim is that a declaration is checked against the picture. It now decodes a frame
+  from the head and the tail of every moving clip, differences them, and records the result
+  as `mae` on each `facts.motion` row. It found a real defect on its first run: scene 2 of
+  `movie-demo` pans across a flat `solid:`, so the picture does not change by a pixel. That
+  is an honest request honestly reported — the check passes and says so — but it was being
+  counted among the moving shots before. The fixture keeps that shot on purpose: it is the
+  only one whose `mae` is `0.0` while its declaration is non-empty, and therefore the only
+  one that proves the report separates a declaration from a measurement.
+- **`narration_spans` published scene lengths as positions in the film.** On a silent cut
+  there is no concatenated narration track, so there are no offsets to seek to, yet verify
+  reported each scene's *estimated* duration as a span in the finished cut. Verify now
+  publishes `narration_spans` **only** when every scene has a real wav behind it, and
+  `facts.narration_estimate` otherwise — an estimate named as one rather than a measurement
+  it is not.
+- **A silent cut claimed ducking that never happened.** `facts.score.duck_seconds` was
+  recomputed from the spec, so a film with no voice reported `16.01` seconds of ducking
+  applied over a mix where the score simply played alone. `Ffmpeg.mix()` now returns a
+  `MixResult` describing what it did, and verify reports that; `ducked: false` is
+  distinguished from `ducked: null` (the score never reached the mix).
+- **A camera-move filter expression was folded to a constant by ffmpeg.** `iw-iw/zoom*(1-p)`
+  evaluates to a single value and renders a still; `(iw-iw/zoom)*(1-p)` travels. **The
+  parentheses are load-bearing, and the failure was silent** — no error, just a film that did
+  not move. Found by measuring real frames against the declared direction and amount.
+- **`_spans` could not be imported where it was used.** `assembler` imports `verify`, so a
+  module-level import is circular, and a generator expression is its own scope, so binding it
+  inside one left the loop body unbound. It is now bound in the function body.
+- **`assets_of(ctx)` bound the wrong object**, so the artwork resolver read a path that did
+  not exist and every card resolved over nothing but its backdrop.
+- **`vidkit plan` predicted lengths the renderer did not produce.** `plan_shots`/`_clip_plan`
+  and `reports.plan_report` each carried their own copy of the timing rule. There is now one
+  rule, `plan_shots(spec, audio)`, with two readers — so the plan cannot disagree with the
+  film it predicts.
+- **An SVG root without `xmlns:xlink` rendered nothing under `rsvg-convert`.** Any still that
+  referenced a declared asset by `xlink:href` — every card with a `backdrop:` — drew an empty
+  frame, silently: rsvg resolves an **absolute** href and renders nothing at all for a
+  relative one, with no error either way. `svg.document()` now declares the namespace, and
+  the backdrop test renders through the real rasteriser so a false pass is not possible.
 
 - **`docker exec -t` was asked for a TTY with no terminal on Docker's own stdin**, so every
   readiness probe failed with `cannot attach stdin to a TTY-enabled container because stdin

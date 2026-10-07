@@ -10,7 +10,7 @@
 >
 > For what is happening now see [PLAN.md](PLAN.md). For what happened see [HISTORY.md](HISTORY.md).
 
-**Last revised:** 2026-10-07 · **Status:** M0–M8 done · M9 next
+**Last revised:** 2026-10-10 · **Status:** M0–M9 done · M10 next
 
 ---
 
@@ -34,10 +34,11 @@ external capable agent can drive to produce software demo videos *and* movies, w
 Phase **M1** fixed (1) — story and timeframe both landed. Phase **M7** fixed the first half of
 (2): a spec can now run declared commands in a sandbox and film the recording. Phase **M8**
 finished the second half for *environments*: a spec can declare a service, prove it is
-serving, film real commands inside it, and tear it down unconditionally. What remains is
-**M9** — making the output narratively versatile rather than only demonstrative — and
-**M10** — turning the verbs into a session. Everything between M0 and here was making what
-already existed trustworthy.
+serving, film real commands inside it, and tear it down unconditionally. Phase **M9** fixed
+the narrative half of (2): a film can now move, be drawn from words, be scored, and be cut to
+a clock the author chose rather than one an estimator guessed. What remains is **M10** —
+turning the verbs into a session. Everything between M0 and here was making what already
+existed trustworthy.
 
 ---
 
@@ -70,7 +71,7 @@ M6  Hardening & v1.0            ← DONE, P0/P1      make it shippable
 ───────────── v1.0 line ─────────────
 M7  Executor & sandbox         ← DONE, P0           terminal, files, isolation
 M8  Docker & environment lab   ← DONE, P1         real containers on camera
-M9  Movie mode                        P1           narrative, not just demo
+M9  Movie mode                 ← DONE, P1           narrative, not just demo
 M10 Studio surface v2                 P1           session-oriented MCP tools
 ```
 
@@ -218,7 +219,9 @@ build must stop. Resolved as **D23–D25** in [DECISIONS.md](DECISIONS.md).
 **Purpose.** Stop the output from looking wrong.
 
 **Requirements.** R-D3 (date-proportional axis), R-D4 (overlays), **R-D5 (aspect-preserving
-crop — this is a bug fix)**, R-D1/D2 (panels), R-D6 (transitions).
+crop — this is a bug fix)**, R-D1/D2 (panels). R-D6 (transitions) was listed here and **was
+not built**; it was deferred to M9 and is still deferred — M9 cuts between shots and does not
+blend them. It belongs with whatever needs a compositor.
 
 **Delivers.**
 
@@ -470,7 +473,7 @@ All six CI jobs green on the **first** run, unlike M7. Evidence: [HISTORY.md](HI
 
 ---
 
-## 12. M9 — Movie mode  *(P1)*
+## 12. M9 — Movie mode  *(P1)* — **DONE**
 
 **Purpose.** Make vidkit versatile — able to tell a story, not only demonstrate a product.
 
@@ -478,24 +481,38 @@ All six CI jobs green on the **first** run, unlike M7. Evidence: [HISTORY.md](HI
 artwork instead of captures, whose audio includes score and sound, and whose timing is
 emotional rather than informational. The spec surface grows; the pipeline does not change.
 
-**Delivers.**
+**Delivered.**
 
-| Item | Detail |
-|---|---|
-| Richer still kinds | Image sequences, Ken Burns pans, transitions, titles with typography control. |
-| Audio beds | Music/ambience under narration, with **ducking** and per-scene gain — mixed, not muxed blindly. |
-| Multi-track audio | Narration, score, and effects as separate tracks the spec can address. |
-| Shot timing | Explicit durations, beats, or musical alignment, instead of duration-divided-by-weight. |
-| Narrative shape | Act/scene beats with continuity metadata for an agent to reason over. |
+| Item | Detail | Status |
+|---|---|---|
+| Camera motion | `motion: {kind: zoom\|pan, direction, amount}` on any shot; `hold` is the default and `effect:` is refused beside it. | `[x]` |
+| Richer still kinds | `card:` (a title drawn from the shot's own words, kicker, rule, scrim, resolved `backdrop:`) and `solid:` (one flat field) — **R-D9**. | `[x]` |
+| Audio beds | A top-level `score:`, looped to the film's real length and ducked under the **measured** narration spans. | `[x]` |
+| Shot timing | `seconds:` on a scene and on a shot. Every declared length makes `timing_source: "spec"`; without one, the voice stays the master clock (I5). | `[x]` |
+| One timing rule | `plan_shots(spec, audio)` is read by both the renderer and `vidkit plan`, so the plan cannot disagree with the film. | `[x]` |
+| Honest reporting | Four new checks; `artwork`, `motion`, `score`, `timing_source` fact blocks; `narration_spans` **replaced by** `narration_estimate` when there is no real narration track. | `[x]` |
 
-**Exit.** A spec with no captures and no provider at all renders a scored, captioned short
-film with real assets, and `verify` passes on it.
+**Exit — met.** `examples/movie-demo/` declares no `capture`, no provider and no browser,
+and renders a scored, captioned 16.01 s film whose `verify` report is **ALL PASS**.
 
-**Constraint (P5).** Movie mode must reuse the **same ten stages that exist after M7/M8**
-(`exec` sits between `capture` and `narration`). If it needs an eleventh, the design is wrong
-and should be rethought before it is built. M8 is the proof that this constraint is
-satisfiable: it added a whole backend and a resource lifecycle without touching the stage
-list.
+Not delivered, and deliberately deferred: **transitions** (cuts only — see below),
+**per-scene gain** on the score (one bed, one duck), **multi-track audio** beyond
+narration+score, and **act/scene beat metadata** for an agent to reason over. The last of
+these is M10's session vocabulary; the first belongs with whatever needs a compositor.
+
+**Constraint (P5).** Movie mode reuses the **same ten stages that exist after M7/M8**
+(`exec` sits between `capture` and `narration`); it added no eleventh. M9 is the second proof
+that this constraint is satisfiable, after M8, which added a whole backend and a resource
+lifecycle without touching the stage list.
+
+**The honesty finding.** M9's subject is honesty, and its most important result is a defect
+class rather than a feature: **a declaration is not a measurement**, and **an absent
+measurement is not a negative measurement**. **Eight** defects were found and fixed while
+proving the phase, and three of them are that one class — three separate checks were found
+claiming things they had not established, one of which compared a list against a filter of
+itself and could not fail. Replacing it with a real pixel measurement found a defect in the
+exit proof itself, which is kept on purpose so the report has something to distinguish.
+**D49**, **D52**. Every future check is written under that rule.
 
 ---
 
@@ -535,7 +552,8 @@ all by tool calls, with no shell and no spec editing.
 | Sandbox built before it can be aimed | Medium | M7 is gated behind M1. [DECISIONS.md](DECISIONS.md) D13. |
 | Sandbox becomes an unaudited escape hatch | Medium | P4: declared in spec, bounded by policy, attested in `verify.json`. |
 | Vendor lock-in to any external tool (incl. OpenMontage) | Medium | P3 + the AGPL boundary in [OPENMONTAGE.md](OPENMONTAGE.md). |
-| Movie mode forks the pipeline | Medium | P5: no eleventh stage. |
+| Movie mode forks the pipeline | Low | P5: no eleventh stage. **Held** — M9 added shot kinds, motion and a score without touching the stage list. |
+| A verify check restates the spec instead of measuring it | Medium | D49/D52: a check about what a picture *did* decodes the picture, and an absent measurement is not a negative measurement. M9 found three defects of this class, one of which could not fail at all. |
 | `default_spec()` silently changes which example is built | Medium | M0 task 12 — pin or assert it. |
 | Single-maintainer bus factor | Medium | Docs set + CI + these plan documents. |
 
@@ -553,7 +571,7 @@ Every requirement in the root `ROADMAP.md` §2 has a home:
 | R-A4 | M1 | R-D3 | M4 | R-G1 | M5 |
 | R-A5 | M0 → done | R-D4 | M4 | R-G2 | M5 |
 | R-B1 | done | R-D5 | **M4 (bug)** | R-G3 | M5 |
-| R-B2 | **M1** | R-D6 | M9 | R-G4 | M1/M5 |
+| R-B2 | **M1** | R-D6 | **M9** → done | R-G4 | M1/M5 |
 | R-B3 | M2 | R-D7 | done | R-G5 | M10 |
 | R-B4 | M2 | R-E1–E4 | done | R-G6 | M5 |
 | R-B5 | M2 | R-E5 | done | R-H1–H5 | M0 |

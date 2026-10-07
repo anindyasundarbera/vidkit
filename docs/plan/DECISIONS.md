@@ -886,6 +886,10 @@ a future portability bug has a documented baseline to be measured against.
 | D46 | The engine owns the rule for "which environment does this command run in" | DECIDED |
 | D47 | A container is told what it needs; the client's `HOME` must not leak into the film | DECIDED |
 | D48 | A capability report names the rung that is missing, not that the capability is absent | DECIDED |
+| D49 | A declaration is not a measurement: a check that cannot fail is not a check | DECIDED |
+| D50 | The engine draws a picture from words, so a film needs no artwork it did not ship | DECIDED |
+| D51 | A film's clock is declared; a demo's clock is measured | DECIDED |
+| D52 | An absent measurement is not a negative measurement | DECIDED |
 
 ---
 
@@ -1333,3 +1337,141 @@ carries the same structure so the CI gate can name the rung. The **same three ru
 the local `docker-probe` job's capability ladder walks in order**, which is why the job
 prints its own ladder before it gates on the engine's answer: a failure in CI says which rung
 broke.
+
+---
+
+## D49 — A declaration is not a measurement, and a check that cannot fail is not a check
+
+**2026-10-10.** Context: M9. M9's headline claim is that a *film* — a cut with no capture, no
+provider and no browser — is still honest, because every picture is either declared artwork
+the author shipped or a picture the engine drew from declared words. Verifying that claim
+turned up a check that assumed its own conclusion.
+
+**Decision.** A check about what a picture **did** measures the picture. `every camera move is
+accounted for` decodes a real frame from near the head of each moving clip and one from near
+its tail (`frame_rgb`, 64×36), differences them, and records the result as `mae` on that
+shot's `facts.motion` row. `MOVE_MAE = 0.10` is the threshold. A clip that cannot be read or
+decoded **fails** the check: a measurement that did not happen is not a measurement of zero.
+
+**The defect, exactly.** The check it replaced read:
+
+```python
+rep.add("camera moves are declared", len(moved) == len([r for r in artwork if r.get("motion")]), …)
+```
+
+where `moved` *was* that filter. It compared a value with itself. It could not fail, it could
+not detect anything, and it appeared in the report of every film claiming that the camera
+moves were verified. Its sentence — *"5 of 6 shot(s) move"* — was a restatement of the spec
+wearing the clothes of a result.
+
+**Alternatives.**
+
+- *Delete the check* — rejected. A reader of a green report cannot tell a check that passed
+  from a check that was never run, so removing it would quietly remove the claim too.
+- *Check the filterchain string* — rejected: that is the declaration again, one layer further
+  from the picture. ffmpeg folds `iw-iw/zoom*p` to a constant and renders a perfectly static
+  frame with no error, so the string proves nothing about the frames.
+- *Compare against a stored reference frame* — rejected as a different, weaker claim: it tests
+  that the clip matches an expected file, not that the camera moved.
+
+**Consequences.** The measurement cost 12 `ffmpeg` invocations (~5.3 s) on the exit proof, and
+it immediately found a real defect **in the fixture**: `movie-demo` scene 2 pans over a flat
+`solid: "navy"`, so the picture does not change by a single pixel. That shot is kept, and the
+spec now says why — it is the only shot in the film that proves the report distinguishes a
+declaration from a measurement, because it is the only one whose `mae` is `0.0` while its
+declaration is non-empty. The check passes; the report says *"4 of 5 declared move(s) change
+the picture; 1 over a field with nothing in it to reveal"*. Two more instances of the same
+class were found in M9 and are recorded as D52.
+
+---
+
+## D50 — The engine draws a picture from words, so a film needs no artwork it did not ship
+
+**2026-10-10.** Context: M9. A film with no browser and no captures has nothing to photograph.
+The alternative was to require the author to ship a PNG for every frame.
+
+**Decision.** Two new shot kinds. `card:` renders a title card **from the shot's own words** —
+`kicker`, a rule, a wrapped body, and an optional scrim over a `backdrop:` that is resolved and
+checked *at load time*, so a card cannot silently render over nothing. `solid:` is one flat
+field. Both are drawn by `card.py` in pure SVG, rasterised by the same `rsvg-convert` the rest
+of the engine uses, and both are classified in `verify.SHOT_SOURCES` as **declared asset** —
+the same class as a `still:`, because that is what they are: pictures the author asked for by
+writing them down, not pictures of anything that happened.
+
+**Alternatives.**
+
+- *Require a PNG per card* — rejected: it puts a drawing tool between the author and a title
+  screen, and a film whose words are in the spec should not need a screenshot of those words.
+- *Render text with ffmpeg's `drawtext`* — rejected: no wrapping, no layout, font-dependent
+  metrics, and no way to test the result without pixels.
+- *Call the card a new source class* — rejected: it would let a report claim a source that is
+  neither live, nor measured, nor declared, which is the vocabulary the honesty claim rests on.
+
+**Consequences.** The default theme lives in `svg.py`, the card layout in `card.py`, and the
+font metric problem is solved by being deliberately measure-free: the wrap width is derived
+from the font size rather than asked of a font, because the engine cannot ask a font its
+metrics without pulling in a text shaper, and a card that wraps one word early is a smaller
+failure than one that runs off the frame. `svg.document()` declares `xmlns:xlink`; rsvg
+resolves an **absolute** href silently and renders an **empty frame** for a relative one.
+
+---
+
+## D51 — A film's clock is declared; a demo's clock is measured
+
+**2026-10-10.** Context: M9, and the tension with I5 ("measured audio is the master clock").
+
+**Decision.** `seconds:` is accepted on a **scene** and on a **shot**. When at least one
+length is declared, `facts.timing_source` is `"spec"` and the voice is **cut to the spec**;
+when no length is declared, the measured voice remains the master clock and `timing_source` is
+`"audio"`. The check `shot timing is expressed, not measured` fails only when the report would
+be *ambiguous* about which rule was used. `plan_shots(spec, audio)` is the single timing rule,
+read by both the renderer and `vidkit plan`, so the plan cannot disagree with the film it
+predicts.
+
+**Alternatives.**
+
+- *Keep I5 absolute* — rejected as a misreading. I5 exists so lengths are never *estimates*
+  presented as measurements. A declared length is not an estimate; it is a decision, and a
+  film is a series of decisions. What I5 forbids is the third thing: an estimate wearing a
+  measurement's clothes.
+- *Infer the clock from whether audio exists* — rejected: a scored silent film has audio and no
+  voice, and an unscored captioned film has neither. The spec must say.
+- *Let the estimator and the assembler keep separate copies of the rule* — rejected, and this
+  is the bug that was found: `vidkit plan` predicted lengths the renderer did not produce. One
+  rule, two readers.
+
+**Consequences.** A demo's behaviour is unchanged (no `seconds:` anywhere → `timing_source:
+"audio"`), so I5 is not weakened for the case it was written for. Every declared length is
+named in the check's `detail`, so a reader can see the film's clock rather than infer it.
+
+---
+
+## D52 — An absent measurement is not a negative measurement
+
+**2026-10-10.** Context: M9. Three separate honesty defects in one milestone, all the same
+shape: a report saying something it had not established.
+
+**Decision.** A fact carries **three** states, not two: the thing is true, the thing is false,
+and the thing was not measured — and the third must never be spelled as the second. Verify
+publishes `narration_spans` only when **every** scene has a real wav file on disk; otherwise it
+publishes `narration_estimate`, named as an estimate. `Ffmpeg.mix()` **returns** a `MixResult`
+describing what it did, and verify reports that, so `ducked` is `True` (ducked under measured
+spans), `False` (played alone) or `null` (never reached the mix) and the three read differently.
+
+**Alternatives.**
+
+- *Default a missing measurement to zero / to `false`* — rejected: this is the defect. A silent
+  cut reported `duck_seconds: 16.01` of ducking that never happened, because the spans were
+  recomputed from the spec rather than reported by the mix.
+- *Publish both the estimate and the spans* — rejected: one field with two meanings is how the
+  original defect happened, and a consumer cannot tell which it holds without a second rule.
+- *Raise instead* — rejected: a silent cut is a declared, legal film (I6), and an estimate is
+  the honest answer for it, not an error.
+
+**Consequences.** Machine consumers read one field or the other and never the same field two
+ways. `narration_estimate` is one entry per scene of the word count divided by
+`_FALLBACK_WPS = 2.5`, and the check `declared score is in the mix` branches on
+`ducked is True` / `is False` / else. See
+[docs/verification/verification.md](../verification/verification.md).
+
+---

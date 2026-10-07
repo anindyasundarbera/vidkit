@@ -1373,3 +1373,146 @@ artifacts ok
 gap is three separable things: stills that do not move, audio that is narration or nothing,
 and shot length that is arithmetic. All three land as **additions to the spec surface**
 inside the same ten stages.
+
+## 2026-10-10 — M9: movie mode — a film with no capture, no provider and no browser
+
+**Branch** `phase/m9-movie-mode` off `9d3385b`. **Status: complete, verify green.**
+
+The north star for this milestone was one sentence from [PLAN.md](PLAN.md): vidkit must be
+"versatile enough to produce **movies**, not only product demos". A movie is not a demo with
+different words. A demo is *about* something that happened — it films it and proves it. A film
+may have nothing to film at all, and the honesty claim has to survive that. M9 is the milestone
+that finds out whether it does.
+
+### The four deliverables
+
+1. **The camera moves.** A shot may declare `motion: {kind: zoom|pan, direction: …, amount: …}`,
+   and the engine builds the ffmpeg expression. `motion:` and a non-`hold` `effect:` are
+   refused together: they are the same statement made twice, and allowing both would make the
+   report ambiguous about which one was the picture's actual transformation.
+2. **The engine draws the picture (R-D9).** `card:` renders a title from the shot's own words —
+   kicker, rule, wrapped body, optional scrim over a `backdrop:` resolved at load time. `solid:`
+   is one flat field. Both are classified as **declared asset** in `verify.SHOT_SOURCES`,
+   because that is what they are: pictures the author asked for by writing them down. **D50.**
+3. **The clock is expressed.** `seconds:` on a scene and on a shot. When every length is
+   declared, `facts.timing_source = "spec"` and the voice is cut to the spec; otherwise the
+   measured voice remains the master clock. **D51** — and I5 is not weakened, because I5 forbids
+   an *estimate* presented as a measurement, not a *decision* recorded as one.
+4. **A music bed.** `score: {src, volume, duck_db, ramp, fade_in, fade_out}`, looped to the
+   film's real length, ducked under the measured narration spans.
+
+Plus `plan_shots(spec, audio)` as the single timing rule read by both the renderer and
+`vidkit plan`, four new verify checks, and a seventh CI job (`movie-probe`).
+
+### The fixture, and how it was proven
+
+`examples/movie-demo/` has no `capture`, no provider and no browser. Five scenes, one drawn
+card, one drawn field, declared artwork, a hand-declared zoom, a looping score.
+
+```
+$ vidkit build examples/movie-demo/video.yaml
+16.01s within [15, 17]        ... ALL PASS
+artwork: 6 shot(s) from declared asset (4 drawn by the engine)
+motion: 4 of 5 declared move(s) change the picture; 1 over a field with nothing in it to reveal
+```
+
+`tests/test_movie.py` is **90 tests** and needs `ffmpeg` + `rsvg-convert` but no browser, no
+network and no voice.
+
+### Eight defects found and fixed
+
+The milestone's whole subject is honesty, so it is worth naming what it caught — including in
+its own claims.
+
+1. **`_move_filters` built an expression ffmpeg folds to a constant.** `iw-iw/zoom*(1-p)`
+   evaluates to one value; `(iw-iw/zoom)*(1-p)` travels. The parentheses are load-bearing, and
+   a static picture renders with **no error at all**. Proven by measuring real frames: pans
+   `left` 846→1072, `right` 1076→852, `up` 478→604, `down` 606→480; zooms mirror.
+2. **`UnboundLocalError: '_spans'`.** A generator expression is its own scope, so an import
+   made inside one is not visible to the loop body. Hoisted. **D52** is the generalisation:
+   an absent measurement is not a negative measurement.
+3. **`assets_of(ctx)` bound the wrong object**, so the artwork resolver read a path that did
+   not exist and every card resolved over nothing but its backdrop.
+4. **`plan_shots`/`_clip_plan` disagreed with `reports.plan_report`** — `vidkit plan` predicted
+   lengths the renderer did not produce, because each had its own copy of the timing rule.
+   There is now one rule with two readers. **D51.**
+5. **A silent cut claimed ducking that never happened.** `mix.wav` measured flat at
+   −20.7/−20.6/−20.0/−20.6/−20.4 dB, and the mix had taken the `_score_only` path, yet the
+   report said `duck_seconds: 16.01`. `Ffmpeg.mix()` now **returns** a `MixResult` and verify
+   reports what it did. **D52.**
+6. **`narration_spans` published scene-wav durations as positions in a 16.01 s film.** With no
+   concatenated track there are no offsets to seek to. Verify now publishes spans only when
+   **every** scene has a real wav on disk, and `narration_estimate` otherwise. **D52.**
+7. **`svg.document()` did not declare `xmlns:xlink`.** Every card with a `backdrop:` drew an
+   empty frame, silently: `rsvg-convert` resolves an **absolute** `xlink:href` and renders
+   nothing whatever for a relative one, without an error either way. Found because the
+   backdrop test renders through the real rasteriser instead of asserting on the SVG string.
+8. **A check that could not fail.** `camera moves are declared` compared a list against a
+   filter of itself and always passed; its sentence was a restatement of the spec wearing the
+   clothes of a result. Replaced with a pixel measurement (**D49**) — and that measurement
+   immediately found a real defect **in the fixture**: scene 2 pans across a flat
+   `solid: "navy"`, so its picture does not change by a single pixel. The fixture keeps that
+   shot on purpose; it is the only one in the film whose `mae` is `0.0` while its declaration is
+   non-empty, and therefore the only one that proves the report distinguishes a declaration
+   from a measurement.
+
+Defects 1–5 were found by building and looking at pixels; 6–8 by writing tests whose job was
+to disagree with the report. **Three** of the eight are one class: a fact that had not been
+established, in a report that presented it as measured. That class is now a decision, not a
+habit — **D49** and **D52**.
+
+The measurement defect 8 introduced is itself pinned by
+`test_a_declared_camera_move_is_measured_not_restated`, which builds two clips by hand under
+the exact names `_measure_move` derives — one over a flat `solid`, one over artwork with edges
+in it — and asserts the flat one measures **exactly `0.0`**, that the artwork one's head and
+tail frames differ, and that a **missing clip measures `None`, not `0.0`**. It failed six
+distinct ways while being written (undefined `ff`, undefined `rsvg`, wrong clip names,
+`len()` on a generator). That is the point: it can fail.
+
+### The evidence, as observed
+
+```bash
+$ python3 -m pytest tests/test_movie.py -q
+90 passed in 32.71s
+
+$ python3 -m pytest tests -q                       # full
+610 passed in 534.19s (0:08:54)
+
+$ PATH=/tmp/leanbin python3 -m pytest tests -q     # no ffmpeg/rsvg/bwrap/docker
+531 passed, 79 skipped in 5.62s
+
+$ vidkit docs --index | python3 -c "import json,sys; print(len(json.load(sys.stdin)['docs']))"
+49
+```
+
+`movie-probe` is the seventh CI job and asserts the **real** fact shapes (`artwork` is a list of
+rows, `artwork_sources` a list, `motion` a list of rows — there is no `motion["moving"]`), that
+the engine actually drew the cards, that at least four of five moves changed the picture, and
+that a silent cut must **not** publish `narration_spans`.
+
+### What this phase deliberately did **not** build
+
+- **No transition library.** Cuts only. A crossfade is a compositor, and the film here is a
+  proof, not a showcase.
+- **No subtitle burn-in beyond the caption renderer M4 already had.** The SRT is the artifact;
+  burning is one flag away when a consumer wants it.
+- **No eleventh stage.** Per FEATURE-ROADMAP §12 constraint **P5**.
+- **No `still:` motion over a provider panel.** The motion contract is on the shot, but only
+  declared artwork and engine-drawn pictures are proven with it.
+
+### Still owed to the owner
+
+- **The `v1.0.0` tag has still not been pushed**, and M7, M8 and M9 all sit under
+  `## [Unreleased]`. Whether that becomes `1.1.0` or `1.2.0` is the owner's call.
+- **The `movie-probe` job is the slowest correctness gate at ~5.3 s of ffmpeg measurement** for
+  the motion check. Acceptable for a fixture; worth revisiting if it ever guards a long film.
+- **Nothing renders motion over a live capture.** `motion:` is proven on stills; a moving camera
+  over a browser capture is implemented but untested, and the report would say so (`mae` would
+  be measured, so it would not lie).
+
+### Next
+
+**M10** ([PLAN.md](PLAN.md), [FEATURE-ROADMAP.md](FEATURE-ROADMAP.md) §13). The gap M9 leaves is
+composition across shots: M9 made a single shot able to move, be drawn and be timed; nothing yet
+lets a film be *assembled* from shots that overlap, transition, or come from more than one take
+of the same scene.

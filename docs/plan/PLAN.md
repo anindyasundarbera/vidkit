@@ -1,17 +1,17 @@
-# PLAN.md — what we are doing right now
+# PLAN.md — what we are doing
 
 > **This file describes only *now* and *next*.** It is rewritten as work progresses.
 > For the phase-wise plan see [FEATURE-ROADMAP.md](FEATURE-ROADMAP.md). For what already
 > happened see [HISTORY.md](HISTORY.md). For why, see [DECISIONS.md](DECISIONS.md).
 >
-> Last updated: **2026-10-07** (M8 merged; M9 next).
+> Last updated: **2026-10-10** (M9 complete and awaiting review; M10 next).
 
 ---
 
 ## Where we are
 
-One branch, one PR, one merge per phase. **M0–M8 are merged to `main`. Nothing is in
-flight.**
+One branch, one PR, one merge per phase. **M0–M8 are merged to `main` (`9d3385b`). M9 is
+complete on `phase/m9-movie-mode` and awaiting review.**
 
 | Phase | What it made true | Landed |
 |---|---|---|
@@ -19,142 +19,117 @@ flight.**
 | **M1** Story & timeframe | vidkit can be *aimed*: a story identity and a resolved window of time, independently checked by `verify`. | `aa3eb5d` |
 | **M2** Provider & data hardening | An offline re-render from persisted snapshots is the default, not an option. | `21a96d4` |
 | **M3** Capture v2 | Assert-before-shot, action DSL, takes. | `a824e09` |
-| **M4** Presentation v2 | 11 panel kinds, overlays, transitions, still fitting. | `4ffff5c` |
+| **M4** Presentation v2 | 10 panel kinds, overlays, still fitting. | `4ffff5c` |
 | **M5** Agent surface | The job contract: `--json`, `--progress`, `run ACTION`, four MCP tools, a timeout guard. | `7c548de` |
 | **M6** Hardening & v1.0 | Provenance as a first-class action; portability; `1.0.0`. | `6987090` |
 | **M7** Executor & sandbox | A spec can declare commands that run in a real PTY inside a declared sandbox, and the film is proven to contain the recording. | `40cf724` |
 | **M8** Docker & environment lab | A spec can declare a service, **prove** it is serving, film real commands inside the *same* container, and tear it down unconditionally — with the image recorded by digest. | `63ad046` |
+| **M9** Movie mode | A film with **no capture, no provider and no browser**: a drawn title card, a drawn field, declared artwork that moves, an expressed clock, and a looping score — with `verify` measuring the picture rather than restating the spec. | *this PR* |
 
 Full evidence for each is in [HISTORY.md](HISTORY.md); each phase's reasoning is in
-[DECISIONS.md](DECISIONS.md) (D1–D48).
+[DECISIONS.md](DECISIONS.md) (D1–D52).
 
-### M8 in one paragraph
+### M9 in one paragraph
 
-`docker` became the third `exec` backend, a declared `environment:` list gained a
-bring-up → **hold-and-prove** readiness → run → log-capture → teardown lifecycle, and
-`verify.json` grew `facts.environments` (image by **digest**, readiness detail, lifetime,
-teardown record) plus a `container` key on every `facts.exec` entry.
+Four things a film needs and a demo does not: a **camera that moves** (`motion:` on any shot),
+**pictures the engine draws** from the shot's own words (`card:` and `solid:` — no artwork the
+author did not ship), a **clock that is expressed** (`seconds:` on a scene or a shot; without
+it the measured voice stays the master clock, so I5 is intact), and **a score** looped to the
+film's real length and ducked under the measured narration spans. One timing rule
+(`plan_shots(spec, audio)`) is read by both the renderer and `vidkit plan`.
 
-**The headline is what did *not* change: the stage list.** M8 added a whole backend and a
-resource lifecycle against the same ten stages M7 left, with no new `ExecRequest` field and
-no widened `stream()` signature. That was M7's abstraction being tested, and it held — which
-makes **P5** ("versatility without dilution") a demonstrated constraint rather than an
-aspiration for M9 to inherit.
+**The headline is not a feature.** M9's subject is honesty, and its most valuable result is a
+defect **class**: three separate checks were found claiming things they had not established,
+and one of them could not fail at all — it compared a list against a filter of itself and
+reported *"5 of 6 shot(s) move"* because five shots **declared** a move. It was replaced with a
+measurement (two real frames per moving clip, differenced, `mae` recorded on every
+`facts.motion` row), and the measurement immediately found a defect in the exit proof itself.
 
-Two things M8 taught, in the form they will be reused:
+Two rules came out of it, and every future check is written under them:
 
-> **A capability gate must demonstrate the capability, not observe a precondition of it**
-> (D41). `which docker` observes a client; `docker run --rm hello-world` demonstrates that
-> something can be confined. Docker has *three* rungs — client, daemon, container — and
-> collapsing them into one boolean sends three different problems to one unhelpful sentence
-> (D48).
+> **A declaration is not a measurement.** A check about what a picture *did* decodes the
+> picture. There is no other way to tell a push-in from a still — ffmpeg folds `iw-iw/zoom*p`
+> to a constant and renders a perfectly static frame with no error at all. (D49)
 
-> **A readiness gate that samples once is not a gate.** Postgres answers `pg_isready` at
-> ~1.30 s against its *bootstrap* server, which is stopped at ~1.45 s; a real query only
-> succeeds from ~1.84 s. Readiness therefore means "succeeded **and kept succeeding** for
-> 0.75 s", and the report distinguishes *never answered* from *answered and stopped* (D43,
-> defect U).
-
-Fourteen defects were found and fixed on the way (H–R, S, T, U); eleven were in M8's own new
-code and three were pre-existing M7 bugs — J, S and T — that only a second backend could
-expose.
+> **An absent measurement is not a negative measurement.** A fact carries three states — true,
+> false, and *not measured* — and the third must never be spelled as the second. A silent cut
+> used to report `duck_seconds: 16.01` of ducking that never happened. (D52)
 
 ---
 
-## The one thing that still needs the owner
+## M10 — Studio surface v2  *(next)*
 
-> **Push the `v1.0.0` tag.**
+**Purpose.** Turn the tool surface from *stateless verbs* into a **session-oriented studio** an
+agent can hold a conversation with.
 
-The version is `1.0.0` in all three places (`pyproject.toml`, `vidkit/__init__.py`,
-`CHANGELOG.md`). Pushing a tag is the point at which the release becomes a claim to the
-world rather than a commit on a branch, and it is the owner's to make. Nothing downstream is
-blocked by waiting: M9 reads the *code*, not the tag.
+**Why this and not something else.** M9 made a single shot able to move, be drawn and be timed.
+Nothing yet lets a film be **assembled** from shots that overlap, blend, or come from more than
+one take. That is the gap the owner's vision actually names: an external capable agent handed
+*(story, timeframe, environment)* that wants to try three takes and keep the best one.
 
-A second owner call sits behind it: **M7 and M8 both sit under `## [Unreleased]` in
-`CHANGELOG.md`.** Cutting `1.1.0` is a one-line change; folding them back into `1.0.0` would
-mean the tag and the release notes disagree, which is the one thing a CHANGELOG exists to
-prevent.
+**Delivers.**
 
-PyPI publication stays **deferred** ([FEATURE-ROADMAP.md](FEATURE-ROADMAP.md) §9) — tagging
-and publishing are different visible acts and only the first was asked for.
+| Item | Detail |
+|---|---|
+| Session tools | `session_open/close/list`, `session_exec`, `session_browser`, with state that survives between calls. |
+| Take management | `take_record`, `take_list`, `take_select` — pick the best take; never edit output to fake a better one (I7). |
+| Environment tools | `env_up/down/status` over the M8 lifecycle. |
+| Streaming | Progress events for long builds (finishes R-G5). |
+| Resource exposure | Captures, takes, and the verify report as MCP resources, so an agent can read back what it produced. |
+| Budget governance | Wall-clock, token and container budgets declared and enforced — borrowed as a *concept* from OpenMontage. |
 
----
+**Exit.** An MCP client can open a session against a live environment, attempt a capture three
+times, select the best take, assemble a verified video, and read the report back — all by tool
+calls, with no shell and no spec editing.
 
-## Next: M9 — Movie mode  *(P1)*
+### M10 open questions, for the owner
 
-Branch **`phase/m9-movie-mode`** off this merge. See
-[FEATURE-ROADMAP.md](FEATURE-ROADMAP.md) §12. **Purpose:** make vidkit able to *tell* a
-story, not only demonstrate a product.
+None of these block the work; each has a default that will be taken if nobody says otherwise.
 
-### What the gap actually is
+1. **Transitions (R-D6) are still unbuilt.** M4 listed them, M9 cut between shots without
+   blending them. Do they belong in M10 as a per-shot `transition:` field, or with whatever
+   needs a compositor? **Default: M10, as a field on the shot** — a session agent assembling
+   takes will want to blend them, and a crossfade is a filter, not a compositor.
+2. **Multi-track audio beyond narration + score.** One bed, one duck. **Default: not yet** —
+   no story has asked for a second bed, and a spec key nothing needs is a key nothing tests.
+3. **Act/scene beat metadata** for an agent to reason over. **Default: fold into M10's session
+   vocabulary** if it falls out of take management; do not invent it separately.
+4. **Should teardown failure become a `Guard` flag, a `verify` check, or both?** Carried over
+   from M8. **Default: both** — a `Guard` flag for the refusal at load time and a check for the
+   record, since M8 already emits the evidence in `facts.environments[*].teardown`.
+5. **`doctor`'s happy path** calls the full `docker_available()` probe (~450–510 ms) rather
+   than the cheap `docker_daemon()` (~60 ms) and deferring the container demonstration. Is the
+   wall time worth the certainty? **Default: leave it** (D48 records the seam).
 
-Three things, separable enough to land one at a time:
+### Release bookkeeping, still owed to the owner
 
-1. **Stills do not move, and there are no stills that were never a screenshot.** A movie is
-   mostly *declared artwork* — a title card, a photograph, a plate of texture — held, panned,
-   dissolved into the next. Today a still is a capture or a file, fitted to the frame; there
-   is no pan, no cross-dissolve, no sequence.
-2. **Audio is narration or nothing.** `tts.py` produces per-scene WAVs and
-   `ffmpeg.mux_captioned` muxes them. There is no score, no ambience, no per-scene gain, and
-   nothing that **ducks** music under a spoken line. A film scored by mixing a track at a
-   fixed volume is a film where the voice is buried at the chorus.
-3. **Shot length is arithmetic.** Duration is divided by weight. There is no way to say
-   "hold this for four seconds", "change on the beat", or "let the last frame breathe".
-
-### The shape, before any code
-
-Everything here is an **addition to the spec surface** and, per **P5**, must reuse the ten
-stages that already exist — `data, panels, stills, capture, exec, narration, clips, concat,
-render, verify`. If a feature appears to need an eleventh, the design is wrong and gets
-rethought before it is built. The M8 precedent says this is achievable: a backend *and* a
-resource lifecycle fitted inside ten.
-
-In the order they should land — each independently verifiable:
-
-1. **Stills that are composed, not just fitted.** A `still` gains a *motion* (`hold`, `pan`,
-   `zoom`, a direction and a span) and a *kind* that is not a screenshot — a title card, a
-   solid, a declared image with typography. The frame renderer already produces SVG per
-   frame; motion is a transform in that SVG, not a new stage. **The honesty rule does not
-   relax:** a movie still is *declared artwork*, and `verify` must be able to say so, exactly
-   as it says "live capture" or "drawn from data".
-2. **Shot timing expressed, not derived.** An explicit `seconds:` on a scene or a shot wins
-   over duration-by-weight; absent, today's behaviour is unchanged. Beats and musical
-   alignment are a *later* refinement of the same field and should not be designed now.
-3. **A real audio mix.** A second `ffmpeg` path that takes N inputs, applies per-scene gain,
-   and ducks the music bus under each narration span using narration's *measured* spans —
-   which I5 ("measured audio is the master clock") already computes. This is a change to
-   `ffmpeg.py` at the `clips`/`concat` boundary; it is not a stage.
-
-### The risks, named now
-
-- **This is the phase where output gets *artistic*, and artwork is where honesty rots.** A
-  Ken Burns pan over a fabricated screenshot is still a fabricated screenshot. Every
-  movie-mode feature must state which of the three honest sources it draws from — live
-  capture, measured data, declared asset — and `verify` must check it. Adding `motion:` must
-  not create a fourth category of "rendered from nothing".
-- **The audio mix is where the master clock can break.** I5 says measured audio is the clock.
-  Ducking introduces a second audio path, and it is very easy to make the mix authoritative
-  over narration's measured spans rather than derived *from* them. The spans come first; the
-  mix follows.
-- **`verify` must keep getting cheaper to trust, not more expensive.** Three new fact classes
-  (motion, timing source, audio mix) means three more chances for a check to be emitted only
-  on failure — the defect already fixed twice (E and F). The rule stands: **a check that
-  passes must be written down.**
-- **No new dependency without a stated reason.** `pyte` was refused in M7; an audio-mix
-  library should be refused here too, because `ffmpeg` already does it.
-
-### Exit
-
-> A spec with **no captures and no provider at all** renders a scored, captioned short film
-> from declared artwork, with expressed timing, and `verify` passes on it — movie mode is
-> provably additive, and the pipeline is still ten stages.
+- **The `v1.0.0` tag has never been pushed**, and **M7, M8 and M9 all sit under
+  `## [Unreleased]`** in [CHANGELOG.md](../../CHANGELOG.md). Folding them back into `1.0.0`
+  would make the tag and the release notes disagree.
+- **Which version do M7 + M8 + M9 become: `1.1.0` or `1.2.0`?** Three user-visible capability
+  milestones landed, which argues for `1.2.0`; none of them broke an existing spec, which
+  argues for `1.1.0`. **Default: `1.2.0`** — a minor bump per milestone is the honest reading
+  of SemVer for a project with no external consumers yet, and the tag is cheap.
+- **PyPI publication remains deferred.**
 
 ---
 
-## After M9
+## How to work here
 
-**M10 — Studio surface v2** (§13): stateless verbs become a session an agent can hold open
-and try several takes against — `session_open/close/list`, `session_exec`, take management,
-environment tools over M8's lifecycle, and progress streaming.
+1. Read [AGENTS.md](../../AGENTS.md) — invariants, repo map, gotchas, the commands that must
+   keep working. It is the durable contract; this file is the transient one.
+2. One phase per branch (`phase/mN-<slug>`), one PR, one merge (`gh pr merge N --merge
+   --delete-branch`). Every phase's evidence goes in [HISTORY.md](HISTORY.md) **before** the
+   PR is opened, not after it is merged.
+3. **Run the two suites before every commit.** They answer different questions:
 
-One branch, one PR, one merge each — as M0–M8 were done.
+   ```bash
+   python3 -m pytest tests -q                         # full: ~500 s, ~620 tests, needs ffmpeg+rsvg
+   PATH=/tmp/leanbin python3 -m pytest tests -q      # lean: ~5 s, no ffmpeg/rsvg/bwrap/docker
+   ```
+
+   The lean run must use exactly that `PATH` — appending `:$PATH` re-exposes the real tools
+   and measures nothing. **Never run two pytest processes at once**: they share
+   `.pytest-tmp/`.
+4. A check that cannot fail is worse than no check, because it reads as assurance. If you add
+   one, make it able to fail, and make it fail for a reason a reader would recognise. (D49)

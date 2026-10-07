@@ -369,8 +369,31 @@ def plan_report(spec_path: Path, *, timeframe: Any = None,
             "title": sc.title,
             "words": w,
             "est_seconds": round(w / WORDS_PER_SECOND, 1) if w else 0.0,
-            "shots": [f"{s.kind}:{s.ref}({s.effect})" for s in sc.shots],
+            "declared_seconds": sc.seconds,
+            "shots": [f"{_shot_line(s)}" for s in sc.shots],
         })
+
+    # What will *actually* be rendered. `est_seconds` above is the narration estimate
+    # and stays because it is the number the runtime window is about; this is the
+    # take-by-take length, which is a different number the moment a spec declares a
+    # `seconds:` or a `motion:`. Reporting only the estimate let `vidkit plan` promise
+    # a 24.7s film that built as 16.0s.
+    from .assembler import plan_audio, plan_shots
+    planned = plan_shots(spec, plan_audio(spec))
+    takes = [{"scene": sc.n, "index": i, "kind": sh.kind, "ref": sh.ref,
+              "seconds": round(sec, 3), "motion": sh.motion.to_dict() if sh.motion else None,
+              "declared": sh.seconds is not None,
+              "from_scene": sc.seconds is not None and sh.seconds is None}
+             for sc, i, sh, sec in planned]
+    by_scene: dict[int, float] = {}
+    for t in takes:
+        by_scene[t["scene"]] = by_scene.get(t["scene"], 0.0) + t["seconds"]
+    for s in scenes:
+        s["planned_seconds"] = round(by_scene.get(s["n"], 0.0), 3)
+    planned_total = sum(by_scene.values())
+    # transitions overlap, so the finished file is shorter than the sum of the takes
+    trans = spec.project.transition_seconds * max(0, len(by_scene) - 1) \
+        if spec.project.transition != "cut" else 0.0
 
     est_total = total_words / WORDS_PER_SECOND if total_words else 0.0
     return {
@@ -381,18 +404,42 @@ def plan_report(spec_path: Path, *, timeframe: Any = None,
         "fps": spec.project.fps,
         "window": [spec.project.min_seconds, spec.project.max_seconds],
         "scenes": scenes,
+        "takes": takes,
+        "timing_source": spec.timing_source,
+        "planned_seconds": round(planned_total - trans, 3),
         "narration_words": total_words,
         "est_seconds": round(est_total, 1),
         "est_minutes": round(est_total / 60, 2),
+        # The window is a promise about the *film*, so it is the planned length that
+        # gets checked against it. The narration estimate is shown, not enforced.
         "within_window": bool(
-            spec.project.min_seconds <= est_total <= spec.project.max_seconds
-        ) if est_total else None,
+            spec.project.min_seconds <= planned_total - trans
+            <= spec.project.max_seconds
+        ) if planned_total else None,
         "banned": list(spec.guard.banned),
         "required": list(spec.guard.required),
         "require_live_mode": spec.guard.require_live_mode,
+        "score": spec.score.to_dict() if spec.score else None,
         "story": spec.story.to_dict() if spec.story else None,
         "timeframe": spec.timeframe.to_dict() if spec.timeframe else None,
     }
+
+
+def _shot_line(shot) -> str:
+    """One shot, as the author wrote it: ``kind:ref``, its move, its declared length.
+
+    A declared ``motion:`` supersedes ``effect:``, so only the one that will actually
+    be rendered is printed. Printing both said ``hold, zoom in 8%`` — two moves for one
+    picture, one of which is a lie.
+    """
+    bits = [f"{shot.kind}:{shot.ref}"]
+    if shot.motion is not None:
+        bits.append(shot.motion.label())
+    elif shot.effect and shot.effect != "hold":
+        bits.append(shot.effect)
+    if shot.seconds is not None:
+        bits.append(f"{shot.seconds:g}s")
+    return f"{bits[0]}({', '.join(bits[1:])})" if len(bits) > 1 else bits[0]
 
 
 def format_plan(report: dict[str, Any]) -> str:
@@ -407,13 +454,25 @@ def format_plan(report: dict[str, Any]) -> str:
     ]
     for s in report["scenes"]:
         lines.append(
-            f"    {s['n']:2d}. {s['title'] or '(untitled)':38s} {s['est_seconds']:5.1f}s  "
+            f"    {s['n']:2d}. {s['title'] or '(untitled)':38s} "
+            f"{s.get('planned_seconds', s['est_seconds']):5.1f}s  "
             f"{', '.join(s['shots'])}"
         )
+    src = report.get("timing_source") or "narration"
+    clock = ("lengths are declared in the spec" if src == "spec"
+             else "lengths follow the measured narration")
+    lines.append(f"  timing: {src} — {clock}")
+    lines.append(f"  planned runtime: {report.get('planned_seconds', 0.0):.1f}s "
+                 f"from {len(report.get('takes') or [])} take(s)")
+    if report.get("score"):
+        sc = report["score"]
+        lines.append(f"  score: {sc['src']} at {sc['volume_db']:+.1f} dB, "
+                     f"ducked {sc['duck_db']:+.1f} dB "
+                     f"(fade in {sc['fade_in']:g}s / out {sc['fade_out']:g}s)")
     lines.append(f"  narration words: {report['narration_words']}  |  "
                  f"est. runtime ~{report['est_minutes']:.2f} min")
     if report["within_window"] is False:
-        lines.append("  WARNING: estimated runtime outside the project window")
+        lines.append("  WARNING: planned runtime outside the project window")
     lines.append(f"  banned phrases: {len(report['banned'])}")
     for b in report["banned"]:
         lines.append(f"    - {b}")

@@ -26,6 +26,7 @@ then `ROOT/..`, then the current directory.
 | `charts` | — | list | data panels |
 | `exec` | — | mapping | commands to run and film in a real terminal |
 | `environment` | — | list | services that `backend: docker` commands run inside |
+| `score` | — | mapping or string | a music bed mixed under the narration; see below |
 | `guard` | — | mapping | acceptance checks |
 
 ---
@@ -431,6 +432,28 @@ charts:
 | `n` | ✅ | int | scene index (sorted ascending) |
 | `title` | — | string | shown by `plan` |
 | `shots` | ✅ | list | ≥ 1 shot |
+| `seconds` | — | number | this scene's length, declared rather than measured |
+
+### `seconds` — the clock, expressed
+
+By default a scene is as long as its narration takes. A **silent** film has no narration
+to measure, and a film whose timing is part of the story does not want the words deciding
+its pacing. So a scene — or a single shot — may declare its own length:
+
+```yaml
+scenes:
+  - {n: 1, seconds: 4.0, title: The premise, shots: [{solid: "#16232B"}]}
+  - n: 2
+    seconds: 3.0
+    shots:
+      - {card: {text: Declared, not measured}, weight: 2}
+      - {still: assets/wide.svg, seconds: 1.2}
+```
+
+A shot's `seconds:` wins over its share of the scene. The sum of a scene's shots may not
+exceed the scene's own length. `verify.json` reports which rule the clock used, as
+`facts.timing_source` — `"narration"` or `"spec"` — and `vidkit plan` computes its
+estimates with the renderer's own rule so the plan cannot disagree with the build.
 
 ### `shots[]`
 
@@ -440,15 +463,21 @@ charts:
 | `capture` | | string | — | name of a `captures[]` entry |
 | `chart` | | string | — | name of a `charts[]` (or provider) panel |
 | `exec` | | string | — | label of an `exec.steps[]` entry |
+| `card` | | mapping | — | a card the **engine** draws from declared words; see below |
+| `solid` | | string | — | a flat colour, drawn by the engine (e.g. `"#16232B"`) |
 | `at` | — | number | end of recording | with `exec`, which second of the recording to show |
 | `effect` | — | `"hold"` \| `"zoom"` | `"hold"` | static vs. slow push-in |
+| `motion` | — | string or mapping | — | a camera move; **supersedes `effect`**; see below |
+| `seconds` | — | number | — | this shot's length, declared rather than measured |
 | `weight` | — | number | `1.0` | share of the scene's duration |
 | `fit` | — | `"cover"` \| `"contain"` | `"cover"` | how the still is fitted to the frame |
+| `kicker` | — | string | — | small line above a `card`'s text |
+| `backdrop` | — | string | — | background image behind a `card` (must exist) |
 
-**Constraint:** exactly one of `still`/`capture`/`chart`/`exec`.
+**Constraint:** exactly one of `still`/`capture`/`chart`/`exec`/`card`/`solid`.
 
-Scene duration = the measured narration duration of that scene. Each shot gets
-`duration × weight / Σweights`.
+Scene duration = the measured narration duration of that scene, **or** the scene's own
+`seconds:`. Each shot gets `duration × weight / Σweights`.
 
 ```yaml
 scenes:
@@ -459,8 +488,54 @@ scenes:
       - {still: assets/two-streams.svg, effect: zoom, weight: 0.4}
 ```
 
-An `exec` shot shows a recording, so `effect: zoom` has nothing to push into and falls back
-to a single still. See the [exec guide](../capture/exec-guide.md).
+An `exec` shot shows a recording, so a camera move has nothing to move across and falls
+back to a single still. See the [exec guide](../capture/exec-guide.md).
+
+### `card` and `solid` — pictures the engine draws
+
+Every other shot kind shows something that already exists. These two draw the frame from
+what the **spec declares**, which is how a film is cut with no assets at all — the honesty
+rule still holds, because a card is text the spec authored rather than a picture of a
+product pretending to be a measurement.
+
+```yaml
+shots:
+  - {solid: "#16232B", seconds: 1.2}
+  - card:
+      text: A film with no footage
+      kicker: chapter one
+      backdrop: assets/frame.svg
+      lines:
+        - declared artwork only
+        - no browser, no provider
+```
+
+| `card` field | Type | Meaning |
+|---|---|---|
+| `text` | string | the heading (**required**) |
+| `kicker` | string | small line above the heading |
+| `lines` | list of strings | body lines, wrapped to the panel |
+| `backdrop` | string | background image (**must exist**) |
+
+### `motion` — a camera move
+
+```yaml
+shots:
+  - {still: assets/wide.svg, motion: {kind: pan, direction: right, amount: 0.25, span: 0.6}}
+  - {still: assets/wide.svg, motion: zoom-in}     # bare string, direction implied
+```
+
+| Field | Default | Meaning |
+|---|---|---|
+| `kind` | — | `hold` \| `pan` \| `zoom` (**required**) |
+| `direction` | from the kind | `left`/`right`/`up`/`down` for a pan; `in`/`out` for a zoom |
+| `amount` | `0.12` | how far the camera travels; a pan's is a fraction of the frame, a zoom's of the scale |
+| `span` | `1.0` | fraction of the clip the move occupies, `(0, 1]` |
+| `at` | `full` | `start` \| `end` \| `full` — where in the clip the move sits |
+
+`motion:` **supersedes** `effect:`. Declaring both is refused: keeping one is the point.
+The engine records which shots actually moved in `verify.json` (`facts.motion`), so a
+"camera move" that folded to a constant is visible rather than assumed.
 
 ### `overlay`
 
@@ -491,6 +566,41 @@ scenes:
     shots:
       - {capture: result}
 ```
+
+---
+
+## `score` — the music bed
+
+A film may carry a music bed under its narration. The bed is a declared file; nothing is
+synthesised, for the same reason nothing is fabricated.
+
+```yaml
+score: {src: assets/theme.ogg, volume: 0.45, duck_db: -12.0, ramp: 0.30}
+```
+
+| Field | Default | Meaning |
+|---|---|---|
+| `src` | — | path to the audio file (**required**) |
+| `volume` | `0.35` | how loud the bed plays. `≤ 0` is read as **dB**; `> 0` as a linear gain, which may not exceed `1` |
+| `duck_db` | `-14.0` | how far the bed is pushed down under the voice; must be at or below `0` |
+| `ramp` | `0.25` | seconds the duck takes to reach full depth and to come back |
+| `fade_in` | `1.0` | seconds the bed fades up at the head |
+| `fade_out` | `1.5` | seconds it fades down at the tail |
+
+`score:` may also be a bare path: `score: assets/theme.ogg`.
+
+The bed is **looped** to fill the film and only ducked under narration that was actually
+measured. On a silent cut there is nothing to duck, and `verify.json` says so rather than
+claiming a duck that never ran:
+
+```json
+"score": {"src": "assets/theme.ogg", "volume_db": -6.94, "duck_db": -12.0,
+          "mixed": ".../mix.wav", "duck_seconds": 0.0, "ducked": false}
+```
+
+`ducked` and `duck_seconds` describe **the mix that exists on disk**. A `verify` run that
+did not itself build the film reports both as `null` — an unmeasured number is not a
+negative one, and the report never turns "not measured" into a claim.
 
 ---
 

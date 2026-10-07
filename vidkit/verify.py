@@ -83,6 +83,125 @@ def _container_of(spec, assets, result) -> str:
     return getattr(state, "container_name", "") if state is not None else ""
 
 
+#: The three honest sources a picture in a vidkit film can come from, and the shot
+#: kinds that draw from each. This table is the honesty rule (I7) written down as
+#: data rather than as a paragraph, so that a new shot kind cannot be added without
+#: someone deciding which of the three it is. A kind in *neither* column is refused
+#: outright — "rendered from nothing" is the category M9 was warned against
+#: creating, and the only way to keep it from creeping in is to fail the build.
+SHOT_SOURCES: dict[str, str] = {
+    "capture": "live capture",     # a browser photographing a running product
+    "exec": "live capture",        # a real program's real output, replayed from a cast
+    "chart": "measured data",      # a panel drawn from a provider's own numbers
+    "still": "declared asset",     # a file the author shipped
+    "card": "declared asset",      # typography over the spec's own words
+    "solid": "declared asset",     # one flat colour
+}
+
+
+def _artwork_facts(spec, assets) -> list[dict[str, Any]]:
+    """Every shot in the film, with the source its picture actually came from."""
+    stills = getattr(assets, "stills", None) or {}
+    captures = getattr(assets, "capture_stills", None) or {}
+    panels = getattr(assets, "panel_stills", None) or {}
+    rows = []
+    for sc in spec.scenes:
+        for idx, shot in enumerate(sc.shots):
+            if shot.kind == "capture":
+                where = captures.get(shot.ref)
+            elif shot.kind == "chart":
+                where = panels.get(shot.ref)
+            elif shot.kind in ("card", "solid"):
+                where = None  # the engine drew it; there is no source file to name
+            else:
+                where = stills.get(shot.ref)
+            row: dict[str, Any] = {
+                "scene": sc.n, "index": idx, "kind": shot.kind,
+                "ref": shot.ref, "source": SHOT_SOURCES.get(shot.kind, "UNKNOWN"),
+                "file": str(where) if where else None,
+                "seconds": None if shot.seconds is None else round(shot.seconds, 3),
+            }
+            if shot.motion is not None:
+                row["motion"] = shot.motion.to_dict()
+            elif shot.effect not in ("hold", "", None):
+                # the M4 spelling, kept so a spec written before `motion:` existed
+                # still reports the move it is actually making
+                row["motion"] = {"kind": shot.effect, "direction": "in",
+                                 "amount": 0.10, "span": 1.0, "at": "start"}
+            rows.append(row)
+    return rows
+
+
+#: How much a picture has to change, as mean absolute RGB difference per channel
+#: (0-255), before a declared camera move counts as having moved it. Calibrated on
+#: the ``movie-demo`` fixture: a genuine pan or push-in over artwork measures 1.3-5.7,
+#: and *anything* over a flat ``solid`` measures 0.00 however far the camera travels,
+#: because a uniform field has nothing in it to shift. A tenth of a level is far
+#: below the first and far above the second.
+MOVE_MAE = 0.10
+
+
+def _measure_move(ctx: Context, row: dict[str, Any]) -> float | None:
+    """How much scene ``row['scene']``'s clip ``row['index']`` (shot) moves. ``None`` if
+    the clip could not be read.
+
+    A declared move is a claim about the picture, so this reads the picture: one real
+    frame near the head of the clip and one near its tail, decoded to RGB and
+    differenced. That is the only way to tell a push-in from a still — the filterchain
+    is a string either way, and an expression ffmpeg folds to a constant renders a
+    perfectly static frame with no error at all.
+
+    Deliberately *not* a check that every declared move produced movement: a pan across
+    a flat colour is an honest thing to ask for, and the frame it produces is the frame
+    that was asked for. What must not happen is the report saying "5 shots move" when
+    four do.
+    """
+    clip = ctx.clips / f"scene-{row['scene']:02d}-{row['index']}.mp4"
+    if not clip.exists():
+        return None
+    try:
+        seconds = ctx.ffmpeg.duration(clip)
+        if seconds <= 0:
+            return None
+        scratch = ctx.build / "verify-motion.raw"
+        head = ctx.ffmpeg.frame_rgb(clip, seconds * 0.08, scratch, size=(64, 36))
+        tail = ctx.ffmpeg.frame_rgb(clip, seconds * 0.92, scratch, size=(64, 36))
+    except Exception:  # noqa: BLE001 - a measurement that failed is not a measurement
+        return None
+    finally:
+        (ctx.build / "verify-motion.raw").unlink(missing_ok=True)
+    if not head or len(head) != len(tail):
+        return None
+    return round(sum(abs(a - b) for a, b in zip(head, tail)) / len(head), 3)
+
+
+def _narration_facts(scene_audio: list) -> dict:
+    """Where the spoken words sit in the cut — measured, or named as an estimate.
+
+    ``narration_spans`` reads as *seek here and you will hear the words*, and a reviewer
+    acts on it: the score is ducked under exactly those windows. So the name is only
+    earned when each scene has a real recording to seek into. With no voice engine the
+    audio stage divides a scene's word count by the fallback 2.5 words/second and moves
+    on — there is no recording. Publishing those durations as spans claimed positions in
+    a cut they do not describe: the silent ``movie-demo`` reported five spans totalling
+    35.6s for a film 16.01s long. An unmeasured number is still worth reporting, but not
+    under a name that asserts it was measured.
+    """
+    if not scene_audio:
+        return {}
+    # Imported here, not at module scope: `assembler` imports this module, so a
+    # top-level import is circular. It must be bound inside whichever function reads
+    # it — a sibling scope cannot see it, and a generator expression is a scope.
+    from .assembler import _spans
+    # str keys, matching what a JSON round-trip produces — otherwise this fact reads
+    # one way in-process (`facts["narration_spans"][1]`) and another on disk (`...["1"]`).
+    spans = {str(n): [round(a, 3), round(b, 3)]
+             for n, a, b in _spans(scene_audio)}
+    if all(a.path is not None and Path(a.path).exists() for a in scene_audio):
+        return {"narration_spans": spans}
+    return {"narration_estimate": spans}
+
+
 def verify_output(ctx: Context, assets, scenes_text: dict[int, str]) -> Report:
     spec = ctx.spec
     guard = spec.guard
@@ -103,9 +222,17 @@ def verify_output(ctx: Context, assets, scenes_text: dict[int, str]) -> Report:
     # audio present and audible
     vol = ctx.ffmpeg.mean_volume(out) if Path(out).exists() else None
     rep.facts["mean_volume_db"] = vol
+    # A scored film is not a silent film. The voice may be absent by declaration, but
+    # there is still an audio stream, and calling it a silent cut would read as "this
+    # film has no sound" about one whose whole point is a music bed.
+    scored = spec.score is not None
     if assets.audio_track or (ctx.build / "narration.wav").exists():
         rep.add("audio present", vol is not None and vol > -50,
                 f"mean volume {vol} dB" if vol is not None else "no audio stream")
+    elif scored:
+        rep.add("audio present", vol is not None and vol > -50,
+                f"mean volume {vol} dB (score only — no voice on this cut)"
+                if vol is not None else "no audio stream")
     elif guard.require_audio:
         rep.add("audio present", False, "silent cut (no TTS audio)")
     else:
@@ -296,6 +423,129 @@ def verify_output(ctx: Context, assets, scenes_text: dict[int, str]) -> Report:
         rep.add("commands ran sandboxed", not unconfined,
                 f"not sandboxed: {unconfined}" if unconfined
                 else f"{len(exec_results)} command(s) under {', '.join(used)}")
+
+    # --- movie mode (M9) -------------------------------------------------- #
+    # Three fact classes and three checks, added together because a fact nobody
+    # checks is decoration. The rule from M7's defects E and F holds: a check that
+    # *passes* must be written down. An attestation that exists only as an absence
+    # cannot be told apart from a check that never applied.
+    artwork = _artwork_facts(spec, assets)
+    if artwork:
+        sources = sorted({row["source"] for row in artwork})
+        unknown = [f"{r['kind']}:{r['ref']}" for r in artwork
+                   if r["source"] == "UNKNOWN"]
+        rep.facts["artwork"] = artwork
+        rep.facts["artwork_sources"] = sources
+        rep.add("every picture has an honest source", not unknown,
+                f"unclassified: {unknown}" if unknown
+                else f"{len(artwork)} shot(s) from {', '.join(sources)}")
+
+    moved = [r for r in artwork if r.get("motion")]
+    if moved:
+        # A camera move is reported because it is a *claim about the picture*: a
+        # push-in says "look here". So the claim is measured rather than restated —
+        # the head and the tail of the clip are decoded and compared, and the row
+        # carries the difference. Declaring a move and rendering a still picture are
+        # both fine; what is not fine is the report being unable to tell them apart.
+        # (It could not, before this: the check compared a list against a filter of
+        # itself and so could never fail.)
+        for row in moved:
+            row["motion"]["mae"] = _measure_move(ctx, row)
+        rep.facts["motion"] = [
+            {"scene": r["scene"], "index": r["index"], "kind": r["kind"],
+             **r["motion"]} for r in moved
+        ]
+        unmeasured = [f"scene {r['scene']} shot {r['index']}"
+                      for r in moved if r["motion"]["mae"] is None]
+        still_n = [r for r in moved
+                   if r["motion"]["mae"] is not None and r["motion"]["mae"] < MOVE_MAE]
+        rep.add("every camera move is accounted for", not unmeasured,
+                f"could not measure {unmeasured}" if unmeasured
+                else f"{len(moved) - len(still_n)} of {len(moved)} declared move(s) "
+                     f"change the picture"
+                     + (f"; {len(still_n)} over a field with nothing in it to reveal"
+                        if still_n else ""))
+
+    # Imported here rather than at module scope because `assembler` imports *this*
+    # module. It is bound unconditionally — it used to be bound inside a branch and
+    # read inside a *different* branch's generator expression, and a generator is a
+    # separate scope, so the two never shared the name: any spec declaring a `score:`
+    # and no narration raised UnboundLocalError before this line.
+    rep.facts.update(_narration_facts(assets.scene_audio))
+
+    rep.facts["timing_source"] = spec.timing_source
+    if spec.timing_source == "spec":
+        # Not a failure — a film cut to a declared length is a legitimate film. But
+        # it is a *different claim*: narration is no longer the master clock (I5), so
+        # the runtime proves the spec and not the recording, and a reader is entitled
+        # to know which one they are looking at.
+        declared = [f"scene {sc.n} = {sc.seconds:g}s" for sc in spec.scenes
+                    if sc.seconds is not None]
+        declared += [f"scene {sc.n} shot {i} = {sh.seconds:g}s"
+                     for sc in spec.scenes for i, sh in enumerate(sc.shots)
+                     if sh.seconds is not None]
+        rep.add("shot timing is expressed, not measured", True,
+                f"declared: {'; '.join(declared)} — the voice was cut to the "
+                f"spec, so narration is not the master clock for these")
+
+    if spec.score is not None:
+        # A declared score is a promise, so the report says whether one was mixed —
+        # and *what the mix did*, not what the spec asked for. `assets.mix` is set by
+        # the mix itself rather than computed here: asking the spec whether music
+        # *should* be present would be an assumption dressed as a fact, and the whole
+        # point of the report is to state what happened.
+        #
+        # `duck_seconds` therefore comes from the mix's own result. It used to be
+        # recomputed here from the narration spans, which made every scored film claim
+        # it had ducked for the whole narration — including a *silent cut*, where the
+        # mix takes the score-only branch and ducks for nobody. The spans were real;
+        # the ducking was not.
+        mixed_path = getattr(assets, "mix", None)
+        result = getattr(assets, "mix_result", None)
+        mixed_by_build = mixed_path is not None and Path(mixed_path).exists()
+        facts = {
+            "src": spec.score.src,
+            "volume_db": round(spec.score.volume, 2),
+            "duck_db": round(spec.score.duck_db, 2),
+            "ramp": spec.score.ramp,
+            "mixed": str(mixed_path) if mixed_by_build else None,
+        }
+        # A build hands over its own mix. A bare `vidkit verify` never mixed anything:
+        # it re-reads a film somebody else built, so it looks for the mix beside it
+        # rather than declaring a promise unmet.
+        if result is None and (ctx.build / "mix.wav").exists():
+            found = ctx.build / "mix.wav"
+            facts["mixed"] = str(found)
+            mixed_by_build = True
+        if result is not None:
+            facts["duck_seconds"] = round(result.seconds, 3)
+            facts["ducked"] = result.ducked
+        else:
+            # Re-read, not re-mixed: the ducking length is not recoverable from the
+            # wav, and inventing it from the narration spans is exactly the fabrication
+            # being removed here. Say so instead.
+            facts["duck_seconds"] = None
+            facts["ducked"] = None
+        rep.facts["score"] = facts
+
+        if not mixed_by_build:
+            detail = "declared but no mix was written"
+        elif facts["ducked"] is True:
+            detail = (f"mixed under {result.spans} narration span(s) covering "
+                      f"{result.seconds:.1f}s of {dur:.1f}s")
+        elif facts["ducked"] is False:
+            # Honest by construction: the film is scored but nobody speaks on it, so
+            # the bed plays alone. There was nothing to duck under, and the report says
+            # so rather than claiming a ducking that never happened.
+            detail = ("the score plays alone — this cut is silent, so there is nothing "
+                      "to duck under")
+        else:
+            # A re-read found the mix on disk but did not make it, and the ducking
+            # length is not recoverable from the wav. Saying "it ducked for 16s" here is
+            # the same fabrication in a quieter voice.
+            detail = (f"mix reads {Path(facts['mixed']).name} — rebuild to have the "
+                      f"ducking measured again")
+        rep.add("declared score is in the mix", mixed_by_build, detail)
 
     # provenance (R-F8): what this *is*, as opposed to whether it is honest. It is
     # reported as a fact rather than a check — there is no passing or failing an

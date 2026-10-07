@@ -16,6 +16,33 @@ from .errors import ToolError
 
 Runner = Callable[[Sequence[str]], "subprocess.CompletedProcess[str]"]
 
+
+class MixResult:
+    """What a mix actually did.
+
+    A mix is a *claim* — "the bed was taken down where the voice was". Returning the
+    output path alone would let the report repeat the claim instead of checking it,
+    and a silent cut (no narration to duck under) would be reported as ducked. So the
+    mix returns its own account of itself: how long the bed was held down for, and
+    which of the two paths it took.
+    """
+
+    __slots__ = ("out", "seconds", "ducked", "spans")
+
+    def __init__(self, out: Path, *, seconds: float, ducked: bool,
+                 spans: int = 0) -> None:
+        self.out = out
+        #: how many seconds of the finished mix the bed was actually held down for
+        self.seconds = seconds
+        #: whether the ducking branch ran at all — False when there was no voice
+        self.ducked = ducked
+        #: how many speech windows were handed to the mix
+        self.spans = spans
+
+    def to_dict(self) -> dict[str, object]:
+        return {"mixed": str(self.out), "duck_seconds": round(self.seconds, 3),
+                "ducked": self.ducked, "spans": self.spans}
+
 # letterbox bars for `fit: contain` — deliberately dark, so the bars are legible
 # as bars rather than mistakable for page content
 _PAD_COLOR = "0x101418"
@@ -62,6 +89,35 @@ class Shell:
         return result.stdout
 
 
+def _duck_expr(spans: Sequence[tuple[float, float]], duck_db: float,
+               ramp: float, *, var: str = "t") -> str:
+    """The *linear* gain ffmpeg should apply to the bed at time ``t``.
+
+    ``volume``'s expression is a gain factor, not a dB value — writing an expression
+    in dB here would silence the bed by a factor of 14 rather than 14 dB, so the
+    conversion happens once, here, and the filter chain stays in one unit.
+
+    Written as a *product* of per-span ramps rather than a search for "which span am I
+    in", because spans may abut (measured narration is usually contiguous) and a shot
+    may be declared longer than the speech inside it. Multiplying trapezoids that each
+    reach 1 gives unity where they overlap, and any moment mid-ramp takes the deepest
+    duck, which is the audible behaviour one wants.
+    """
+    d = 10.0 ** (duck_db / 20.0)
+    if not spans or d >= 1.0:
+        return "1"
+    ramp = max(ramp, 1e-3)
+    terms = []
+    for s, e in spans:
+        up = f"min(max(({var}-{s:.4f})/{ramp:.4f},0),1)"
+        down = f"min(max(({e:.4f}-{var})/{ramp:.4f},0),1)"
+        terms.append(f"min({up},{down})")
+    hold = terms[0] if len(terms) == 1 else "min(1,(" + "+".join(terms) + "))"
+    # the floor keeps a fully-ducked moment a finite (inaudible) number rather than 0,
+    # so a long silent patch cannot hand ffmpeg a division to complain about
+    return f"max(1-{1.0 - d:.6f}*({hold}),1e-6)"
+
+
 def fit_filters(size: tuple[int, int]) -> str:
     """Filter chain that fits a still inside ``size`` *without distortion*.
 
@@ -83,6 +139,97 @@ def fit_filters(size: tuple[int, int]) -> str:
     return (
         f"scale={w}:{h}:force_original_aspect_ratio=increase:flags=lanczos,"
         f"crop={w}:{h},setsar=1"
+    )
+
+
+#: the default room a pan travels in, as a share of the frame. A pan needs space to
+#: move in both directions; 0.12 is ~115px on a 1920 frame — enough to read as
+#: movement, little enough that no pixel is visibly doubled.
+PAN_OVERSCAN = 0.12
+
+
+def _move(motion: object | None) -> tuple[str, str, float, float, str] | None:
+    """Normalise a duck-typed motion object to ``(kind, direction, amount, span, at)``.
+
+    ``None`` in, ``None`` out — the caller then takes the pre-M9 path, which is what
+    keeps every spec written before this field rendering byte-for-byte the same.
+    """
+    if motion is None:
+        return None
+    kind = str(getattr(motion, "kind", "hold"))
+    return (
+        kind,
+        str(getattr(motion, "direction", "in")),
+        float(getattr(motion, "amount", 0.10)),
+        float(getattr(motion, "span", 1.0)),
+        str(getattr(motion, "at", "start")),
+    )
+
+
+def _move_filters(size: tuple[int, int], seconds: float, fps: int,
+                  move: tuple[str, str, float, float, str]) -> str:
+    """The filterchain for a camera move, as a single ``-vf`` string.
+
+    Both moves are ``zoompan`` over an *overscanned* source — fitted to
+    ``1+amount`` times the frame — and they differ only in how ``z`` and ``x``/``y``
+    are computed:
+
+    * a **zoom** varies ``z`` from 1.0 to ``1+amount`` and keeps the subject centred,
+      so the frame starts fractionally wide and pushes in to exactly the frame;
+    * a **pan** holds ``z`` at ``1+amount`` and slides ``x``/``y`` across the slack
+      that leaves. ``amount`` is both moves' "how much": for a zoom it is how far in
+      it finishes, for a pan how much of the picture sits off-frame at either end.
+
+    ``on`` is ffmpeg's output frame counter, so progress is expressed as a fraction
+    of the travel rather than in pixels — which is what makes one chain correct at
+    any resolution. ``span``/``at`` place the move in the clip: ``start`` moves over
+    the first ``span`` then holds, ``end`` holds then moves over the last ``span``,
+    ``full`` moves throughout. The held part is not a special case, just the same
+    travel clipped.
+
+    ``d=1`` makes ``zoompan`` emit one output frame per input frame; with the
+    ``-loop 1`` input that means ``on`` advances and the expression is re-evaluated
+    per frame, which is what animates anything at all.
+    """
+    w, h = size
+    kind, direction, amount, span, at = move
+    amount = max(amount, 0.0)
+    total_frames = max(int(round(seconds * fps)), 1)
+    move_frames = min(max(int(round(total_frames * span)), 1), total_frames)
+
+    # `p` runs 0..1 across the move wherever the move sits in the clip
+    if at == "end":
+        progress = f"min(max((on-{total_frames - move_frames})/{move_frames},0),1)"
+    elif at == "full":
+        progress = f"min(on/{total_frames},1)"
+    else:
+        progress = f"min(on/{move_frames},1)"
+
+    big = (int(round(w * (1.0 + amount))), int(round(h * (1.0 + amount))))
+    if kind == "zoom":
+        a, b = (1.0, 1.0 + amount) if direction != "out" else (1.0 + amount, 1.0)
+        z = f"{a:.6f}+{b - a:.6f}*({progress})"
+        # keep the centre fixed: this is a push-in, not a pan
+        x, y = "iw/2-(iw/zoom/2)", "ih/2-(ih/zoom/2)"
+    else:  # pan — `z` is constant, so the slack is constant and the slide is linear
+        z = f"{1.0 + amount:.6f}"
+        # The parentheses around each slack term are load-bearing, not style: ffmpeg
+        # folds `iw-iw/zoom*p` to a constant and the picture never moves. Verify any
+        # change here by measuring a frame early and late, never by reading the string.
+        slack_x, slack_y = "(iw-iw/zoom)", "(ih-ih/zoom)"
+        if direction == "left":        # camera travels left; the subject drifts right
+            x, y = f"{slack_x}*(1-({progress}))", "ih/2-(ih/zoom/2)"
+        elif direction == "right":
+            x, y = f"{slack_x}*({progress})", "ih/2-(ih/zoom/2)"
+        elif direction == "up":        # camera rises; the subject drifts down
+            x, y = "iw/2-(iw/zoom/2)", f"{slack_y}*(1-({progress}))"
+        else:                          # down
+            x, y = "iw/2-(iw/zoom/2)", f"{slack_y}*({progress})"
+
+    return (
+        f"{fit_filters(big)},"
+        f"zoompan=z='{z}':d=1:x='{x}':y='{y}':s={w}x{h}:fps={fps},"
+        "format=yuv420p"
     )
 
 
@@ -120,9 +267,23 @@ class Ffmpeg:
         self, image: Path, out: Path, seconds: float, *,
         size: tuple[int, int], fps: int, effect: str = "hold",
         zoom: float = 0.10, crf: int = 19, fit: str = "cover",
+        motion: object | None = None,
     ) -> None:
-        """Render a still PNG to a fixed-length clip. ``hold`` keeps it static;
-        ``zoom`` applies a slow Ken-Burns push-in (ends at ``1+zoom``).
+        """Render a still PNG to a fixed-length clip.
+
+        Three camera moves are available, and the difference between them is what
+        the picture is *claiming*:
+
+        * ``hold`` — a static frame. Nothing is implied.
+        * ``zoom`` — a slow push-in, ending at ``1+zoom``. Says "look at this".
+        * ``pan`` — a slide across a picture scaled up to leave room. Says "there is
+          more here than fits", and is the only one of the three that can lie by
+          showing a neighbouring part of a frame that was cropped out for a reason.
+
+        ``motion`` is an object with ``kind``/``direction``/``amount``/``span``/``at``
+        (the spec's :class:`~vidkit.spec.Motion`), duck-typed so this module stays
+        free of the spec's types. When it is given, ``effect`` is not consulted —
+        the caller has already refused a spec that declares both.
 
         The still is scaled to fill ``size`` without distortion (see
         :func:`fit_filters`), so a full-page capture is cropped, never squashed.
@@ -131,7 +292,11 @@ class Ffmpeg:
         bars state plainly that the page is not 16:9.
         """
         w, h = size
-        if effect == "zoom":
+        vf: str
+        move = _move(motion)
+        if move is not None and move[0] != "hold":
+            vf = _move_filters(size, seconds, fps, move)
+        elif effect == "zoom":
             # zoompan needs a source larger than its output so it has room to
             # push in; that source is fitted the same way, so the push-in
             # respects the still's aspect just as a hold does.
@@ -375,6 +540,86 @@ class Ffmpeg:
         cmd += ["-c:v", "libx264", "-preset", "medium", "-crf", str(crf),
                 "-pix_fmt", "yuv420p", "-movflags", "+faststart", str(out)]
         self.shell.run(cmd)
+
+    def mix(
+        self, narration: Path | None, score: Path, spans: Sequence[tuple[float, float]],
+        out: Path, *, duration: float, volume_db: float, duck_db: float,
+        ramp: float, fade_in: float, fade_out: float, sr: int = 48000,
+        limit: float = 0.97,
+    ) -> MixResult:
+        """Lay a music bed under the narration (R-G3).
+
+        ``spans`` are the **measured** (start, end) speech windows. The bed is taken
+        down for exactly those windows and nowhere else, so the mix is derived from
+        the same clock the pictures are (I5) — a change to the narration moves the
+        ducking with it, with no second timing table to keep in sync.
+
+        ``amix`` is deliberately not used. It has no level control on ffmpeg 4.3
+        (``normalize=`` arrived in 4.4) and *divides* its sum by the input count, so a
+        two-input mix of a quiet bed and a loud voice drops the voice ~3 dB and the
+        result depends on the ffmpeg version — a portability bug (R-H6), not a mix.
+        ``amerge`` + ``pan`` adds the channels explicitly, which is version-stable and
+        does not change level behind the author's back.
+        """
+        nar = narration if narration is not None and Path(narration).exists() else None
+        if nar is None:
+            # A silent cut still gets its bed, but there is nothing to duck against.
+            # The result says so: `ducked` is False and zero seconds were held down,
+            # because a report that claimed otherwise would be describing a mix that
+            # was never made. A silent cut is *declared* (I6), not denied.
+            self._score_only(score, out, duration=duration, volume_db=volume_db,
+                             fade_in=fade_in, fade_out=fade_out, sr=sr, limit=limit)
+            return MixResult(out, seconds=0.0, ducked=False, spans=len(spans))
+
+        # a window is only ducked for the part of it that survives inside the film;
+        # a span that runs past the end cannot hold the bed down after it stopped
+        held = sum(max(0.0, min(b, duration) - min(a, duration))
+                   for a, b in spans if b > a)
+
+        chain = [
+            "[0:a]aformat=sample_fmts=fltp:channel_layouts=stereo,"
+            "asetpts=N/SR/TB[nar]",
+            # -stream_loop on the input means the bed lasts as long as the film however
+            # short the file is; `atrim` turns that from a hope into a promise
+            f"[1:a]aformat=sample_fmts=fltp:channel_layouts=stereo,"
+            f"volume={volume_db:.2f}dB,"
+            f"volume='{_duck_expr(spans, duck_db, ramp)}':eval=frame,"
+            f"atrim=0:{duration:.3f},asetpts=N/SR/TB[bed]",
+        ]
+        bed = "bed"
+        if fade_in > 0:
+            chain.append(f"[{bed}]afade=t=in:st=0:d={fade_in:.3f}[bedf]")
+            bed = "bedf"
+        if fade_out > 0:
+            start = max(duration - fade_out, 0.0)
+            chain.append(f"[{bed}]afade=t=out:st={start:.3f}:d={fade_out:.3f}[bedo]")
+            bed = "bedo"
+        chain.append(
+            f"[nar][{bed}]amerge=inputs=2,pan=stereo|c0=c0+c2|c1=c1+c3,"
+            f"alimiter=limit={limit:.2f}[aout]")
+
+        cmd = ["ffmpeg", "-y", "-loglevel", "error",
+               "-i", str(nar), "-stream_loop", "-1", "-i", str(score),
+               "-filter_complex", ";".join(chain), "-map", "[aout]",
+               "-c:a", "pcm_s16le", "-ar", str(sr), str(out)]
+        self.shell.run(cmd)
+        return MixResult(out, seconds=held, ducked=True, spans=len(spans))
+
+    def _score_only(self, score: Path, out: Path, *, duration: float, volume_db: float,
+                    fade_in: float, fade_out: float, sr: int, limit: float) -> None:
+        """A bed with no voice over it — the silent film's music."""
+        chain = [f"volume={volume_db:.2f}dB,atrim=0:{duration:.3f},asetpts=N/SR/TB"]
+        if fade_in > 0:
+            chain.append(f"afade=t=in:st=0:d={fade_in:.3f}")
+        if fade_out > 0:
+            start = max(duration - fade_out, 0.0)
+            chain.append(f"afade=t=out:st={start:.3f}:d={fade_out:.3f}")
+        chain.append(f"alimiter=limit={limit:.2f}")
+        self.shell.run([
+            "ffmpeg", "-y", "-loglevel", "error",
+            "-stream_loop", "-1", "-i", str(score),
+            "-af", ",".join(chain), "-c:a", "pcm_s16le", "-ar", str(sr), str(out),
+        ])
 
     def extract_frame(self, video: Path, at: float, out: Path) -> None:
         self.shell.run([

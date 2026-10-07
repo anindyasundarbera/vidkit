@@ -37,8 +37,14 @@ THEME = Theme()
 def document(width: int, height: int, body: str, theme: Theme = THEME,
              background: bool = True) -> str:
     bg_rect = f'  <rect width="{width}" height="{height}" fill="{theme.bg}"/>\n' if background else ""
+    # ``xmlns:xlink`` is declared on every document even when nothing uses it. It costs
+    # 44 bytes and it is the difference between a card with a backdrop rendering and
+    # rsvg refusing the whole file with "Namespace prefix xlink for href on image is
+    # not defined" — an error that names neither the card nor the backdrop.
     return (
-        f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" '
+        f'<svg xmlns="http://www.w3.org/2000/svg" '
+        f'xmlns:xlink="http://www.w3.org/1999/xlink" '
+        f'width="{width}" height="{height}" '
         f'viewBox="0 0 {width} {height}">\n'
         f'  <defs><style>text{{font-family:"{theme.font}";}}</style></defs>\n'
         f"{bg_rect}{body}\n</svg>\n"
