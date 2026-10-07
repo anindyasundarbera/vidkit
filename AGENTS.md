@@ -5,8 +5,9 @@
 >
 > **Repo:** <https://github.com/anindyasundarbera/vidkit> (public, MIT) · default branch `main`
 > · first commit `87b7435`. CI (`.github/workflows/ci.yml`) runs **seven jobs**: the lean
-> unit suite on Python 3.10/3.12 and five end-to-end probes
-> (`build-example`, `capture-probe`, `exec-probe`, `docker-probe`, `movie-probe`).
+> unit suite on Python 3.10/3.12 — the `test` matrix is **two** jobs — and five end-to-end
+> probes (`build-example`, `capture-probe`, `exec-probe`, `docker-probe`, `movie-probe`,
+> `studio-probe`).
 >
 > For *what to build next* read [docs/plan/PLAN.md](docs/plan/PLAN.md).
 > For *what already happened* read [docs/plan/HISTORY.md](docs/plan/HISTORY.md).
@@ -76,7 +77,7 @@ vidkit/
 ├─ CHANGELOG.md           release notes
 ├─ LICENSE                MIT
 ├─ pyproject.toml         packaging, extras, console scripts
-├─ vidkit/                the engine (27 modules)
+├─ vidkit/                the engine (29 modules)
 │    assembler.py         the 10-stage pipeline + Context/Assets wiring
 │    spec.py              dataclasses + loader + cross-reference validation
 │    context.py           Context/Assets: the paths every stage shares
@@ -90,7 +91,7 @@ vidkit/
 │    narration.py         scene-script parsing, caption wrapping, SRT building
 │    overlay.py           banner/image graphics drawn over a shot
 │    tts.py               per-scene piper WAVs; silent fallback
-│    ffmpeg.py            duration/volume/concat/motion/overlay_clip/mix/mux
+│    ffmpeg.py            duration/volume/concat/transitions/motion/overlay/mix/mux
 │    timeframe.py         the resolved window (days/as_of or start/end)
 │    secrets.py           declared secrets + redaction
 │    snapshot.py          dataset snapshots, freshness, degraded replay
@@ -99,8 +100,10 @@ vidkit/
 │    verify.py            the acceptance checks → Report
 │    reports.py           report rendering helpers (shared by CLI and MCP)
 │    job.py               the {action, story, out} job contract -> one manifest
+│    studio.py            M10: sessions, record registry, takes, budget, live browsers
+│    _loop.py             M10: offload blocking work off the event loop (a Worker thread)
 │    cli.py               doctor/plan/build/tts/capture/auth/init/run/verify/provenance/docs
-│    mcp_server.py        MCP tools (15) + resources (3) + transports
+│    mcp_server.py        MCP tools (34) + resources (7) + transports
 │    errors.py            VidkitError / SpecError / ToolError / ProviderError
 │    __init__.py          version + public exports
 │    __main__.py          python -m vidkit
@@ -108,7 +111,7 @@ vidkit/
 │    test_core.py         panels, spec, captions, report — pure Python
 │    test_job.py          the job contract: manifest shape, refusals, progress
 │    test_cli.py          --json / --progress / run: exit codes and pipeability
-│    test_mcp.py          the MCP surface
+│    test_mcp.py          the MCP surface, incl. AST scans that pin async discipline
 │    test_timeframe.py    the window contract (R-F)
 │    test_providers.py    snapshots, fallbacks, stage selection (R-B)
 │    test_capture.py      the capture DSL, action semantics (R-C)
@@ -119,6 +122,7 @@ vidkit/
 │    test_terminal.py     the screen model: CSI, SGR, cast round-trip, SVG
 │    test_docker.py       the environment lifecycle: readiness, binding, teardown (R-E6)
 │    test_movie.py        movie mode: motion, cards, the expressed clock, the mix
+│    test_studio.py       M10: sessions, takes, selections, budget, the MCP exit proof
 ├─ examples/
 │    hello-world/         offline CI fixture (no browser, no voice, no network)
 │    capture-kit/         a local fixture server the capture probe films
@@ -135,7 +139,7 @@ vidkit/
 │    operations/          cli-reference, mcp-server, job-contract, troubleshooting, extracting-to-new-repo
 │    guides/              recipes, first-video
 │    plan/                PLAN.md, HISTORY.md, FEATURE-ROADMAP.md, DECISIONS.md, OPENMONTAGE.md
-└─ .github/workflows/     CI (pytest + hello-world + capture + exec + docker probes)
+└─ .github/workflows/     CI (pytest + hello-world + capture + exec + docker + movie + studio)
 ```
 
 ---
@@ -151,10 +155,11 @@ skip honestly when they are not.
 
 ```bash
 pip install -e ".[dev]"          # core + pytest
-python3 -m pytest tests -q       # 610 tests, ~9 min with every toolchain; 531 in ~6 s without
+pip install -e ".[capture]"      # + Playwright (needs `playwright install chromium`)
+python3 -m pytest tests -q       # 716 tests, ~11 min with every toolchain; 615 in ~15 s without
 ```
 
-**Three capabilities, three independent markers.** CI runs `pytest` twice on a machine
+**Four capabilities, four independent markers.** CI runs `pytest` twice on a machine
 with no `ffmpeg`, no `rsvg-convert`, and — measured, not assumed — no usable `bubblewrap`,
 and separately builds `examples/hello-world` on a machine that has the render tools. A
 test that needs a capability must carry the *matching* marker; `tests/conftest.py` probes
@@ -165,14 +170,23 @@ each one and skips independently:
 | `needs_render` | `ffmpeg`+`rsvg-convert` on `PATH` | anything that reaches the pipeline |
 | `needs_sandbox` | *running* `bwrap` around `/bin/true` | `exec` steps on the default backend |
 | `needs_docker` | *running* `docker run --rm hello-world` | loading or building a `backend: docker` spec |
+| `needs_playwright` | importing `playwright.sync_api` and *launching* Chromium | driving a real browser (`session_browser`, `capture`) |
 
-**The markers must stay independent.** Two of these were added after a CI failure, and both
-times the failure was the same shape: a test passed locally because *this* machine happens to
-have a capability, and failed in CI for a reason unrelated to the code. A marker that asks
-"is the toolchain complete?" instead of "is *this* capability usable?" reintroduces exactly
-that bug. Note also that **a Docker spec cannot even be *loaded* without Docker** — the
-load-time policy check calls `resolve_backend("docker")` — so `@needs_docker` is required on
-tests that only parse one.
+**The markers must stay independent.** Three of these were added after a CI failure, and
+every time the failure was the same shape: a test passed locally because *this* machine
+happens to have a capability, and failed in CI for a reason unrelated to the code. A marker
+that asks "is the toolchain complete?" instead of "is *this* capability usable?"
+reintroduces exactly that bug. Note also that **a Docker spec cannot even be *loaded*
+without Docker** — the load-time policy check calls `resolve_backend("docker")` — so
+`@needs_docker` is required on tests that only parse one.
+
+**A test that calls an `async` tool must await it.** Most of the MCP tool functions are
+`async def` (see §4.4). A bare call returns a coroutine, so `pytest.raises` sees no
+exception and `result == {...}` is comparing a dict to a coroutine — **green, and
+meaningless**. `tests/test_mcp.py::test_no_test_calls_an_async_tool_without_awaiting_it`
+scans every `tests/test_*.py` for this and fails if it appears. Note that
+**`anyio.run(fn, *args)` does not forward keyword arguments** — use
+`anyio.run(lambda: fn(..., kw=...))`.
 
 Corollary for `doctor`: whether the machine is *complete* is a verdict, not a crash. Assert
 `manifest["ok"] == manifest["doctor"]["ok"]`, never `ok is True`, or the test only holds on
@@ -181,7 +195,7 @@ a fully equipped box.
 ### 4.2 Commands that must keep working
 
 ```bash
-python3 -m pytest tests -q                                 # 610 passed
+python3 -m pytest tests -q                                 # 716 passed
 python3 -m vidkit doctor  examples/hello-world/video.yaml  # exit 0
 python3 -m vidkit plan    examples/hello-world/video.yaml  # scene plan + estimate
 python3 -m vidkit build   examples/hello-world/video.yaml  # mp4 + srt + verify.json
@@ -331,6 +345,45 @@ python3 -m vidkit docs --index                             # JSON route table
   is ducked — but the returned `MixResult.ducked` is `False` and the span list is empty. Never
   recompute `duck_seconds` from the spec; report what the mix returned. `MixResult.__slots__`
   is `("out", "seconds", "ducked", "spans")`.
+- **`concat=n=2` hands its output the *first* input's timebase.** So *any* hard cut followed by
+  a dissolve aborted the render: `First input link main timebase (1/1000000) do not match the
+  corresponding second input link xfade timebase (1/12800)`. `Ffmpeg.concat_with_transitions`
+  now normalises **every** input with `settb=AVTB`, not just the second one. A junction renders
+  at exactly the sum of its shot lengths — the five mixes in the regression test are all
+  `6.000 s`.
+- **`spec.py` refuses unknown top-level keys, by name.** It used to read only
+  `raw.get("captures")`, so a top-level `capture:` block was discarded **silently**, and the
+  only error named the *scene*. `_SPEC_KEYS` lists the 14 legal keys and `_check_spec_keys`
+  fails the load with the offending key in the message. The captures key is **`captures:`**
+  (plural, top level); the per-shot key is **`capture:`** (singular).
+- **A selected take must survive the render.** `capture.capture_all` used to re-shoot every
+  capture, so a `take_select` was silently destroyed by the next build. `Context.selections`
+  (plus `Context.selected_take(capture)`) now records the choice, `capture_all` keeps the
+  promoted file instead of re-shooting, and `studio.select_take` updates an already-live
+  `Context`. The promotion **copies take N over the bare name**, so the two files are identical
+  by construction — a test that compares them is a check that cannot fail.
+- **FastMCP runs *sync* tools on the event loop.** Proven, not assumed
+  (`probe_dispatch.py`: both sync and async bodies execute on the loop thread). Playwright's
+  sync API therefore raises `It looks like you are using Playwright Sync API inside the asyncio
+  loop` — every browser and capture tool was dead over MCP, always, until each became
+  `async def` and offloaded through `vidkit/_loop.py`. **`tool_run` is deliberately the one
+  sync tool**, because its `_deadline` needs a main-thread `SIGALRM`; its ceiling is conditional
+  and it reports `timeout_enforced` tri-state rather than pretending otherwise.
+- **A registration closure must be `async def` if and only if the thing it wraps is a
+  coroutine.** Three defects came from breaking this in both directions, including an
+  *assignment* (`result = tool_session_exec(...)`) that no `return tool_x(` regex catches.
+  `tests/test_mcp.py` now AST-scans every closure for both directions.
+- **A resource URI cannot carry the record root.** FastMCP enforces an exact parameter match
+  between a URI template and the function, so `vidkit://sessions/{session}/…` can name only the
+  session: `ValueError: Mismatch between URI parameters {'session'} and function parameters
+  {'root', 'session'}`. `mcp_server._PROJECT` / `set_project()` / `_implicit_project()` and the
+  `--project` flag resolve it out of band.
+- **Do not promote a take you did not choose.** `browser_shot` once promoted its own record to
+  "chosen". The record now carries `"promoted": False`, and selection is a separate verb.
+- **A step that starts a process needs a declared backend.** A `_spec(...)`-templated test that
+  declares `exec.steps` is running the real sandbox and needs `@needs_sandbox` (or
+  `@needs_docker`); without the marker it passes locally and fails in CI. `backend: docker`
+  specs additionally cannot be *loaded* without Docker.
 
 ---
 
@@ -369,30 +422,39 @@ Use exactly these, so they are greppable:
 
 ## 6. Current position (snapshot)
 
-> Snapshot taken 2026-10-10 (after M9's merge). If this disagrees with
+> Snapshot taken 2026-10-11 (after M10's implementation; PR pending). If this disagrees with
 > [docs/plan/PLAN.md](docs/plan/PLAN.md), trust PLAN.md.
 
 - **Repo state:** public on GitHub (`anindyasundarbera/vidkit`), default branch `main`,
   CI green. **M0–M9 are merged** (M8 = PR #9 → `63ad046`; PR #10 → `9d3385b`; **M9 = PR #11
-  → `1894ec9`**).
-- **Tests:** `python3 -m pytest tests -q` → **610 passed in ~534 s** with every toolchain
-  present, **531 passed / 79 skipped** without. Run the lean form while iterating — it is
+  → `1894ec9`**). **M10 is built and verified on `phase/m10-studio-session`.**
+- **Tests:** `python3 -m pytest tests -q` → **716 passed in ~637 s** with every toolchain
+  present, **615 passed / 101 skipped** without. Run the lean form while iterating — it is
   two orders of magnitude cheaper and it is what CI's `pytest` jobs actually do.
   **Never run two `pytest` processes at once**: they share `.pytest-tmp/` (gitignored) and
   will fail each other spuriously.
 - **CI is seven jobs:** `test` (the lean suite on Python 3.10 *and* 3.12 — two jobs),
-  `build-example`, `capture-probe`, `exec-probe`, `docker-probe`, `movie-probe`.
-- **Three capabilities, three independent markers:** `needs_render`, `needs_sandbox`,
-  `needs_docker`. See §4.1 — a marker that asks "is the toolchain complete?" rather than
-  "is *this* capability usable?" is the bug the markers exist to prevent (defect G).
+  `build-example`, `capture-probe`, `exec-probe`, `docker-probe`, `movie-probe`,
+  `studio-probe`.
+- **Four capabilities, four independent markers:** `needs_render`, `needs_sandbox`,
+  `needs_docker`, `needs_playwright`. See §4.1 — a marker that asks "is the toolchain
+  complete?" rather than "is *this* capability usable?" is the bug the markers exist to
+  prevent (defect G).
 - **Engine:** host-free. **10 stages** (`data, panels, stills, capture, exec, narration,
-  clips, concat, render, verify`), **27 modules**, 11 panel kinds, **15 MCP tools**,
-  3 resources, docs routed across 7 modules (49 stems). M8 added a backend and a resource
-  lifecycle, and M9 a whole movie mode, **without adding a stage** — if a future phase needs
-  an eleventh, that is the signal to rethink the design, not to append (P5).
-- **Active phase:** **M9 is merged; M10 is next**
+  clips, concat, render, verify`), **29 modules**, 11 panel kinds, **34 MCP tools**,
+  **7 resources**, docs routed across 7 modules (24 routes). M8 added a backend and a
+  resource lifecycle, M9 a whole movie mode, and M10 a session layer over both, **without
+  adding a stage** — if a future phase needs an eleventh, that is the signal to rethink the
+  design, not to append (P5).
+- **Active phase:** **M9 is merged; M10 is implemented, verified, and awaiting its PR**
   ([docs/plan/FEATURE-ROADMAP.md](docs/plan/FEATURE-ROADMAP.md) §13). If this line disagrees
   with [docs/plan/PLAN.md](docs/plan/PLAN.md), trust PLAN.md.
+- **What M10 added:** [vidkit/studio.py](../../vidkit/studio.py) — sessions, a record
+  registry, takes that are re-hashed on every list, selection that survives the render, and
+  a `status()` that tells an agent what it may do next. Per-shot `transition:` landed with it
+  (and `concat=n=2`'s timebase bug with it). The wire layer had to change underneath: **most
+  MCP tools are now `async def`**, because FastMCP runs sync tools on the event loop and
+  Playwright's sync API refuses there.
 - **What M9 added:** shots can move (`motion:`), the engine can draw a card or a solid from
   words (`card`/`solid`), a shot's length can be *declared* (`seconds:`) instead of divided
   by weight, and a declared score is mixed under the narration with measured ducking. Four

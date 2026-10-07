@@ -27,7 +27,13 @@ Two capability markers live here, and they are independent on purpose:
     above and for the reason ``exec-guide.md`` gives: Docker's "available" has
     three meanings and only the third one is the one a spec means.
 
-The three are applied independently and must stay that way. An earlier version
+``needs_playwright``
+    Playwright is importable *and* a browser binary has been downloaded. Both
+    halves matter: the Python package installs in a second, the ~170 MB browser
+    download does not, and a test that says "drive a browser" fails on an
+    un-downloaded Chromium with an error that reads like an engine bug.
+
+The four are applied independently and must stay that way. An earlier version
 of this file returned early once the render tools were present, which silently
 disabled the sandbox marker on exactly the machines where it mattered least —
 the CI runner has ffmpeg and no usable bwrap. That is defect G one layer up;
@@ -86,6 +92,28 @@ def _probe_docker() -> bool:
 _HAVE_DOCKER = _probe_docker()
 
 
+#: Whether a *browser* can actually be driven here. Two facts, not one: the
+#: Playwright Python package imports, and a Chromium has been downloaded. The
+#: package installs from a wheel in a second; the browser is a ~170 MB fetch
+#: that a fresh checkout does not have, and the test that discovers this is the
+#: *first* one that drives a browser, with a message that reads like a bug in us.
+def _probe_playwright() -> bool:
+    try:
+        from playwright.sync_api import sync_playwright
+    except Exception:  # pragma: no cover - not installed is the normal lean case
+        return False
+    try:
+        with sync_playwright() as p:
+            browser = p.chromium.launch()
+            browser.close()
+        return True
+    except Exception:
+        return False
+
+
+_HAVE_PLAYWRIGHT = _probe_playwright()
+
+
 def pytest_configure(config) -> None:
     _SCRATCH.mkdir(exist_ok=True)
     config.option.basetemp = str(_SCRATCH)
@@ -101,6 +129,11 @@ def pytest_configure(config) -> None:
         "needs_docker: declares an `environment:` and `backend: docker`, so it "
         "needs a container to actually run (probing with `docker run`, not "
         "merely finding docker on PATH)")
+    config.addinivalue_line(
+        "markers",
+        "needs_playwright: drives a real browser, so it needs the Playwright "
+        "package *and* a downloaded Chromium (probing with launch(), not "
+        "merely finding the package)")
 
 
 def pytest_collection_modifyitems(config, items) -> None:
@@ -110,8 +143,10 @@ def pytest_collection_modifyitems(config, items) -> None:
         reason="no usable sandbox on this host (bwrap missing or blocked)")
     docker_skip = pytest.mark.skip(
         reason="no usable docker on this host (client, daemon or runtime)")
+    playwright_skip = pytest.mark.skip(
+        reason="no usable Playwright on this host (package or Chromium missing)")
     for item in items:
-        # three independent conditions, three independent skips: each is a
+        # four independent conditions, four independent skips: each is a
         # separate fact about the host and none implies another
         if not _HAVE_RENDER and "needs_render" in item.keywords:
             item.add_marker(render_skip)
@@ -119,6 +154,8 @@ def pytest_collection_modifyitems(config, items) -> None:
             item.add_marker(sandbox_skip)
         if not _HAVE_DOCKER and "needs_docker" in item.keywords:
             item.add_marker(docker_skip)
+        if not _HAVE_PLAYWRIGHT and "needs_playwright" in item.keywords:
+            item.add_marker(playwright_skip)
 
 
 def pytest_unconfigure(config) -> None:

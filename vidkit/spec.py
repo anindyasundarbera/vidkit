@@ -121,6 +121,11 @@ class Shot:
     seconds: float | None = None          # explicit length; overrides duration-by-weight
     kicker: str = ""                      # card shots: the eyebrow line above the title
     backdrop: str | None = None           # card shots: a declared picture behind the words
+    #: How this shot gives way to the next: ``""`` (follow the project), ``"cut"``
+    #: (never dissolve out of this shot), or a transition name. The junction between
+    #: two shots is the *outgoing* shot's business, because a dissolve is time the
+    #: outgoing picture lends to the incoming one.
+    transition: str = ""
 
 
 # how a still's camera moves. ``hold`` is a static frame; ``zoom`` pushes in;
@@ -231,6 +236,21 @@ class Action:
 
 # how a still is fitted to the frame (R-D5)
 FITS = {"cover", "contain"}
+
+
+def transition_of(shot, project) -> str:
+    """The transition out of this shot: ``""`` when there is none.
+
+    A junction belongs to the **outgoing** shot, because a dissolve is time the
+    outgoing picture lends to the one after it. So a shot that declares nothing
+    follows the project, and a shot that declares ``cut`` opts out of a project-wide
+    dissolve without the author having to spell the transition out on every
+    neighbour. ``""`` — no transition — is returned for a project that cuts, so
+    downstream code compares against one value rather than two spellings of nothing.
+    """
+    declared = getattr(shot, "transition", "")
+    kind = declared or project.transition
+    return "" if kind == "cut" else kind
 
 # a colour the engine will hand to ffmpeg or an SVG fill. Names are limited to the
 # ones both `ffmpeg -f lavfi color=` and SVG agree on, so one spelling works in
@@ -649,6 +669,18 @@ def _shots(raw: dict[str, Any], where: str) -> Shot:
                         "positive; remove the field to divide the scene by weight")
     kicker = str(raw.get("kicker", "")).strip()
     backdrop = None if raw.get("backdrop") is None else str(raw["backdrop"]).strip()
+    transition = raw.get("transition", "")
+    if transition is not None and not isinstance(transition, str):
+        # `str()`-ing it here would turn {"kind": "cut"} into the *unknown kind*
+        # error, which blames the wrong thing. Name the type instead.
+        raise SpecError(
+            f"{where}: transition must be a string — a kind name such as "
+            f"{', '.join(sorted(TRANSITIONS))} or cut (got {type(transition).__name__})")
+    transition = str(transition or "").strip().lower()
+    if transition and transition != "cut" and transition not in TRANSITIONS:
+        raise SpecError(
+            f"{where}: transition must be cut or one of "
+            + ", ".join(sorted(TRANSITIONS)) + f" (got {transition!r})")
     if kind not in ("card", "solid"):
         # A field the engine would ignore is worse than one it refuses: `backdrop:`
         # on a `still:` reads as "put this picture behind the words" and silently
@@ -668,7 +700,8 @@ def _shots(raw: dict[str, Any], where: str) -> Shot:
                 motion=_motion(raw.get("motion"), where, effect),
                 seconds=seconds,
                 kicker=kicker,
-                backdrop=backdrop)
+                backdrop=backdrop,
+                transition=transition)
 
 
 def _exec_step(raw: dict[str, Any], where: str) -> Exec:
@@ -849,6 +882,19 @@ def _overlay(raw: Any, where: str) -> Overlay:
                    fade=float(raw.get("fade", 0.4)))
 
 
+def _pointer_timeout(value: Any) -> float:
+    """The patience for a selector-bound action, defaulting to Playwright's 30 s.
+
+    ``timeout`` used to be read only for ``wait_for``/``download``, so a
+    ``click``/``fill``/``select``/``press`` that wrote one had it silently
+    dropped and fell back to the driver's own 30-second default. The field is
+    the *action's* patience, not one action kind's, so it is read here for all
+    of them. Storing it explicitly rather than leaving it ``None`` also keeps
+    the default visible to whoever reads the parsed action.
+    """
+    return float(value if value is not None else 30.0)
+
+
 def _action(raw: dict[str, Any], where: str) -> Action:
     if "type" in raw:
         kind, body = str(raw["type"]), raw
@@ -866,10 +912,12 @@ def _action(raw: dict[str, Any], where: str) -> Action:
     check = (_assert(body["assert"], f"{where}: action {kind!r}")
              if body.get("assert") else None)
     if kind == "select":
-        return Action("select", selector=sel, value=str(val), assert_=check)
+        return Action("select", selector=sel, value=str(val),
+                      timeout=_pointer_timeout(timeout), assert_=check)
     if kind in {"click", "fill", "press"}:
         return Action(kind, selector=sel,
-                      value=None if val is None else str(val), assert_=check)
+                      value=None if val is None else str(val),
+                      timeout=_pointer_timeout(timeout), assert_=check)
     if kind == "wait":
         return Action("wait", seconds=float(secs if secs is not None else val or 1.0),
                       assert_=check)
@@ -900,6 +948,36 @@ def _action(raw: dict[str, Any], where: str) -> Action:
     raise SpecError(f"{where}: unknown action type {kind!r}")
 
 
+#: Every top-level key a spec may carry. Anything else is refused rather than
+#: ignored, because the two failure modes are not equally bad. An unknown key that
+#: is ignored costs the author a confusing downstream error — ``capture:`` instead
+#: of ``captures:`` reads as "capture 'login' is not defined", which sends them looking
+#: at the scene. An unknown key that is *honoured* is worse: a typo in a guard or a
+#: policy would silently relax it and render something the author thought they had
+#: forbidden. Neither is acceptable, so the loader names the key and the near miss.
+_SPEC_KEYS = frozenset({
+    "project", "story", "timeframe", "voice", "narration", "captures", "charts",
+    "exec", "environment", "scenes", "guard", "provider", "score", "style",
+})
+
+
+def _check_spec_keys(raw: dict) -> None:
+    """Refuse top-level keys the loader would otherwise drop on the floor."""
+    unknown = sorted(set(raw) - _SPEC_KEYS)
+    if not unknown:
+        return
+
+    def near(key: str) -> list[str]:
+        return sorted(k for k in _SPEC_KEYS
+                      if k.startswith(key) or key.startswith(k))
+
+    hints = [f"{k!r} — did you mean {near(k)[0]!r}?" if near(k) else repr(k)
+             for k in unknown]
+    raise SpecError(
+        "unknown top-level key(s): " + ", ".join(hints) + "; known: "
+        + ", ".join(sorted(_SPEC_KEYS)))
+
+
 def load_spec(path: Path | str, *,
               timeframe: Timeframe | None = None,
               as_of: date | None = None) -> Spec:
@@ -916,6 +994,7 @@ def load_spec(path: Path | str, *,
     raw = _load_raw(path)
     if not isinstance(raw, dict):
         raise SpecError("spec root must be a mapping")
+    _check_spec_keys(raw)
 
     pj = raw.get("project") or {}
     for key in ("title", "slug", "output"):

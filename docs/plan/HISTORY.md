@@ -1633,3 +1633,110 @@ the picture, 1 over a flat field measured 0.0), 16.01s, score ducked=False`; `ar
 composition across shots: M9 made a single shot able to move, be drawn and be timed; nothing yet
 lets a film be *assembled* from shots that overlap, transition, or come from more than one take
 of the same scene.
+
+## 2026-10-11 — M10: the studio surface — a session, a take, and a check that awaits
+
+**Branch** `phase/m10-studio-session`, off `main` = `4819a62` (M9 + its bookkeeping merge).
+
+### What was built
+
+| File | What it is |
+|---|---|
+| `vidkit/studio.py` | ~1 420 lines. `Session` (spec, record dir, budget, selections), `Registry`, `Take`, `status(session) -> next_step`, take record/list/select, environment up/down/status over M8, live browser sessions. |
+| `vidkit/_loop.py` | Rewritten from scratch: `Worker` (one daemon thread per live session), `offload(fn, *args)`, `session(sess)`. |
+| `vidkit/mcp_server.py` | 15 tools → **34** (12 sync + 22 async), 3 resources → **7**. `_PROJECT` / `set_project()` / `_implicit_project()`, `--project`. One more deliberate sync tool: `tool_run`. |
+| `vidkit/spec.py` | `_SPEC_KEYS` + `_check_spec_keys`; per-shot `transition:`; `_pointer_timeout`. |
+| `vidkit/context.py` | `Context.selections`, `Context.selected_take(capture)`. |
+| `vidkit/capture.py` | `capture_all` keeps a promoted take instead of re-shooting it. |
+| `vidkit/ffmpeg.py` | `concat_with_transitions` — every input normalised with `settb=AVTB`. |
+| `tests/test_studio.py` | **87 tests**, including the protocol-level exit proof. |
+| `tests/test_mcp.py` | **35 tests**, including two structural AST scans. |
+| `.github/workflows/ci.yml` | The **`studio-probe`** job — the seventh. |
+
+### The three facts this phase is actually about
+
+1. **FastMCP runs sync tools on the loop thread.** Not inferred — a probe printed the thread
+   name from inside both a sync and an async tool body, and both said `MainThread`. Playwright's
+   sync API therefore refused outright (`It looks like you are using Playwright Sync API inside
+   the asyncio loop`), so **every browser and capture tool was dead over MCP, always, on every
+   machine**, and no test saw it because the tests called the plain functions rather than the
+   wire. `_loop.py` exists because of this sentence. (D55)
+2. **`concat=n=2` gives its output the first input's timebase.** The first attempt at
+   `transition:` produced `First input link main timebase (1/1000000) do not match the
+   corresponding second input link xfade timebase (1/12800)` — from ffmpeg itself, naming the
+   cause. **Any** hard cut preceding a dissolve aborted the render. Every input is normalised
+   now, and the five junction mixes render at exactly `6.000 s`. (D58)
+3. **A test that does not await an async tool cannot fail.** Making the tools async turned
+   existing assertions into `assert dict == coroutine` — always `False`, never raising, always
+   green. Two were found. The class is now pinned by an AST scan over every `tests/test_*.py`,
+   alongside a second scan that pins every registration closure against the coroutine it wraps
+   in **both** directions. (D57)
+
+### The defects
+
+**Nineteen real defects were found in M10's own new code**, none of them by reading:
+
+| # | Defect | Fixed by |
+|---|---|---|
+| 1 | `Session.sync_budget(live_containers=…)` declared, all five call sites passed `containers=` | rename |
+| 2 | A stray indentation swallowed the tail of `open_session` | reindent |
+| 3 | `run(ctx, assets, …)` positional drift | signature |
+| 4 | `Assets(ctx)` landing in the `stills` field | keyword |
+| 5 | `Budget.check()`'s seconds branch unreachable | reorder |
+| 6 | The driver escaped `capture.apply` for every action but three | `_driver_message`, `_patience` |
+| 7 | `timeout:` silently dropped for pointer actions | `_pointer_timeout` |
+| 8 | `session_open` dropped four parameters and returned success | D53 |
+| 9 | `record_dir` returned the project root | `Registry.load` |
+| 10 | (a) sync tools on the event loop; (b) no live-session registry, so every call after the first saw `{}` | `_loop.py`, `_LIVE` |
+| 11 | `browser_open` raised **after** opening a real browser | D53 |
+| 12 | `held(id)` could never match without an `out_dir` | match by held id |
+| 13 | `close_session` called `forget()` after `save()` | `try/finally` |
+| 14 | A resource awaited a **sync** tool; a closure assigned an async call without awaiting | structural scan |
+| 15 | The loader dropped unknown top-level keys silently and asymmetrically | `_SPEC_KEYS` |
+| 16 | **A selected take was destroyed by the build** | D54 |
+| 17 | The CI probe compared a promoted take against itself — a check that could not fail | compare to take 2's pre-promotion digest |
+| 18 | `tests/test_provenance.py` called `tool_provenance` un-awaited | `anyio.run` |
+| 19 | `tests/test_providers.py` called `tool_build` un-awaited twice | `anyio.run(lambda: …)` |
+
+Defects 15, 16, 17 and 19 were all of one family: **something was reported that had not been
+established.** Defect 17 could not fail at all; defect 16 made a *record* true while the film
+was false.
+
+### Evidence
+
+```
+pytest tests -q                       -> 716 passed in 637.42s
+PATH=/tmp/leanbin pytest tests -q     -> 615 passed, 101 skipped in 15.26s
+tests/test_studio.py                  -> 87 passed
+tests/test_mcp.py                     -> 35 passed
+tests/test_presentation.py            -> 69 passed
+tests/test_docker.py                  -> 50 passed in 90.13s
+studio-probe (steps 06-09)            -> STUDIO OK — 9 checks, 3 takes, chose take 2,
+                                         frame [252, 0, 0], 17346 bytes, record closed
+```
+
+The `studio-probe` step 09 claims are measurements, not restatements: it **decodes the delivered
+`.mp4`'s middle frame** and asserts the kept take's page colour survived the render, and it
+compares the promoted bytes to **take 2's own pre-promotion digest** with an inequality against
+take 1's. `ffmpeg` writes outside `/tmp` on this host, so the probe runs under `$HOME`.
+
+### Test-count and marker bookkeeping
+
+`tests/` collects **620**. Nine `tests/test_studio.py` tests reach a real sandbox
+(`exec.steps`) or a real Docker daemon (`backend: docker`) and had no marker — they passed
+locally and failed in the lean run. All nine now carry `@needs_sandbox` or `@needs_docker`, and
+`needs_playwright` is the **fourth** capability marker in `tests/conftest.py`.
+
+### What this phase deliberately did **not** build
+
+- **No compositor.** Picture-in-picture, masks and text over live motion remain unowned by any
+  phase. A `transition:` is a filter; a compositor is not.
+- **No eleventh stage.** Ten, as in M8 and M9 (FEATURE-ROADMAP §12 constraint **P5**).
+- **No version bump.** Still `1.0.0`; M7–M10 sit under `## [Unreleased]`.
+
+### Still owed to the owner
+
+- **The `v1.0.0` tag has not been pushed**, and which version M7–M10 become (`1.1.0` or
+  `1.2.0`) is the owner's call.
+- **A moving camera over a live capture is implemented but untested** (carried from M9).
+- **`doctor`'s happy path** still calls the full `docker_available()` probe (D48).

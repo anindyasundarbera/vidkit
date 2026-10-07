@@ -146,16 +146,26 @@ def run(spec_path: Path | str, *, only: Iterable[str] | None = None,
         from_stage: str | None = None,
         out_dir: Path | None = None, timeframe: Timeframe | str | dict | None = None,
         as_of: date | None = None, refresh: bool = False,
-        action: str = "build") -> Assets:
+        action: str = "build", ctx: Context | None = None,
+        assets: Assets | None = None) -> Assets:
+    """Run the pipeline.
+
+    ``ctx`` and ``assets`` may be handed in so that a long-lived caller (the studio
+    session) can run a stage at a time against the *same* object graph — the same
+    measured facts, the same opened environments. Passing nothing is the ordinary
+    one-shot build, which is what the CLI and the job contract do.
+    """
     started = time.time()
-    ctx = make_context(spec_path, out_dir, timeframe=timeframe, as_of=as_of)
+    if ctx is None:
+        ctx = make_context(spec_path, out_dir, timeframe=timeframe, as_of=as_of)
     spec = ctx.spec
     stages = _stage_set(only, from_stage)
     if refresh:
         # `--refresh` means "go to the source even though the snapshot would do",
         # so it re-adds the stage that reaching the source requires
         stages.add("data")
-    assets = Assets()
+    if assets is None:
+        assets = Assets()
 
     # -- provider ---------------------------------------------------------- #
     module = None
@@ -1008,10 +1018,31 @@ def _exec_span(ctx: Context, assets: Assets, shot,
     return paths, [*held, last], speed
 
 
+def plan_transitions(spec: Spec, plan) -> list[str]:
+    """What each planned take does at its own outgoing junction.
+
+    ``""`` means "cut here". One entry per take, last one always ``""`` (there is no
+    junction after the final take), so the list lines up with the take list and the
+    clip list rather than with a set of junctions. This is the *one* rule that decides
+    a transition, and it lives here because three callers need it and they must not
+    disagree: the renderer, which pads the outgoing take and tells ffmpeg to xfade,
+    and ``reports.plan_report``, which tells the author how long the film will be.
+    When those were separate, `vidkit plan` promised a length the build did not make.
+
+    A junction belongs to the **outgoing** shot: a dissolve is time the outgoing
+    picture lends to the one after it, which is why the pad and the xfade have to come
+    from one decision — otherwise the runtime stops matching the narration (I5).
+    """
+    from .spec import transition_of
+
+    return [transition_of(plan[i][2], spec.project) if i < len(plan) - 1 else ""
+            for i in range(len(plan))]
+
+
 def _build_clips(ctx: Context, assets: Assets, scripts) -> None:
     spec = ctx.spec
     plan = _clip_plan(ctx, assets)
-    dissolving = spec.project.transition != "cut" and len(plan) > 1
+    moves = plan_transitions(spec, plan)
     overlaid = 0
     graphics: dict[int, tuple[Path | None, tuple[int, int] | None]] = {}
     for i, (sc, idx, shot, seconds) in enumerate(plan):
@@ -1019,8 +1050,7 @@ def _build_clips(ctx: Context, assets: Assets, scripts) -> None:
         # incoming picture appears exactly when its own narration starts and the
         # previous picture lingers, fading, over the first beat of the new one —
         # which is what a dissolve means.
-        pad = (spec.project.transition_seconds
-               if dissolving and i < len(plan) - 1 else 0.0)
+        pad = spec.project.transition_seconds if moves[i] else 0.0
         png = _resolve_shot_still(ctx, assets, sc, shot)
         frames: tuple[list, list, float] | None = None
         if shot.kind == "exec":
@@ -1078,14 +1108,28 @@ def _concat(ctx: Context, assets: Assets) -> None:
         raise SpecError("no clips to concatenate")
     assets.video_track = ctx.clips / "video-track.mp4"
     spec = ctx.spec
-    if spec.project.transition == "cut" or len(clips) < 2:
+    if len(clips) < 2:
         ctx.ffmpeg.concat(clips, assets.video_track, ctx.clips / "video.txt")
     else:
-        # junction i is the one *into* clip i; the opening clip has none
-        trans = {i: (spec.project.transition, spec.project.transition_seconds)
-                 for i in range(1, len(clips))}
-        ctx.ffmpeg.concat_with_transitions(clips, assets.video_track, transitions=trans)
-        ctx.info(f"{spec.project.transition} transitions: {len(trans)} junction(s)")
+        # junction i is the one *into* clip i; the opening clip has none. A clip
+        # index is not a plan index — `plan_shots` drops zero-second takes — so the
+        # kinds come from the plan, and the plan must line up with the clips one for
+        # one or the transitions would attach to the wrong pairs.
+        plan = _clip_plan(ctx, assets)
+        moves = plan_transitions(spec, plan)
+        if len(plan) != len(clips):
+            raise SpecError(
+                f"{len(plan)} take(s) were planned but {len(clips)} were rendered — "
+                "transitions cannot be attached to pairs that do not match")
+        trans = {i + 1: (moves[i], spec.project.transition_seconds)
+                 for i in range(len(plan) - 1) if moves[i]}
+        if not trans:
+            ctx.ffmpeg.concat(clips, assets.video_track, ctx.clips / "video.txt")
+        else:
+            ctx.ffmpeg.concat_with_transitions(clips, assets.video_track,
+                                               transitions=trans)
+            named = ", ".join(sorted({k for k, _ in trans.values()}))
+            ctx.info(f"{named} transitions: {len(trans)} junction(s)")
     assets.audio_track = _tts.concat_audio(ctx, assets.scene_audio)
     ctx.info(f"concat: {len(clips)} clips, audio={'yes' if assets.audio_track else 'no'}")
 
