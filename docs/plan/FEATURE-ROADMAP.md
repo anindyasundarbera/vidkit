@@ -10,7 +10,7 @@
 >
 > For what is happening now see [PLAN.md](PLAN.md). For what happened see [HISTORY.md](HISTORY.md).
 
-**Last revised:** 2026-10-10 · **Status:** M0–M9 done · M10 next
+**Last revised:** 2026-10-07 · **Status:** M0–M10 done · release bookkeeping remains
 
 ---
 
@@ -78,7 +78,7 @@ M6  Hardening & v1.0            ← DONE, P0/P1      make it shippable
 M7  Executor & sandbox         ← DONE, P0           terminal, files, isolation
 M8  Docker & environment lab   ← DONE, P1         real containers on camera
 M9  Movie mode                 ← DONE, P1           narrative, not just demo
-M10 Studio surface v2                 P1           session-oriented MCP tools
+M10 Studio surface v2          ← DONE, P1           session-oriented MCP tools
 ```
 
 Phases **M0–M6** are the root roadmap's, unchanged. Phases **M7–M10** are new and cover the
@@ -558,8 +558,17 @@ that over the wire, and the `studio-probe` CI job does it against a real browser
 **Unplanned, and the reason the phase took twice as long as the plan:** FastMCP runs sync tools
 on the event loop, so every browser and capture tool was dead over MCP and nothing saw it
 (D55); and making the tools `async` silently voided existing tests that called them without
-awaiting (D57). **Nineteen defects were found in this phase's own new code**, four of them
-assertions that could not fail.
+awaiting (D57). **Twenty-seven defects were found in M10's implementation and compatibility
+work**, including assertions that could not fail. A separate scope error in the CI probe was
+also fixed before merge; it is recorded separately from that implementation tally in
+[HISTORY.md](HISTORY.md).
+
+**Compatibility closeout.** The MCP server and wire-level proofs now support SDK 1.x and 2.x,
+with `mcp>=1.20,<3` declared until a future major is exercised (D59). The lean suite uses a
+real pre-3.12 compiler for PEP 701 checks, and blocking work uses the standard library rather
+than relying on AnyIO being installed with the optional MCP extra. The final merged code passed
+both CI test-matrix jobs and all six end-to-end probes, including the studio probe's nine
+checks and decoded-frame proof. See the dated closeout in [HISTORY.md](HISTORY.md).
 
 **Left out, deliberately:** a compositor (picture-in-picture, masks, text over live motion) —
 unowned by any phase; and an eleventh stage (constraint P5 held for the third time).

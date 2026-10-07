@@ -4,9 +4,9 @@
 > `vidkit`. It survives context compaction; the conversation does not.
 >
 > **Repo:** <https://github.com/anindyasundarbera/vidkit> (public, MIT) · default branch `main`
-> · first commit `87b7435`. CI (`.github/workflows/ci.yml`) runs **seven jobs**: the lean
-> unit suite on Python 3.10/3.12 — the `test` matrix is **two** jobs — and five end-to-end
-> probes (`build-example`, `capture-probe`, `exec-probe`, `docker-probe`, `movie-probe`,
+> · first commit `87b7435`. CI (`.github/workflows/ci.yml`) runs **seven job keys / eight
+> job runs**: the lean unit suite on Python 3.10/3.12 — the `test` matrix is **two** jobs —
+> and six end-to-end probes (`build-example`, `capture-probe`, `exec-probe`, `docker-probe`, `movie-probe`,
 > `studio-probe`).
 >
 > For *what to build next* read [docs/plan/PLAN.md](docs/plan/PLAN.md).
@@ -174,7 +174,7 @@ each one and skips independently:
 | `needs_mcp` | `importlib.util.find_spec("mcp")` | anything that imports `mcp` itself — the server, its transports, `build_server()` |
 | `needs_pre_312_python` | actually compiling with a pre-3.12 interpreter | PEP 701 tokenization checks that 3.12+ cannot perform |
 
-**The markers must stay independent.** Three of these were added after a CI failure, and
+**The markers must stay independent.** Several were added after CI failures, and
 every time the failure was the same shape: a test passed locally because *this* machine
 happens to have a capability, and failed in CI for a reason unrelated to the code. A marker
 that asks "is the toolchain complete?" instead of "is *this* capability usable?"
@@ -207,7 +207,7 @@ a fully equipped box.
 ### 4.2 Commands that must keep working
 
 ```bash
-python3 -m pytest tests -q                                 # 781 passed, 1 Chromium screenshot failure
+python3 -m pytest tests -q                                 # local: 781 passed, 1 Chromium failure; CI matrix green
 python3 -m vidkit doctor  examples/hello-world/video.yaml  # exit 0
 python3 -m vidkit plan    examples/hello-world/video.yaml  # scene plan + estimate
 python3 -m vidkit build   examples/hello-world/video.yaml  # mp4 + srt + verify.json
@@ -434,19 +434,21 @@ Use exactly these, so they are greppable:
 
 ## 6. Current position (snapshot)
 
-> Snapshot taken 2026-10-11 (after M10's implementation; PR pending). If this disagrees with
+> Snapshot taken 2026-10-07 (after M10 merged). If this disagrees with
 > [docs/plan/PLAN.md](docs/plan/PLAN.md), trust PLAN.md.
 
 - **Repo state:** public on GitHub (`anindyasundarbera/vidkit`), default branch `main`,
-  CI green. **M0–M9 are merged** (M8 = PR #9 → `63ad046`; PR #10 → `9d3385b`; **M9 = PR #11
-  → `1894ec9`**). **M10 is built and verified on `phase/m10-studio-session`.**
-- **Tests:** `python3 -m pytest tests -q` → **781 passed, 1 Chromium screenshot failure in 616.99 s**
-  on the latest full run; the same screenshot test passed in isolation and the 89-test studio
-  suite passed. The lean run is **681 passed / 101 skipped**. Run the lean form while iterating — it is
-  two orders of magnitude cheaper and it is what CI's `pytest` jobs actually do.
+  CI green. **M0–M10 are merged** (M8 = PR #9 → `63ad046`; PR #10 → `9d3385b`; M9 = PR #11
+  → `1894ec9`; M10 = PR #13 → `b23de00`).
+- **Tests:** the lean local run is **681 passed / 101 skipped**. A local full run observed
+  **781 passed and one Chromium screenshot failure**; that test passed in isolation. Both
+  GitHub Actions test-matrix jobs (Python 3.10 and 3.12) passed, as did the real studio probe.
+  Run the lean form while iterating — it is two orders of magnitude cheaper and it is what
+  CI's `pytest` jobs actually do.
   **Never run two `pytest` processes at once**: they share `.pytest-tmp/` (gitignored) and
   will fail each other spuriously.
-- **CI is seven jobs:** `test` (the lean suite on Python 3.10 *and* 3.12 — two jobs),
+- **CI has seven job keys and eight job runs:** `test` (the lean suite on Python 3.10 *and*
+  3.12 — two runs),
   `build-example`, `capture-probe`, `exec-probe`, `docker-probe`, `movie-probe`,
   `studio-probe`.
 - **Six capabilities, six independent markers:** `needs_render`, `needs_sandbox`,
@@ -459,15 +461,16 @@ Use exactly these, so they are greppable:
   resource lifecycle, M9 a whole movie mode, and M10 a session layer over both, **without
   adding a stage** — if a future phase needs an eleventh, that is the signal to rethink the
   design, not to append (P5).
-- **Active phase:** **M9 is merged; M10 is implemented, verified, and awaiting its PR**
-  ([docs/plan/FEATURE-ROADMAP.md](docs/plan/FEATURE-ROADMAP.md) §13). If this line disagrees
-  with [docs/plan/PLAN.md](docs/plan/PLAN.md), trust PLAN.md.
+- **Active phase:** **M0–M10 are complete and merged.** No additional feature phase is
+  authorized in [docs/plan/FEATURE-ROADMAP.md](docs/plan/FEATURE-ROADMAP.md) §13. If this
+  snapshot disagrees with [docs/plan/PLAN.md](docs/plan/PLAN.md), trust PLAN.md.
 - **What M10 added:** [vidkit/studio.py](../../vidkit/studio.py) — sessions, a record
   registry, takes that are re-hashed on every list, selection that survives the render, and
   a `status()` that tells an agent what it may do next. Per-shot `transition:` landed with it
   (and `concat=n=2`'s timebase bug with it). The wire layer had to change underneath: **most
   MCP tools are now `async def`**, because FastMCP runs sync tools on the event loop and
-  Playwright's sync API refuses there.
+  Playwright's sync API refuses there. The standalone server and wire-level proof support MCP
+  SDK 1.x and 2.x (`mcp>=1.20,<3`); 3.x remains unclaimed pending compatibility testing (D59).
 - **What M9 added:** shots can move (`motion:`), the engine can draw a card or a solid from
   words (`card`/`solid`), a shot's length can be *declared* (`seconds:`) instead of divided
   by weight, and a declared score is mixed under the narration with measured ducking. Four
@@ -478,9 +481,9 @@ Use exactly these, so they are greppable:
   never produced. **A check that cannot fail is worse than no check, because it reads as
   assurance** (D49); **an absent measurement is not a negative measurement** (D52).
 - **The one item needing an owner decision:** the public **`v1.0.0` tag** — the code is at
-  `1.0.0` and merged, but the tag itself is a visible release and has not been pushed. M7,
-  M8 and M9 all sit under `## [Unreleased]` in the CHANGELOG; whether that becomes `1.1.0` or
-  `1.2.0` at release time is a second owner call (PLAN.md records `1.2.0` as the default).
+  `1.0.0` and merged, but the tag itself is a visible release and has not been pushed. M7–M10
+  sit under `## [Unreleased]` in the CHANGELOG; whether that becomes `1.1.0` or `1.2.0` at
+  release time is a second owner call (PLAN.md records `1.2.0` as the default).
 - **Host-safety contract (M8).** A container may never mount the Docker socket, runs
   unprivileged, has a hard timeout, and is torn down in a `finally` on every exit path.
   Teardown is *reported*, not assumed (`facts.environments[].teardown`). Do not weaken this

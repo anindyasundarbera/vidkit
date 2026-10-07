@@ -27,13 +27,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`vidkit/_loop.py`** — blocking work is offloaded off the event loop. FastMCP runs *sync*
   tools **on the loop thread** (proven, not assumed), so Playwright's sync API refused
   outright and every browser and capture tool was dead over MCP, always. Most tools are now
-  `async def` around a per-session `Worker` thread.
+  `async def`; browser sessions use a per-session `Worker`, and general blocking work uses
+  `asyncio.to_thread` without adding AnyIO as a runtime dependency.
 - **Budget governance** — wall-clock, container and step budgets are declared
   on a session and enforced, with `Budget.remaining()` and a refusal rather than a silent
   overrun.
-- The **`studio-probe` CI job** (the seventh): an MCP client opens a session, films three
-  distinctly-coloured takes of the same page, **keeps take 2**, renders, and proves the kept
-  take is what reached the film by decoding the delivered `.mp4`'s middle frame.
+- The **`studio-probe` CI job** (the seventh workflow job key): an MCP client opens a
+  session, films three distinctly-coloured takes of the same page, **keeps take 2**, renders,
+  and proves the kept take is what reached the film by decoding the delivered `.mp4`'s middle
+  frame.
 
 ### Fixed
 
@@ -63,12 +65,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Tests that call an `async` tool must await it.** A bare call returns a coroutine, so
   `pytest.raises` sees no exception and `result == {...}` compares a dict to a coroutine —
-  green, and meaningless. Two such tests were found; `tests/test_mcp.py` now scans every
-  `tests/test_*.py` for the pattern. Note **`anyio.run(fn, *args)` does not forward keyword
-  arguments** — wrap in a lambda.
-- **`tests/conftest.py` gained a fourth capability marker, `needs_playwright`**, probed by
-  importing `playwright.sync_api` and *launching* Chromium, and independent of the others.
-  Nine `tests/test_studio.py` tests gained the marker they had been missing.
+  green, and meaningless. `tests/test_mcp.py` now scans every `tests/test_*.py` for the
+  pattern; async tests use the stdlib-only `arun()` helper, so lean collection does not depend
+  on AnyIO or keyword forwarding behavior in `anyio.run`.
+- **The MCP SDK is tested across 1.x and 2.x**, and the optional dependency is bounded as
+  `mcp>=1.20,<3` until a future major is exercised. The server adapts the renamed server
+  class, context, transport settings, and result fields; the protocol exit proof passed on
+  MCP 1.27.2 and 2.3.0.
+- **`tests/conftest.py` has six independent capability markers**, including `needs_playwright`
+  (which imports the sync API and launches Chromium), `needs_mcp`, and
+  `needs_pre_312_python` (which proves PEP 701 behavior with a real older compiler). Nine
+  `tests/test_studio.py` tests carry the environment markers they need.
 
 ### Added
 

@@ -1734,3 +1734,73 @@ until its API changes are exercised and adapted.
 
 **Consequences.** The project keeps compatible 1.x installations and accepts 2.x, while
 dependency resolution refuses an unreviewed 3.x release instead of presenting it as supported.
+
+---
+
+## D60 — Core offloading uses the standard library
+
+**2026-10-07.** Context: M10.
+
+`vidkit/_loop.py` must move blocking browser and capture work off the MCP event loop. AnyIO
+was available through the optional MCP dependency, but the offload helper is runtime
+infrastructure and should not make core behavior depend on an optional extra.
+
+**Decision.** Implement offloading with `asyncio.to_thread` and copy the current context into
+the worker. Keep AnyIO out of the runtime implementation and out of test collection helpers.
+
+**Alternatives.**
+
+- *Use AnyIO for all offloading* — rejected: it is not installed in the lean core environment.
+- *Add AnyIO as a required dependency* — rejected: the standard library provides the needed
+  thread offload and context propagation.
+
+**Consequences.** Lean installs can import and exercise the offload layer without the MCP
+extra, while context variables retain their expected values in the worker thread.
+
+---
+
+## D61 — A language-feature test compiles with the interpreter it claims to cover
+
+**2026-10-07.** Context: M10 test portability.
+
+PEP 701 changes Python's tokenizer and is accepted by Python 3.12+, so parsing a file with the
+current interpreter or passing an `ast.parse(feature_version=...)` value cannot prove how a
+pre-3.12 runtime handles that syntax.
+
+**Decision.** Establish pre-3.12 behavior by invoking a real pre-3.12 compiler on known
+accepted and rejected source forms. Represent availability as its own pytest capability and
+skip only when the interpreter cannot be found and demonstrated.
+
+**Alternatives.**
+
+- *Infer behavior from the current interpreter's parser options* — rejected: this does not
+  reproduce the older tokenizer.
+- *Search source text for suspicious token patterns* — rejected: textual heuristics are not
+  a proof of syntax acceptance.
+
+**Consequences.** The test reports a meaningful result only when its target interpreter has
+actually compiled the samples, and the capability remains independent of render, browser,
+MCP, sandbox, and Docker availability.
+
+---
+
+## D62 — Take selection remains actionable without a browser
+
+**2026-10-07.** Context: M10.
+
+A selected take is persistent user intent, while Playwright availability only controls whether
+a new live capture can be made. Coupling promotion to the browser-launch branch meant a
+browserless build could silently ignore a selection already present on disk.
+
+**Decision.** Apply selected-take promotion independently of Playwright availability. Browser
+capability gates new browser work, not consuming a previously selected capture.
+
+**Alternatives.**
+
+- *Skip promotion whenever Playwright is unavailable* — rejected: this loses an existing
+  selection and makes builds depend on an unrelated capability.
+- *Require Playwright merely to render a selected take* — rejected: rendering the chosen file
+  does not require launching a browser.
+
+**Consequences.** A selected take remains the build input across browser-equipped and
+browserless environments, preserving deterministic replay.
