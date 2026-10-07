@@ -20,7 +20,30 @@ class Context:
     log: list[str] = field(default_factory=list)
     shell: Shell = field(default_factory=Shell)
     secrets: Secrets = field(default_factory=Secrets)
+    #: Takes the caller has promoted, as ``{"<capture>/<take>"}``. A studio sitting
+    #: chooses the moment to film; a later build must honour that choice instead of
+    #: re-shooting the page and overwriting it, which would put a moment the client
+    #: never picked into the film while the record still named the one it did.
+    selections: set[str] = field(default_factory=set)
     _provider_module: Any = None   # set only while provider.datasets() is running
+
+    def selected_take(self, capture: str) -> int | None:
+        """Which take of ``capture`` was chosen, or ``None`` if none was.
+
+        The highest wins: a caller may promote take 2 and later prefer take 3
+        after seeing the render, and the second choice is the one it means.
+        """
+        best: int | None = None
+        prefix = f"{capture}/"
+        for marker in self.selections:
+            if not marker.startswith(prefix):
+                continue
+            try:
+                n = int(marker[len(prefix):])
+            except ValueError:
+                continue
+            best = n if best is None else max(best, n)
+        return best
 
     def secret(self, name: str, default: str | None = None) -> str | None:
         """Read a declared secret.

@@ -16,7 +16,7 @@ dependencies = [
 [project.optional-dependencies]
 capture = ["playwright>=1.40"]
 tts = ["piper-tts>=1.2"]
-mcp = ["mcp>=1.20"]
+mcp = ["mcp>=1.20,<3"]
 dev = ["pytest>=7"]
 
 [project.scripts]

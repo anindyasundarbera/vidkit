@@ -493,20 +493,33 @@ class Ffmpeg:
         cmd = ["ffmpeg", "-y", "-loglevel", "error"]
         for p in parts:
             cmd += ["-i", str(p)]
+        # Every input is put on a common timebase before anything else. This is not
+        # cosmetic: `xfade` refuses to configure when its two links disagree, and a
+        # `concat` filter hands its *first* input's timebase to its output — so the
+        # moment a hard cut precedes a dissolve, the concatenated stream arrives at
+        # `xfade` at 1/12800 (the looped-still rate) against the next clip's
+        # 1/1000000, and the whole render dies with "First input link main timebase
+        # do not match". Normalising to AVTB up front makes any mix of cut and
+        # dissolve renderable.
         chain: list[str] = []
-        last = "0:v"
+        src: list[str] = []
+        for i in range(len(parts)):
+            label = f"s{i}"
+            chain.append(f"[{i}:v]settb=AVTB[{label}]")
+            src.append(label)
+        last = src[0]
         length = self.duration(parts[0])
         for i in range(1, len(parts)):
             kind, seconds = transitions.get(i, ("cut", 0.0))
             label = f"v{i}"
             clip = self.duration(parts[i])
             if kind == "cut" or seconds <= 0:
-                chain.append(f"[{last}][{i}:v]concat=n=2:v=1:a=0[{label}]")
+                chain.append(f"[{last}][{src[i]}]concat=n=2:v=1:a=0[{label}]")
                 length += clip
             else:
                 offset = max(length - seconds, 0.0)
                 chain.append(
-                    f"[{last}][{i}:v]xfade=transition={_XFADE[kind]}:"
+                    f"[{last}][{src[i]}]xfade=transition={_XFADE[kind]}:"
                     f"duration={seconds:.3f}:offset={offset:.3f}[{label}]")
                 length += clip - seconds
             last = label

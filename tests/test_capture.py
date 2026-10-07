@@ -991,3 +991,97 @@ def test_verify_passes_when_the_artifact_is_really_there(tmp_path):
     check = next(c for c in rep.checks if c.name == "filmed artifacts are real files")
     assert check.ok is True and "1 artifact(s)" in check.detail
     assert rep.facts["artifacts"]["a.csv"]["bytes"] == path.stat().st_size
+
+
+# --------------------------------------------------------------------------- #
+# the driver is never allowed to speak for the engine
+# --------------------------------------------------------------------------- #
+def test_a_driver_failure_is_translated_into_a_refusal_not_raised():
+    """Playwright signals a missing element with its own ``TimeoutError``.
+
+    That is precisely the failure an author needs to *read* — which selector,
+    how long — so it must surface as a ``ToolError`` naming both, with the
+    driver's own exception kept as the cause. A driver exception escaping here
+    becomes a traceback in ``vidkit capture`` and, in the studio, an exception
+    where a failed step belongs.
+    """
+    class Hostile:
+        def click(self, selector, **kw):
+            raise TimeoutError(
+                "Page.click: Timeout 30000ms exceeded.\n"
+                "Call log:\n  \x1b[2m- waiting for locator(\"#gone\")\x1b[22m")
+
+    with pytest.raises(ToolError) as exc:
+        _capture.apply(Hostile(), _action("click", selector="#gone", timeout=1.5))
+    text = str(exc.value)
+    assert "click on '#gone'" in text
+    assert "within 1.5s" in text
+    assert "Timeout 30000ms exceeded" in text, "the driver's own words are the diagnosis"
+    assert "\n" not in text, "a multi-line call log would break every report it lands in"
+    assert isinstance(exc.value.__cause__, TimeoutError)
+
+
+def test_every_selector_bound_action_translates_a_driver_failure():
+    """All of them, not just ``wait_for`` and ``download``.
+
+    Those two translated driver errors from the beginning; the pointer actions
+    did not, so a ``click`` that could not find its selector escaped as
+    Playwright's ``TimeoutError``.
+    """
+    class Hostile:
+        def __getattr__(self, name):
+            def boom(*a, **kw):
+                raise TimeoutError(f"{name}: Timeout 30000ms exceeded.")
+            return boom
+
+    for kind, kw in [("select", {"value": "v"}), ("click", {}), ("fill", {"value": "v"}),
+                     ("press", {"value": "Enter"}), ("wait_for", {}),
+                     ("eval", {"script": "1+1"})]:
+        with pytest.raises(ToolError) as exc:
+            _capture.apply(Hostile(), _action(kind, selector="#x", **kw))
+        text = str(exc.value)
+        assert "'#x'" in text, kind
+        assert "30s" in text, kind
+        # `wait_for` has said this well since capture v2; the pointer actions were
+        # the gap. Either wording is fine, so long as it is ours and not the driver's.
+        assert "did not get there within" in text or "waited 30s for" in text, kind
+
+
+def test_an_objection_from_the_engine_is_not_rewritten_as_a_driver_error():
+    """``ToolError`` already names the action and what it wanted.
+
+    Wrapping it in "did not get there within 30s" would bury the real reason —
+    an action with no selector, say — under a timeout that never happened.
+    """
+    with pytest.raises(ToolError, match="click: needs a selector"):
+        _capture.apply(_page(), _action("click"))
+
+
+def test_the_action_timeout_reaches_the_driver_in_milliseconds():
+    """A spec's ``timeout`` is seconds; Playwright's keyword is milliseconds."""
+    seen: list[float] = []
+
+    class Recording:
+        def click(self, selector, *, timeout=None):
+            seen.append(timeout)
+
+    _capture.apply(Recording(), _action("click", selector="#c", timeout=2.5))
+    assert seen == [2500.0]
+
+
+def test_an_action_timeout_is_read_from_the_spec_for_pointer_actions(tmp_path):
+    """The loader used to keep ``timeout`` only for ``wait_for``/``download``.
+
+    A ``click`` that wrote one had it silently dropped and fell back to the
+    driver's 30-second default — the spec said one thing and the engine did
+    another, which is the failure this whole file exists to catch.
+    """
+    from vidkit.spec import _action as load_action
+
+    for kind, extra in [("click", {}), ("fill", {"value": "v"}),
+                        ("press", {"value": "Enter"}), ("select", {"value": "v"})]:
+        action = load_action({"type": kind, "selector": "#x", "timeout": 2.5, **extra},
+                              "capture 'c' action 1")
+        assert action.timeout == 2.5, kind
+    bare = load_action({"type": "click", "selector": "#x"}, "capture 'c' action 1")
+    assert bare.timeout == 30.0, "the default stays visible on the parsed action"

@@ -13,6 +13,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from conftest import arun
+
 import pytest
 
 from vidkit import provenance as pv
@@ -209,7 +211,12 @@ def test_the_verb_and_the_json_and_the_tool_all_name_the_same_build(tmp_path):
     assert built["ok"] is True
 
     manifest = run_job("provenance", story=str(EXAMPLE), out=str(tmp_path))
-    tool = mcp_server.tool_provenance(str(EXAMPLE / "video.yaml"), str(tmp_path))
+    # `tool_provenance` hopped off the event loop with the rest of the blocking
+    # tools, so it is a coroutine now: calling it without awaiting yields a
+    # coroutine object, and every assertion below would then be comparing a
+    # coroutine to a dict — a test that cannot fail.
+    tool = arun(
+        mcp_server.tool_provenance, str(EXAMPLE / "video.yaml"), str(tmp_path))
     from vidkit.reports import format_provenance
 
     text = format_provenance(manifest["provenance"])

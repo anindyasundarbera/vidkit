@@ -980,3 +980,293 @@ jobs:
           probe=$(ffmpeg -i examples/movie-demo/movie-demo.mp4 2>&1 || true)
           echo "$probe" | grep -q "Audio:" || { echo "the film has no audio stream"; exit 1; }
           echo "artifacts ok"
+
+  studio-probe:
+    # M10's claim is not "there is a studio module" — it is "an external client, speaking
+    # only MCP, can open a sitting against a spec, drive a live page, photograph it three
+    # times, choose a take, assemble a film, read the report back, and close". Every part
+    # of that crosses a boundary a unit test cannot: the wire is FastMCP's, the page is
+    # Chromium's, and the film is ffmpeg's.
+    #
+    # This job exists because that claim was false in a way nothing local caught. FastMCP
+    # runs a *sync* tool on the event loop, so Playwright's own sync API refused outright
+    # and every browser tool was dead over the wire — always, and silently, because the
+    # failure arrived as a JSON string. The two tests below drive the real transport for
+    # that reason. They are then followed by an in-shell drive, because the tests build
+    # into a discarded `tmp_path` and this job also wants to read what a *sitting* left on
+    # disk: the record, the takes, and the report the client was handed.
+    name: an MCP client takes a sitting end to end
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install system tools
+        # ffmpeg and rsvg-convert: the sitting ends in a real render
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends ffmpeg librsvg2-bin
+
+      - name: Install vidkit
+        # `[mcp]` is not optional here, because this job's whole point is to drive the
+        # server over its own transport: the two tests it runs and the probe below both
+        # `import mcp`. Installing only `[dev]` made them fail at *import* — a green
+        # `capture-probe` and a red `studio-probe` for the same installed browser.
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[mcp,dev]"
+          python -m pip install playwright
+
+      - name: Install a browser
+        # `--with-deps` because the runner image does not carry Chromium's shared
+        # libraries; without it the launch fails on a missing `.so`, which reads as
+        # "playwright is broken" rather than "a library is missing".
+        run: python -m playwright install --with-deps chromium
+
+      - name: vidkit can see the browser it is about to drive
+        run: |
+          set -eu
+          python - <<'PY'
+          import json, subprocess, sys
+          from vidkit import capture
+
+          assert capture._playwright_available(), "playwright is not importable"
+
+          # The probe must be vidkit's own, not this script's. `doctor` is the surface
+          # an agent reads before spending a minute on a build, so if it cannot see the
+          # browser then every browser tool is unreachable over MCP.
+          out = subprocess.run([sys.executable, "-m", "vidkit", "doctor", "--json"],
+                               capture_output=True, text=True, check=True)
+          rows = {t["name"]: t for t in json.loads(out.stdout)["doctor"]["tools"]}
+          assert rows["playwright"]["present"], rows["playwright"]
+          assert rows["chrome/chromium"]["present"], rows["chrome/chromium"]
+          print(f"doctor: playwright present, chromium at "
+                f"{rows['chrome/chromium']['detail']}")
+          PY
+
+      - name: The sitting works over the wire
+        run: |
+          set -eu
+          python -m pytest tests/test_studio.py -q \
+            -k "sitting_end_to_end or second_tool_call" -p no:randomly
+
+      - name: Drive a sitting from outside and keep what it left behind
+        run: |
+          set -eu
+          python - <<'PY'
+          import anyio, contextlib, json
+          from pathlib import Path
+
+          from mcp.client.session import ClientSession
+          from mcp.shared.memory import create_client_server_memory_streams
+          from vidkit import mcp_server as m
+
+          @contextlib.asynccontextmanager
+          async def mcp_session(server):
+              """Drive the real low-level server over the stable in-memory transport."""
+              async with create_client_server_memory_streams() as (client_side, server_side):
+                  client_read, client_write = client_side
+                  server_read, server_write = server_side
+                  raw = next((getattr(server, name, None)
+                              for name in ("_mcp_server", "_lowlevel_server")
+                              if getattr(server, name, None) is not None), None)
+                  assert raw is not None, f"no low-level MCP server in {type(server).__name__}"
+                  async with anyio.create_task_group() as tg:
+                      tg.start_soon(raw.run, server_read, server_write,
+                                    raw.create_initialization_options())
+                      try:
+                          client = ClientSession(read_stream=client_read,
+                                                 write_stream=client_write)
+                          async with client:
+                              await client.initialize()
+                              yield client
+                      finally:
+                          tg.cancel_scope.cancel()
+
+          out = Path("studio-out").resolve()
+          story = Path("studio-story")
+          story.mkdir(exist_ok=True)
+          (story / "video.yaml").write_text("""
+          project: {title: Studio probe, slug: studio-probe, output: probe.mp4,
+                    min_seconds: 1, max_seconds: 30}
+          guard: {require_audio: false}   # a declared silent cut, never an accidental one
+          captures:
+            - name: login
+              url: "data:text/html,<h1 id=t>probe</h1>"
+              actions:
+                - {type: wait_for, selector: "#t"}
+          narration: {inline: {0: "A live page, photographed three times."}}
+          scenes:
+            - n: 0
+              id: one
+              title: One
+              shots:
+                - {capture: login}
+          """, encoding="utf-8")
+
+          async def go():
+              async def call(client, name, args):
+                  answered = await client.call_tool(name, {"out": str(out), **args})
+                  is_error = getattr(answered, "isError",
+                                     getattr(answered, "is_error", False))
+                  assert not is_error, (name, answered.content)
+                  return json.loads(answered.content[0].text)
+
+              async with mcp_session(m.build_server()) as client:
+                  opened = await call(client, "session_open",
+                                      {"spec": str(story / "video.yaml")})
+                  sid = opened["id"]
+                  assert Path(opened["record_dir"]) == out / ".vidkit" / "sessions", opened
+
+                  opened_browser = await call(client, "browser_open",
+                                              {"session": sid, "url": ""})
+                  assert opened_browser["open"] is True, opened_browser
+
+                  three = []
+                  for take, back, fore in ((1, "#000000", "#000000"),
+                                           (2, "#ff0000", "#00ff00"),
+                                           (3, "#0000ff", "#ffff00")):
+                      # the page has to differ between takes, or `select_take` is right
+                      # to refuse to promote one of three identical pictures — and the
+                      # colours are what let the *film* be checked below, rather than
+                      # only the record that claims what the film was built from
+                      await call(client, "browser_act", {"session": sid, "actions": [
+                          {"type": "eval", "script":
+                           f"document.body.style.background = {back!r};"
+                           f"document.getElementById('t').style.color = {fore!r}"}]})
+                      shot = await call(client, "browser_shot",
+                                        {"session": sid, "name": "login", "take": take})
+                      assert shot["promoted"] is False, shot
+                      three.append(shot["digest"])
+                  assert len(set(three)) == 3, f"three takes were not three pictures: {three}"
+                  print(f"three distinct takes: {[d[:12] for d in three]}")
+
+                  await call(client, "browser_close", {"session": sid})
+                  picked = await call(client, "take_select",
+                                      {"session": sid, "capture": "login", "take": 2})
+                  assert picked["ok"] is True, picked
+
+                  built = await call(client, "session_build", {"session": sid})
+                  assert built["ok"] is True, built
+                  report = await call(client, "session_report", {"session": sid})
+                  assert report["ok"] is True, [c for c in report["report"]["checks"]
+                                                if not c["ok"]]
+                  await call(client, "session_close", {"session": sid})
+                  return built, report["report"], three
+
+          built, report, three = anyio.run(go)
+
+          # The claim the whole job rests on, measured rather than re-read. Take 1
+          # painted the page black and take 2 red, so if the render re-shot the page
+          # instead of honouring the promotion the film is black and this fails. It is
+          # the check that was missing when the build silently overwrote a chosen take
+          # and the record went on naming it.
+          from vidkit.ffmpeg import Ffmpeg
+
+          film = Path(report["facts"]["output"])
+          ff = Ffmpeg()
+          rgb = ff.frame_rgb(film, ff.duration(film) * 0.5, Path("probe-frame.raw"))
+          pixels = [rgb[i:i + 3] for i in range(0, len(rgb), 3)]
+          mean = tuple(round(sum(p[c] for p in pixels) / len(pixels)) for c in range(3))
+          assert mean[0] >= 200 and mean[1] <= 60 and mean[2] <= 60, (
+              f"the middle frame of the delivered film averages {mean}, which is not "
+              f"the red page the sitting selected — the build did not render it")
+
+          Path("studio-probe.json").write_text(json.dumps(
+              {"built": built, "report": report, "film_mean_rgb": mean,
+               "take_digests": three}, indent=1))
+          print(f"built {built['output']} in {built['seconds']}s, "
+                f"{len(report['checks'])} checks passed, "
+                f"selected take's frame is {mean}")
+          PY
+
+      - name: What the sitting left on disk is what the client was told
+        run: |
+          set -eu
+          python - <<'PY'
+          import hashlib, json, subprocess, sys
+          from pathlib import Path
+
+          probe = json.loads(Path("studio-probe.json").read_text())
+          report = probe["report"]
+          out = Path("studio-out")
+          sessions = out / ".vidkit" / "sessions"
+
+          # the film the client was told about
+          film = out / "probe.mp4"
+          assert film.is_file() and film.stat().st_size > 0, f"no film at {film}"
+          assert probe["built"]["output"] == str(film.resolve()), probe["built"]
+
+          # the report the client was handed, re-read from the file it named
+          on_disk = json.loads((out / "_build" / "verify.json").read_text())
+          assert on_disk["ok"] is True
+          assert on_disk["checks"] == report["checks"], (
+              "the report served over the wire is not the report on disk")
+
+          # the record of the sitting, one file per session, closed and saved
+          records = list(sessions.glob("*.json"))
+          assert len(records) == 1, f"expected one session record, found {records}"
+          record = json.loads(records[0].read_text())
+          assert record["closed"] is not None, "the record does not say it was closed"
+          assert json.loads(Path("studio-probe.json").read_text())["built"]["session"] \
+              == record["id"]
+
+          # the takes, and the one that was chosen. Take 1 keeps the bare name; later
+          # takes sit beside it as `.takeN`, which is the convention `capture.take_name`
+          # defines and the one the promotion reads.
+          takes = sorted((out / "_capture").glob("login*"))
+          assert len(takes) == 3, f"expected three takes on disk, found {takes}"
+          assert {t.name for t in takes} == {
+              "login.png", "login.take2.png", "login.take3.png"}, takes
+
+          # `selected` is derived when the takes are listed, not written into the
+          # record, so ask the listing rather than looking for a field the record
+          # never had. `list_takes` re-hashes each file, so this also proves the file
+          # the record names is still the file on disk.
+          listed = json.loads(subprocess.run(
+              [sys.executable, "-c",
+               "import json,sys;from pathlib import Path;from vidkit import studio as s;"
+               "r=s.Registry(sys.argv[1]);"
+               "print(json.dumps(s.list_takes(r.load(sys.argv[2]))))",
+               str(out), record["id"]],
+              capture_output=True, text=True, check=True).stdout)
+          chosen = [t for t in listed["takes"] if t["selected"]]
+          assert len(chosen) == 1 and chosen[0]["take"] == 2, chosen
+          assert chosen[0]["path"] == "_capture/login.take2.png", chosen
+
+          # The promotion is a *copy onto the name the renderer reads*, so after it
+          # both files are the same bytes by construction: comparing them cannot
+          # fail and is not worth asserting. What is worth asserting is that the
+          # name the pipeline reads now holds take 2's own bytes and not take 1's —
+          # against the digest take 2 had before anything was promoted.
+          promoted = (out / "_capture" / "login.png").read_bytes()
+          assert hashlib.sha256(promoted).hexdigest()[:16] == probe["take_digests"][1], (
+              f"the file the renderer reads holds {hashlib.sha256(promoted).hexdigest()[:16]}, "
+              f"not take 2 ({probe['take_digests'][1][:16]})")
+          assert hashlib.sha256(promoted).hexdigest()[:16] != probe["take_digests"][0], (
+              "the file the renderer reads is still take 1 — the promotion did nothing")
+          print(f"_capture/login.png now holds take 2's bytes "
+                f"({probe['take_digests'][1][:12]}), not take 1's "
+                f"({probe['take_digests'][0][:12]})")
+
+          # and the film is built from those bytes, not merely from the record's
+          # claim: take 1 painted the page black and take 2 red, so a build that
+          # re-shot the page instead of honouring the promotion would be black
+          mean = probe["film_mean_rgb"]
+          assert mean[0] >= 200 and mean[1] <= 60 and mean[2] <= 60, (
+              f"the middle frame of the delivered film averages {tuple(mean)}, "
+              "which is not the take the record says is selected")
+          print(f"film's middle frame averages {tuple(mean)} — the selected take, "
+                "measured in the delivered file")
+
+          # nothing was left running: no browser, no container, no environment
+          assert not record.get("environments"), record.get("environments")
+          print(f"STUDIO OK — {len(report['checks'])} checks, 3 takes, "
+                f"chose take 2, frame {probe['film_mean_rgb']}, "
+                f"{film.stat().st_size} bytes, record closed")
+          PY

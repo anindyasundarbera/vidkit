@@ -12,7 +12,9 @@ vidkit-mcp --transport streamable-http --port 8765   # long-lived HTTP
 vidkit-mcp --transport sse --port 8765               # SSE (legacy)
 ```
 
-Requires the extra: `pip install "vidkit[mcp]"` (i.e. `mcp>=1.20`).
+Requires the extra: `pip install "vidkit[mcp]"` (i.e. `mcp>=1.20,<3`). vidkit supports
+the MCP SDK's 1.x and 2.x app APIs; a future major version is excluded until it is
+explicitly tested and adapted.
 
 ## Tools
 

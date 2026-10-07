@@ -25,6 +25,7 @@ import pytest
 from vidkit import overlay as ov
 from vidkit.errors import SpecError
 from vidkit.panels import axis_positions, parse_x
+from vidkit.reports import format_plan
 from vidkit.spec import load_spec
 
 # --------------------------------------------------------------------------- #
@@ -482,6 +483,48 @@ def test_a_wipe_is_a_boundary_and_not_a_blend(tmp_path):
     assert right[2] > 150 and right[0] < 100, right  # blue has entered from the right
 
 
+def test_a_cut_before_a_dissolve_still_renders(tmp_path):
+    """A hard cut and a dissolve may sit in the same film.
+
+    This is a regression guard with a specific history: ``concat`` hands its *first*
+    input's timebase to its output, so the moment a cut preceded a dissolve the
+    concatenated stream reached ``xfade`` at the looped-still rate (1/12800) against
+    the next clip's 1/1000000, and ffmpeg refused the whole graph with *"First input
+    link main timebase do not match"*. Every input is now normalised to AVTB first,
+    so any mix of junctions is renderable — and all of them still net to zero change
+    in runtime, which is what keeps the pictures on the narration's clock.
+    """
+    from vidkit.assembler import run
+    from vidkit.ffmpeg import Ffmpeg
+
+    ff = Ffmpeg()
+    if not ff.available:
+        pytest.skip("ffmpeg not installed")
+    assets = run(_junction_spec(tmp_path, ["cut", "", ""]), out_dir=tmp_path / "out")
+    spoken = sum(s.seconds for s in assets.scene_audio)
+    track = tmp_path / "out" / "_build" / "clips" / "video-track.mp4"
+    assert ff.duration(track) == pytest.approx(spoken, abs=0.05)
+    assert ff.duration(tmp_path / "out" / "t.mp4") == pytest.approx(spoken, abs=0.05)
+
+
+def test_every_mix_of_cut_and_dissolve_renders(tmp_path):
+    """All eight ways three junctions can be cut or dissolved."""
+    from itertools import product
+
+    from vidkit.assembler import run
+    from vidkit.ffmpeg import Ffmpeg
+
+    ff = Ffmpeg()
+    if not ff.available:
+        pytest.skip("ffmpeg not installed")
+    for i, combo in enumerate(product(("cut", ""), repeat=3)):
+        out = tmp_path / f"m{i}"
+        assets = run(_junction_spec(tmp_path, list(combo)), out_dir=out)
+        spoken = sum(s.seconds for s in assets.scene_audio)
+        track = out / "_build" / "clips" / "video-track.mp4"
+        assert ff.duration(track) == pytest.approx(spoken, abs=0.05), combo
+
+
 def test_a_hard_cut_leaves_no_seam_at_all(tmp_path):
     """The control for the test above: with no transition the very same moment
     is one picture or the other, never two."""
@@ -522,3 +565,150 @@ def test_overlays_and_transitions_survive_a_resumed_concat(tmp_path):
     px = _track_rgb(ff, track, 1.0)
     assert px(160, 40)[0] > 150, px(160, 40)   # the shot is still the shot
     assert sum(px(160, 160)) > 200, px(160, 160)  # and the banner is over it
+
+
+# --------------------------------------------------------------------------- #
+# a shot's own transition (M10)
+# --------------------------------------------------------------------------- #
+def _junction_spec(tmp_path: Path, transitions: list, *, project="fade",
+                   seconds=0.6):
+    """Three takes, so two junctions, and each one can be decided separately."""
+    for i, colour in enumerate(("#ff0000", "#00ff00", "#0000ff")):
+        (tmp_path / f"c{i}.svg").write_text(
+            '<svg xmlns="http://www.w3.org/2000/svg" width="320" height="180">'
+            f'<rect width="320" height="180" fill="{colour}"/></svg>', encoding="utf-8")
+    scenes = [{"n": i + 1, "title": f"s{i}",
+               "shots": [{"still": f"c{i}.svg", "transition": transitions[i]}]}
+              for i in range(3)]
+    p = tmp_path / "video.json"
+    p.write_text(json.dumps({
+        "project": {"slug": "t", "title": "T", "output": "t.mp4", "size": [320, 180],
+                    "fps": 25, "min_seconds": 1, "max_seconds": 60,
+                    "transition": project, "transition_seconds": seconds},
+        "scenes": scenes,
+        "guard": {"require_audio": False},
+        "narration": {"inline": {1: "one two three four five",
+                                 2: "one two three four five",
+                                 3: "one two three four five"}},
+    }), encoding="utf-8")
+    return p
+
+
+def test_a_shot_may_override_the_projects_transition(tmp_path):
+    spec = load_spec(_junction_spec(tmp_path, ["", "cut", ""]))
+    assert spec.scenes[1].shots[0].transition == "cut"
+    assert spec.scenes[0].shots[0].transition == ""
+
+
+def test_a_shot_transition_refuses_an_unknown_kind(tmp_path):
+    with pytest.raises(SpecError, match="scene 1: transition must be cut or one of"):
+        load_spec(_junction_spec(tmp_path, ["page-turn", "", ""]))
+
+
+def test_transition_of_is_the_one_spelling_of_nothing(tmp_path):
+    """The project default and a per-shot override have to collapse to one
+    value before anything compares them, or "no transition" gets two spellings
+    and the renderer and the planner can disagree about it."""
+    from vidkit.assembler import plan_shots, plan_transitions
+    from vidkit.spec import transition_of
+
+    spec = load_spec(_junction_spec(tmp_path, ["", "cut", ""]))
+    assert transition_of(spec.scenes[0].shots[0], spec.project) == "fade"
+    assert transition_of(spec.scenes[1].shots[0], spec.project) == ""
+
+    plan = plan_shots(spec, [])
+    # `plan_shots` needs narration spans, so with no audio the scenes' declared
+    # lengths stand in. Either way the rule is the same one.
+    if not plan:
+        plan = [(sc, i, sc.shots[i], 1.0) for sc in spec.scenes
+                for i in range(len(sc.shots))]
+    moves = plan_transitions(spec, plan)
+    assert moves[0] == "fade" and moves[1] == "" and moves[2] == ""
+    assert len(moves) == len(plan)
+
+
+def test_the_plan_names_the_junction_the_renderer_uses(tmp_path):
+    """`vidkit plan` and the renderer must count the same junctions. Before the
+    rule was shared, one shot saying ``cut`` in a ``fade`` project was still
+    planned as if it dissolved — a promise the build did not keep."""
+    from vidkit.assembler import plan_transitions
+    from vidkit.reports import plan_report
+
+    spec = load_spec(_junction_spec(tmp_path, ["", "cut", ""]))
+    plan = [(sc, i, sc.shots[i], 1.0) for sc in spec.scenes
+            for i in range(len(sc.shots))]
+    assert [m for m in plan_transitions(spec, plan) if m] == ["fade"]
+
+    rep = plan_report(_junction_spec(tmp_path, ["", "cut", ""], project="fade"))
+    assert [t["transition"] for t in rep["takes"]] == ["fade", "cut", "cut"]
+
+    all_cut = plan_report(_junction_spec(tmp_path, ["cut", "cut", "cut"],
+                                         project="fade"))
+    assert all(t["transition"] == "cut" for t in all_cut["takes"])
+    # the junction count is what the author is being told; the runtime is not it,
+    # because a padded-and-overlapped dissolve cancels out (see below)
+    assert "transitions:" in format_plan(rep)
+    assert "transitions:" not in format_plan(all_cut)
+
+
+def test_a_per_shot_cut_really_cuts_the_render(tmp_path):
+    """The other half of the plan's promise: the junction the report names is the
+    junction the pixels show. Two specs differing in one field — one shot saying
+    ``cut`` inside a ``fade`` project — must differ at that seam and nowhere else."""
+    from vidkit.assembler import run
+    from vidkit.ffmpeg import Ffmpeg
+
+    ff = Ffmpeg()
+    if not ff.available:
+        pytest.skip("ffmpeg not installed")
+    run(_junction_spec(tmp_path, ["", "", ""]), out_dir=tmp_path / "a")
+    run(_junction_spec(tmp_path, ["cut", "", ""]), out_dir=tmp_path / "b")
+
+    def px_of(sub):
+        return _track_rgb(ff, tmp_path / sub / "_build" / "clips" / "video-track.mp4", 2.3)
+
+    # the narration runs 2.0s a scene, so the first junction is 2.0-2.6 and 2.3s is
+    # its midpoint — where a dissolve is half of each picture, by definition
+    dissolve = px_of("a")(20, 90)
+    hard = px_of("b")(20, 90)
+
+    def near(px, colour):
+        want = {"red": (255, 0, 0), "green": (0, 255, 0)}[colour]
+        return all(abs(c - w) < 60 for c, w in zip(px, want))
+
+    # the project-wide dissolve really is a blend: both pictures are on screen at
+    # once and neither pure red nor pure green survives it
+    assert not near(dissolve, "red"), f"the dissolve showed only the outgoing picture: {dissolve}"
+    assert not near(dissolve, "green"), f"the dissolve showed only the incoming picture: {dissolve}"
+
+    # the same instant, one field changed: the shot that said `cut` is already gone
+    # and the incoming picture is whole. If the per-shot override were ignored, this
+    # would be the blend above.
+    assert near(hard, "green"), f"the shot that said `cut` still dissolved: {hard}"
+    assert not near(hard, "red"), f"the cut left the outgoing picture on screen: {hard}"
+
+
+def test_plan_and_build_agree_on_a_per_shot_cut(tmp_path):
+    """The end of the honesty chain: the length `plan` promises is the length
+    the file has. A dissolve costs 0.6s of narration clock, so cutting it back
+    must lengthen the film by exactly that."""
+    from vidkit.assembler import run
+    from vidkit.ffmpeg import Ffmpeg
+    from vidkit.reports import plan_report
+
+    ff = Ffmpeg()
+    if not ff.available:
+        pytest.skip("ffmpeg not installed")
+    spec_path = _junction_spec(tmp_path, ["", "cut", ""])
+    rep = plan_report(spec_path)
+    assets = run(spec_path, out_dir=tmp_path / "out")
+    track = tmp_path / "out" / "_build" / "clips" / "video-track.mp4"
+    assert abs(ff.duration(track) - rep["planned_seconds"]) < 0.08
+    # narration is the master clock (I5), and narration never moved
+    assert abs(ff.duration(track) - sum(a.seconds for a in assets.scene_audio)) < 0.08
+
+
+def test_a_shot_transition_needs_a_string(tmp_path):
+    with pytest.raises(SpecError, match="transition must be a string"):
+        load_spec(_junction_spec(
+            tmp_path, [{"kind": "cut"}, "", ""]))

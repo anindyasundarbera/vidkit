@@ -890,6 +890,13 @@ a future portability bug has a documented baseline to be measured against.
 | D50 | The engine draws a picture from words, so a film needs no artwork it did not ship | DECIDED |
 | D51 | A film's clock is declared; a demo's clock is measured | DECIDED |
 | D52 | An absent measurement is not a negative measurement | DECIDED |
+| D53 | A side effect that already happened cannot be denied | DECIDED |
+| D54 | A take is kept, not re-shot: selection survives the render | DECIDED |
+| D55 | The event loop is not a place to block: blocking tools are offloaded | DECIDED |
+| D56 | An unknown spec key is an error, not a comment | DECIDED |
+| D57 | A test that does not await an async tool does not test anything | DECIDED |
+| D58 | Every input to a transition is normalised to one timebase | DECIDED |
+| D59 | The MCP SDK range ends at the last supported major | DECIDED |
 
 ---
 
@@ -1475,3 +1482,255 @@ ways. `narration_estimate` is one entry per scene of the word count divided by
 [docs/verification/verification.md](../verification/verification.md).
 
 ---
+
+## D53 — A side effect that already happened cannot be denied
+
+**2026-10-11.** Context: M10.
+
+`tool_browser_open` did this:
+
+```python
+browser, context, page = studio.browser_open(session, url)   # opens a real browser
+return {**state, "session": sess.id}                          # raises: 'tuple' object is not a mapping
+```
+
+The browser was open. The caller was told the call failed. Worse, `session_open` accepted four
+parameters, **dropped all four**, and returned success — a call that changed nothing said it had
+changed something. Both defects share a shape: the tool's *report* and the tool's *effect*
+disagreed, and the report is what the caller acts on.
+
+**Decision.** A tool resolves every argument it accepts, and it never raises **after** it has
+changed the world: either the effect happens and is reported, or nothing happens and the refusal
+is reported. Where an operation is long enough to be interrupted, the tool reports what *did*
+happen (partial progress and the step it stopped at) rather than an exception that erases it.
+
+**Alternatives.**
+
+- *Let the exception propagate* — rejected: it is not wrong about the failure, it is wrong about
+  the state. The caller retries an operation that has already happened.
+- *Roll back on failure* — rejected in general: a browser tab, an appended record and a started
+  container cannot be un-happened in a way that is more truthful than saying so. Roll back only
+  where the rollback is itself the recorded evidence (D45's teardown).
+- *Accept extra `**kwargs`* — rejected: that is how four parameters went missing. An accepted
+  parameter must be read.
+
+**Consequences.** Every tool resolves its arguments explicitly and is audited for it — all 34
+were re-audited when `session_open` was found. `browser_open` returns the page state *and* the
+session id, and refuses before opening rather than after.
+
+---
+
+## D54 — A take is kept, not re-shot: selection survives the render
+
+**2026-10-11.** Context: M10.
+
+`capture.capture_all` re-shot every declared capture at build time. So an agent that filmed
+three takes, selected the best one, and then built the film got the **first** take — the
+selection was a record about a file the build never read. Proven directly:
+
+```
+base before select 64378b9e8191
+select_take        5b54a53e53bd
+base after build   ce0423787238      <- not the selected take
+```
+
+**Decision.** A selection is part of the build's input, not a note about a past attempt.
+`Context.selections` records it; `Context.selected_take(capture)` reads it; `capture_all`
+**keeps the promoted file** instead of re-shooting when the take is already selected; and
+`studio.select_take` updates an already-live `Context` so the choice is not lost between the
+tool call and the build. The film is then *measured* to contain the kept take (the `studio-probe`
+job decodes the delivered `.mp4`'s middle frame).
+
+**Alternatives.**
+
+- *Re-shoot and compare* — rejected: a capture is not deterministic (it films a running
+  product), so "re-shoot and take the closest" silently substitutes a *different* take.
+- *Store the selected bytes at selection time into the output* — rejected: it edits the output,
+  which is I7's prohibition, and it hides which file the renderer actually read.
+- *Make selection a build-time argument* — rejected: the selection outlives a single build, and
+  an agent may build repeatedly while choosing.
+
+**Consequences.** **The promotion copies take N over the bare name**, so after it the two files
+hold identical bytes and comparing them is a check that cannot fail. The regression test
+therefore compares the promoted bytes against **take 2's own pre-promotion digest** and asserts
+inequality against take 1's. `list_takes` re-hashes every file on every call, so the digest in a
+record is a live measurement. See D53 and D57 for the same defect class.
+
+---
+
+## D55 — The event loop is not a place to block: blocking tools are offloaded
+
+**2026-10-11.** Context: M10.
+
+FastMCP runs a **sync** tool on the loop thread. This was not assumed; a probe printed the
+thread name from both a sync and an async tool body and both said `MainThread`. Playwright's sync
+API refuses to run there —
+
+```
+Error: It looks like you are using Playwright Sync API inside the asyncio loop.
+```
+
+— and it refuses **before** doing anything. So every browser and capture tool was dead over MCP,
+always, on every machine, and nothing in the suite noticed because the tests called the plain
+functions rather than the wire.
+
+**Decision.** A tool that blocks becomes `async def` and runs its blocking body on a **dedicated
+worker thread** via `vidkit/_loop.py` (`Worker`, `offload`, `session`): one thread per live
+session, so a browser and its page stay on the thread that created them. **The one deliberate
+exception is `tool_run`**, which stays sync because `_deadline` needs a main-thread `SIGALRM` —
+and because its ceiling is therefore conditional, it reports `timeout_enforced` as a tri-state
+and names the reason, rather than claiming a guarantee it cannot make (D52).
+
+**Alternatives.**
+
+- *Use Playwright's async API* — rejected: the whole capture layer is written against the sync
+  API, and the async rewrite would spread through `capture.py`, `terminal.py` and every test.
+- *Run everything in a subprocess* — rejected: sessions own live state (a page, a container),
+  and a subprocess cannot hold a page object across calls.
+- *A thread pool with no affinity* — rejected: a Playwright page must be driven from the thread
+  that created it.
+
+**Consequences.** A registration closure is correct **if and only if** it awaits when it wraps a
+coroutine. Three defects came from violating that in both directions, one of them an
+*assignment* (`result = tool_session_exec(...)`) that no `return tool_x(` regex catches.
+`tests/test_mcp.py` now AST-scans every closure in both directions. See D57.
+
+---
+
+## D56 — An unknown spec key is an error, not a comment
+
+**2026-10-11.** Context: M10.
+
+`load_spec` read exactly the keys it knew and never looked at the rest. It read
+`raw.get("captures")` and nothing named `capture`. So a spec could contain a top-level
+**`capture:`** block — a plausible singular spelling — and the loader would **discard it
+silently**, then fail later with an error naming the *scene* while the actual fault was a key two
+levels up that no one had mentioned.
+
+**Decision.** The set of legal top-level keys is named in `_SPEC_KEYS` and checked at load, and
+an unknown key is refused **by name**. The captures map is `captures:` (plural, top level); the
+per-shot key is `capture:` (singular), and the error says so when a top-level `capture:` appears.
+
+**Alternatives.**
+
+- *Warn and continue* — rejected: a warning on a stderr nobody reads is indistinguishable from
+  silence, and this loader has no other place to report it.
+- *Accept aliases (`capture`/`captures`)* — rejected: two spellings that mean different things
+  is how the confusion arose; one key with one meaning is the honest interface.
+- *A JSON Schema for the whole spec* — deferred, not rejected: it would be better, and it is a
+  larger change than the defect warrants today.
+
+**Consequences.** The check immediately found **four of the author's own tests** writing
+top-level `capture:` — tests that had been **green for the wrong reason**, because the block
+they were testing was being thrown away. Adding a spec key now means adding it to `_SPEC_KEYS`,
+which is a deliberate act rather than an omission. See D15/D16 for the same class.
+
+---
+
+## D57 — A test that does not await an async tool does not test anything
+
+**2026-10-11.** Context: M10.
+
+Making the tools `async` (D55) turned a whole class of existing tests into **assertions that
+cannot fail**:
+
+```python
+tool_provenance(spec)                       # returns a coroutine, runs nothing
+assert manifest["provenance"] == "tool"    # compares dict to coroutine: always False -> or...
+with pytest.raises(ToolError):
+    tool_build(spec)                       # no exception is ever raised
+```
+
+Two were found in `tests/test_provenance.py` and `tests/test_providers.py`. Both were green. Both
+meant nothing. A third of the same kind, found earlier in this phase, compared a *promoted take
+file against itself* (D54) — a different mechanism for the same result.
+
+**Decision.** Three rules, all enforced by tests rather than by intention:
+
+1. `tests/test_mcp.py::test_no_test_calls_an_async_tool_without_awaiting_it` **AST-scans every
+   `tests/test_*.py`** and fails on a bare call to a known async tool as a statement or an
+   assignment.
+2. `tests/test_mcp.py`'s structural scan pins every registration closure against the coroutine
+   it wraps, in **both** directions.
+3. A check whose subject is a fact about a *picture* decodes the picture. There is no other way
+   to tell a push-in from a still (D49).
+
+Note **`anyio.run(fn, *args)` does not forward keyword arguments** — `TypeError: run() got an
+unexpected keyword argument 'from_stage'`. Wrap in a lambda.
+
+**Alternatives.**
+
+- *A convention in the docs* — rejected: the convention existed and was violated twice in one
+  phase, because the failure mode is silent and the test stays green.
+- *Make the tools sync again* — rejected: D55.
+- *A lint rule outside pytest* — rejected here: the suite must refuse the bug even when run
+  alone, and a contributor may not run the linter.
+
+**Consequences.** The class cannot return unnoticed. The AST scan is deliberately crude — it
+errs toward flagging — and a new async tool must be added to its list of names, which is the
+point: the list is the inventory of things that can be silently skipped.
+
+---
+
+## D58 — Every input to a transition is normalised to one timebase
+
+**2026-10-11.** Context: M10.
+
+Per-shot `transition:` (R-D6) was the last item M4 listed and M9 cut out. Implementing it
+produced ffmpeg's own error, which named the cause exactly:
+
+```
+First input link main timebase (1/1000000) do not match the corresponding second input link
+xfade timebase (1/12800)
+```
+
+`concat=n=2` gives its **output** the timebase of its **first** input. So the first junction
+decided what every later `xfade` had to match, and **any hard cut preceding a dissolve** aborted
+the render. It was not a dissolve bug; it was a cut-then-dissolve bug, which is the common case.
+
+**Decision.** `Ffmpeg.concat_with_transitions` normalises **every** input with `settb=AVTB`
+before it is joined or blended, not merely the second one. The regression test renders all five
+junction kinds (cut-then-fade, fade-then-cut, dissolve-then-dissolve, a three-shot chain, and a
+transition into the last shot) and asserts each is exactly **6.000 s** — the sum of its shot
+lengths.
+
+**Alternatives.**
+
+- *Normalise only the second input* — this was the first attempt, and it is what the error
+  message invites. Rejected once the mechanism was understood: the problem is the *output* of
+  the previous junction, whichever input supplied its timebase.
+- *Render each junction to an intermediate file and concat those* — rejected: an extra encode
+  generation, and it hides the actual constraint.
+- *Set `-vsync`/`-r` on the output* — rejected: it constrains the output, not the links, and the
+  links are what disagree.
+
+**Consequences.** A transition is now additive: a junction renders at the sum of its shot
+lengths, verified rather than assumed. Anything else that consumes two streams and produces one
+should be read with the same suspicion — the timebase belongs to the *output*, and a downstream
+filter inherits it.
+
+---
+
+## D59 — The MCP SDK range ends at the last supported major
+
+**2026-10-07.** Context: M10.
+
+The MCP extra originally declared `mcp>=1.20`, which also admitted 2.x. That was not a safe
+open-ended range: the server imported `FastMCP`, which 2.x renamed to `MCPServer`, and the
+studio's protocol tests used a helper removed in 2.x. CI resolved 2.3.0 while local development
+used 1.27.2, so the declared range was broader than the code and test evidence.
+
+**Decision.** Support both MCP SDK 1.x and 2.x, and declare `mcp>=1.20,<3`. The server adapts
+the app class, context, settings, and result shapes that differ between those majors. The
+protocol-level test suite has been run against 1.27.2 and 2.3.0. Do not admit a future major
+until its API changes are exercised and adapted.
+
+**Alternatives.**
+
+- *Pin to `mcp<2`* — rejected: the 2.x compatibility path is implemented and proven, and
+  excluding it would discard supported behavior.
+- *Leave the dependency unbounded* — rejected: a future breaking major would again install
+  successfully while making the standalone server unusable.
+
+**Consequences.** The project keeps compatible 1.x installations and accepts 2.x, while
+dependency resolution refuses an unreviewed 3.x release instead of presenting it as supported.

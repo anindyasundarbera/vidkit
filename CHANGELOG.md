@@ -9,6 +9,69 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **A session-oriented studio surface (M10) — `vidkit/studio.py`.** The tool layer no longer
+  speaks only in stateless verbs. A `Session` holds a spec, a record directory, a budget and a
+  set of selected takes; `Registry` finds it again by id; `Take` records are **re-hashed on
+  every list**, so a digest in a record is a live measurement rather than a claim;
+  `status(session)` returns a `next_step` so an agent always knows what it may do next. The
+  MCP surface grew from 15 tools to **34** and from 3 resources to **7**.
+- **`select_take` — keep the best of several attempts.** The choice is recorded in
+  `Context.selections` and **survives the render**: `capture.capture_all` keeps the promoted
+  file instead of re-shooting. Before this, a selected take was silently destroyed by the next
+  build.
+- **Per-shot `transition:` (R-D6).** Shots can now blend rather than only cut:
+  `transition: {kind: fade, seconds: 0.4}` (also `slide`, `wipe`, and an explicit `cut`).
+  Building it exposed a latent engine bug — `concat=n=2` hands its **output** the *first*
+  input's timebase, so *any* hard cut preceding a dissolve aborted the render. Every input is
+  now normalised with `settb=AVTB`.
+- **`vidkit/_loop.py`** — blocking work is offloaded off the event loop. FastMCP runs *sync*
+  tools **on the loop thread** (proven, not assumed), so Playwright's sync API refused
+  outright and every browser and capture tool was dead over MCP, always. Most tools are now
+  `async def` around a per-session `Worker` thread.
+- **Budget governance** — wall-clock, container and step budgets are declared
+  on a session and enforced, with `Budget.remaining()` and a refusal rather than a silent
+  overrun.
+- The **`studio-probe` CI job** (the seventh): an MCP client opens a session, films three
+  distinctly-coloured takes of the same page, **keeps take 2**, renders, and proves the kept
+  take is what reached the film by decoding the delivered `.mp4`'s middle frame.
+
+### Fixed
+
+- **The spec loader no longer drops a top-level key silently.** It read only
+  `raw.get("captures")`, so a top-level `capture:` block vanished with no warning and the only
+  error named the *scene*. `_SPEC_KEYS` now names the 14 legal keys and the load fails on the
+  offending key. The captures key is **`captures:`** (plural); the per-shot key is `capture:`.
+- **`session_open` dropped four parameters** and reported success — a call that changed
+  nothing said it had changed something.
+- **`browser_open` raised after opening a real browser** (`'tuple' object is not a mapping`),
+  telling the caller the call failed when the world had already changed.
+- **`browser_shot` promoted its own record to "chosen."** The record now carries
+  `"promoted": False`; selection is a separate verb.
+- **`timeout:` on pointer actions was silently dropped** (`select`, `click`, `fill`, `press`
+  now go through `_pointer_timeout`, default `30.0` s), and driver exceptions escaped
+  `capture.apply` uncaught for every action but three.
+- **`close_session` forgot a session *after* saving it**, so a failing `save` left a
+  shut-down session pinned in the live registry forever.
+- **`vidkit://sessions/{s}/status` awaited the *sync* `tool_session_status`**, yielding
+  `'dict' object can't be awaited` — one of three mismatches between a registration closure
+  and the coroutine (or non-coroutine) it wraps. A structural AST scan now pins this in both
+  directions.
+- **`doctor` reported the sandbox not at all** with no spec, and repeated the same line once
+  per command on a sandbox-less host.
+
+### Changed
+
+- **Tests that call an `async` tool must await it.** A bare call returns a coroutine, so
+  `pytest.raises` sees no exception and `result == {...}` compares a dict to a coroutine —
+  green, and meaningless. Two such tests were found; `tests/test_mcp.py` now scans every
+  `tests/test_*.py` for the pattern. Note **`anyio.run(fn, *args)` does not forward keyword
+  arguments** — wrap in a lambda.
+- **`tests/conftest.py` gained a fourth capability marker, `needs_playwright`**, probed by
+  importing `playwright.sync_api` and *launching* Chromium, and independent of the others.
+  Nine `tests/test_studio.py` tests gained the marker they had been missing.
+
+### Added
+
 - **Declared environments (R-E6) — services a command runs *inside*.** A spec can now
   declare `environment: [{name, image, command, env, ports, volumes, ready, ready_timeout,
   timeout, network}]`, and a step with `backend: docker` names the one it runs in. Every

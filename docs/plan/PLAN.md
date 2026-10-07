@@ -4,7 +4,7 @@
 > For the phase-wise plan see [FEATURE-ROADMAP.md](FEATURE-ROADMAP.md). For what already
 > happened see [HISTORY.md](HISTORY.md). For why, see [DECISIONS.md](DECISIONS.md).
 >
-> Last updated: **2026-10-10** (M9 merged to `main` (`1894ec9`); M10 next).
+> Last updated: **2026-10-11** (M10 built and verified on `phase/m10-studio-session`).
 
 ---
 
@@ -56,7 +56,7 @@ Two rules came out of it, and every future check is written under them:
 
 ---
 
-## M10 — Studio surface v2  *(next)*
+## M10 — Studio surface v2  *(built, awaiting PR)*
 
 **Purpose.** Turn the tool surface from *stateless verbs* into a **session-oriented studio** an
 agent can hold a conversation with.
@@ -79,16 +79,51 @@ one take. That is the gap the owner's vision actually names: an external capable
 
 **Exit.** An MCP client can open a session against a live environment, attempt a capture three
 times, select the best take, assemble a verified video, and read the report back — all by tool
-calls, with no shell and no spec editing.
+calls, with no shell and no spec editing. **Met** — see `test_an_mcp_client_can_take_a_sitting_end_to_end`
+and the `studio-probe` CI job.
+
+### M10 in one paragraph
+
+The deliverable is [vidkit/studio.py](../../vidkit/studio.py): a `Session` (a spec, a record
+directory, a budget, a set of selected takes), a `Registry`, `Take` records re-hashed on every
+list, and `status(session) -> next_step` so an agent always knows what it may do next. Around it
+the MCP surface went from 15 tools to **34**, and from 3 resources to **7**. The wire layer had to
+change underneath: **FastMCP runs sync tools on the event loop**, so Playwright's sync API refused
+outright and every browser and capture tool was dead over MCP, always. `vidkit/_loop.py` was
+rewritten from scratch (a `Worker` thread per session, `offload`, `session`) and every blocking
+tool became `async def` — which in turn made a registration closure *correct only if it awaits*,
+a rule three defects broke in both directions.
+
+**As in M9, the headline is a defect class.** M10 found **nineteen** real defects in its own new
+code, and the pattern is worth stating because it will recur:
+
+> **A side effect that already happened cannot be denied.** `browser_open` opened a real browser
+> and then raised `'tuple' object is not a mapping`; `session_open` dropped four parameters and
+> returned success. In both cases the caller was told the call failed when the world had already
+> changed. (D57)
+
+> **A check that cannot fail reads as assurance.** A test comparing a promoted take against its
+> own source is comparing a file to itself. A test calling an `async` tool without `await`
+> compares a dict to a coroutine and is *always* green. Both are now impossible to write by
+> accident: a suite-wide AST scan refuses a bare async-tool call anywhere in `tests/`.
+>
+> **And a spec key that is silently dropped is a lie told by omission.** `spec.py` read only
+> `raw.get("captures")`, so a `capture:` block was discarded with no warning. The loader now
+> refuses unknown top-level keys *by name* — and the fix immediately caught four of my own tests
+> that had been **green for the wrong reason**.
 
 ### M10 open questions, for the owner
 
 None of these block the work; each has a default that will be taken if nobody says otherwise.
 
-1. **Transitions (R-D6) are still unbuilt.** M4 listed them, M9 cut between shots without
-   blending them. Do they belong in M10 as a per-shot `transition:` field, or with whatever
-   needs a compositor? **Default: M10, as a field on the shot** — a session agent assembling
-   takes will want to blend them, and a crossfade is a filter, not a compositor.
+1. ~~**Transitions (R-D6) are still unbuilt** … Do they belong in M10 as a per-shot `transition:`
+   field …?~~ **Resolved and landed.** The per-shot `transition:` field is real, and building it
+   found a latent engine bug: **`concat=n=2` hands its output the *first* input's timebase**, so
+   *any* hard cut preceding a dissolve aborted the render with `First input link main timebase
+   (1/1000000) do not match the corresponding second input link xfade timebase (1/12800)`. Every
+   input is now normalised with `settb=AVTB` (D58). What remains outside M10 is a **compositor**
+   (picture-in-picture, masks, text over live motion) — that is a different feature and no phase
+   currently owns it.
 2. **Multi-track audio beyond narration + score.** One bed, one duck. **Default: not yet** —
    no story has asked for a second bed, and a spec key nothing needs is a key nothing tests.
 3. **Act/scene beat metadata** for an agent to reason over. **Default: fold into M10's session
@@ -123,8 +158,8 @@ None of these block the work; each has a default that will be taken if nobody sa
 3. **Run the two suites before every commit.** They answer different questions:
 
    ```bash
-   python3 -m pytest tests -q                         # full: ~535 s, 610 tests, needs ffmpeg+rsvg
-   PATH=/tmp/leanbin python3 -m pytest tests -q      # lean: ~6 s, 531 passed / 79 skipped, no tools
+   python3 -m pytest tests -q                         # full: ~640 s, 716 tests, needs ffmpeg+rsvg
+   PATH=/tmp/leanbin python3 -m pytest tests -q      # lean: ~15 s, 615 passed / 101 skipped, no tools
    ```
 
    The lean run must use exactly that `PATH` — appending `:$PATH` re-exposes the real tools

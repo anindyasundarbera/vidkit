@@ -36,9 +36,15 @@ Phase **M1** fixed (1) — story and timeframe both landed. Phase **M7** fixed t
 finished the second half for *environments*: a spec can declare a service, prove it is
 serving, film real commands inside it, and tear it down unconditionally. Phase **M9** fixed
 the narrative half of (2): a film can now move, be drawn from words, be scored, and be cut to
-a clock the author chose rather than one an estimator guessed. What remains is **M10** —
-turning the verbs into a session. Everything between M0 and here was making what already
-existed trustworthy.
+a clock the author chose rather than one an estimator guessed. Phase **M10** turned the verbs
+into a **session**: an agent can open a sitting, try three takes, keep the best, build, and
+read the report back — all by tool calls. Everything between M0 and here was making what
+already existed trustworthy.
+
+**The vision is now reachable.** All three capabilities the owner named are real and audited:
+Playwright capture, a sandboxed terminal (with Docker as a confining backend), and declared
+environments. What is *not* yet done is a compositor, and the version bookkeeping the owner
+still owes a decision on.
 
 ---
 
@@ -520,7 +526,7 @@ Evidence: [HISTORY.md](HISTORY.md).
 
 ---
 
-## 13. M10 — Studio surface v2  *(P1)*
+## 13. M10 — Studio surface v2  *(P1)* — **DONE**
 
 **Purpose.** Turn the tool surface from *stateless verbs* into a **session-oriented studio**
 an agent can hold a conversation with.
@@ -531,18 +537,32 @@ the result — without re-establishing the environment each call.
 
 **Delivers.**
 
-| Item | Detail |
-|---|---|
-| Session tools | `session_open/close/list`, `session_exec`, `session_browser`, and state that survives between calls. |
-| Take management | `take_record`, `take_list`, `take_select` — pick the best take; never edit output to fake a better one (I7). |
-| Environment tools | `env_up/down/status` over the M8 lifecycle. |
-| Streaming | Progress events for long builds (finishes R-G5). |
-| Resource exposure | Captures, takes, and the verify report as MCP resources, so an agent can read back what it produced. |
-| Budget governance | Wall-clock, token, and container budgets declared and enforced — borrowed as a *concept* from OpenMontage. |
+| Item | Detail | Status |
+|---|---|---|
+| Session tools | `session_open/close/list`, `session_exec`, `session_browser`, and state that survives between calls. | **Done** — `vidkit/studio.py`, 34 tools total. |
+| Take management | `take_record`, `take_list`, `take_select` — pick the best take; never edit output to fake a better one (I7). | **Done**, and the selection now survives the render (D54). |
+| Environment tools | `env_up/down/status` over the M8 lifecycle. | **Done** — plus `session_exec` binding by label (D46). |
+| Streaming | Progress events for long builds (finishes R-G5). | **Done** — the M5 progress hook, delivered through the session's event list. |
+| Resource exposure | Captures, takes, and the verify report as MCP resources, so an agent can read back what it produced. | **Done** — 7 resources, incl. `vidkit://sessions/{s}/{status,takes,report}`. |
+| Budget governance | Wall-clock, token, and container budgets declared and enforced — borrowed as a *concept* from OpenMontage. | **Done** — `Budget`, with refusal rather than silent overrun. |
+| Per-shot `transition:` | R-D6, listed since M4 and cut in M9. | **Done** — and it found the `concat=n=2` timebase bug (D58). |
 
 **Exit.** An MCP client can open a session against a live environment, attempt a capture
 three times, select the best take, assemble a verified video, and read the report back —
 all by tool calls, with no shell and no spec editing.
+
+**Met.** `tests/test_studio.py::test_an_mcp_client_can_take_a_sitting_end_to_end` does exactly
+that over the wire, and the `studio-probe` CI job does it against a real browser and then
+**decodes the delivered film** to prove the kept take is what reached it.
+
+**Unplanned, and the reason the phase took twice as long as the plan:** FastMCP runs sync tools
+on the event loop, so every browser and capture tool was dead over MCP and nothing saw it
+(D55); and making the tools `async` silently voided existing tests that called them without
+awaiting (D57). **Nineteen defects were found in this phase's own new code**, four of them
+assertions that could not fail.
+
+**Left out, deliberately:** a compositor (picture-in-picture, masks, text over live motion) —
+unowned by any phase; and an eleventh stage (constraint P5 held for the third time).
 
 ---
 

@@ -46,6 +46,12 @@ def doctor_report(spec_path: Path | None = None, *,
     add("chrome/chromium", chrome is not None, "needed for capture", False, chrome or "")
     add("piper (TTS)", importlib.util.find_spec("piper") is not None,
         "narration audio", False)
+    # Reported because it is the one tool an agent needs *before* it can reach any
+    # other: if `mcp` is absent, the server cannot start and no tool is reachable —
+    # yet nothing else on this list would say so. Not `required`, because a machine
+    # used only for `vidkit build` is perfectly healthy without it.
+    add("mcp", importlib.util.find_spec("mcp") is not None,
+        "the MCP server and its tools", False)
 
     ok = all(t["present"] for t in tools if t["required"])
     report: dict[str, Any] = {
@@ -378,22 +384,30 @@ def plan_report(spec_path: Path, *, timeframe: Any = None,
     # take-by-take length, which is a different number the moment a spec declares a
     # `seconds:` or a `motion:`. Reporting only the estimate let `vidkit plan` promise
     # a 24.7s film that built as 16.0s.
-    from .assembler import plan_audio, plan_shots
+    from .assembler import plan_audio, plan_shots, plan_transitions
     planned = plan_shots(spec, plan_audio(spec))
-    takes = [{"scene": sc.n, "index": i, "kind": sh.kind, "ref": sh.ref,
-              "seconds": round(sec, 3), "motion": sh.motion.to_dict() if sh.motion else None,
+    moves = plan_transitions(spec, planned)
+    takes = [{"scene": sc.n, "index": idx, "kind": sh.kind, "ref": sh.ref,
+              "seconds": round(sec, 3),
+              "motion": sh.motion.to_dict() if sh.motion else None,
               "declared": sh.seconds is not None,
-              "from_scene": sc.seconds is not None and sh.seconds is None}
-             for sc, i, sh, sec in planned]
+              "from_scene": sc.seconds is not None and sh.seconds is None,
+              "transition": moves[i] or "cut"}
+             for i, (sc, idx, sh, sec) in enumerate(planned)]
     by_scene: dict[int, float] = {}
     for t in takes:
         by_scene[t["scene"]] = by_scene.get(t["scene"], 0.0) + t["seconds"]
     for s in scenes:
         s["planned_seconds"] = round(by_scene.get(s["n"], 0.0), 3)
     planned_total = sum(by_scene.values())
-    # transitions overlap, so the finished file is shorter than the sum of the takes
-    trans = spec.project.transition_seconds * max(0, len(by_scene) - 1) \
-        if spec.project.transition != "cut" else 0.0
+    # A dissolve does **not** shorten the film. `_build_clips` pads the outgoing take
+    # by `transition_seconds` and `concat_with_transitions` then overlaps the same
+    # amount, so the two cancel exactly and the picture track stays the length of the
+    # narration it has to cover (I5). Subtracting the overlap again here was a
+    # double-count: `vidkit plan` promised 4.8s for a film that builds as 6.0s on
+    # every spec with a transition declared — the same "reported length the build
+    # does not make" failure that made the plan lie in M9, one layer further in.
+    planned_runtime = round(planned_total, 3)
 
     est_total = total_words / WORDS_PER_SECOND if total_words else 0.0
     return {
@@ -406,15 +420,14 @@ def plan_report(spec_path: Path, *, timeframe: Any = None,
         "scenes": scenes,
         "takes": takes,
         "timing_source": spec.timing_source,
-        "planned_seconds": round(planned_total - trans, 3),
+        "planned_seconds": planned_runtime,
         "narration_words": total_words,
         "est_seconds": round(est_total, 1),
         "est_minutes": round(est_total / 60, 2),
         # The window is a promise about the *film*, so it is the planned length that
         # gets checked against it. The narration estimate is shown, not enforced.
         "within_window": bool(
-            spec.project.min_seconds <= planned_total - trans
-            <= spec.project.max_seconds
+            spec.project.min_seconds <= planned_runtime <= spec.project.max_seconds
         ) if planned_total else None,
         "banned": list(spec.guard.banned),
         "required": list(spec.guard.required),
@@ -464,6 +477,12 @@ def format_plan(report: dict[str, Any]) -> str:
     lines.append(f"  timing: {src} — {clock}")
     lines.append(f"  planned runtime: {report.get('planned_seconds', 0.0):.1f}s "
                  f"from {len(report.get('takes') or [])} take(s)")
+    moves = [t for t in (report.get("takes") or []) if t.get("transition") not in
+             (None, "", "cut")]
+    if moves:
+        lines.append("  transitions: " + ", ".join(
+            f"{t['transition']} out of scene {t['scene']}.{t['index']}"
+            for t in moves))
     if report.get("score"):
         sc = report["score"]
         lines.append(f"  score: {sc['src']} at {sc['volume_db']:+.1f} dB, "

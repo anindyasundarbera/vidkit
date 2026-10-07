@@ -160,32 +160,84 @@ def _require(action: Action, what: str) -> str:
     return action.selector
 
 
+# A driver failure reduced to one short paragraph. Playwright's timeout message
+# opens with the whole call log across four lines and then repeats the locator,
+# and every caller here appends it to a sentence of its own, so it is collapsed
+# to its first line. Long enough to diagnose, short enough to sit in a report.
+_DRIVER_TEXT = 200
+
+
+def _driver_message(exc: Exception) -> str:
+    first = str(exc).strip().splitlines()[0] if str(exc).strip() else ""
+    if not first:
+        first = type(exc).__name__
+    if len(first) > _DRIVER_TEXT:
+        first = first[: _DRIVER_TEXT - 1].rstrip() + "…"
+    return first
+
+
+def _patience(fn, *args, timeout: float):
+    """Call a driver method with a timeout, dropping the keyword if it is refused.
+
+    Playwright has accepted ``timeout`` on its selector-bound methods for a long
+    time, but ``apply`` is also driven by the fake pages in the test suite and by
+    whatever a caller passes in. A driver that will not take the keyword is not a
+    reason to lose the patience the spec asked for, so it is retried bare.
+    """
+    try:
+        return fn(*args, timeout=timeout * 1000)
+    except TypeError:
+        return fn(*args)
+
+
 def apply(page, action: Action) -> None:
-    """Run one action. Raises ``ToolError`` naming what it was waiting for."""
-    if action.kind == "select":
-        page.select_option(action.selector, action.value)
-    elif action.kind == "click":
-        page.click(action.selector)
-    elif action.kind == "fill":
-        page.fill(action.selector, action.value or "")
-    elif action.kind == "press":
-        page.press(action.selector, action.value or "Enter")
-    elif action.kind == "wait":
-        page.wait_for_timeout(int((action.seconds or 1.0) * 1000))
-    elif action.kind == "wait_for":
-        wait_for(page, action)
-    elif action.kind == "scroll":
-        if action.selector:
-            page.eval_on_selector(
-                action.selector, "el => el.scrollIntoView({block:'start'})")
-        else:
-            page.evaluate("window.scrollTo(0,0)")
-    elif action.kind == "eval":
-        page.evaluate(action.script or "")
-    elif action.kind == "download":
-        download(page, action)
-    else:  # pragma: no cover - guarded by the spec loader
-        raise ToolError(f"unknown action {action.kind!r}")
+    """Run one action. Raises ``ToolError`` naming what it was waiting for.
+
+    The driver is never allowed to speak for the engine. Playwright signals a
+    missing element with its own ``TimeoutError``, and that is exactly the
+    failure an author is trying to *read* — which selector, how long. So every
+    call below is translated into a ``ToolError`` that names the action, the
+    selector and the patience, and the driver's exception is kept as the cause
+    rather than replacing the message. Without this the studio's
+    ``browser_act`` cannot report a failed step as a row; it can only raise.
+    """
+    timeout = float(action.timeout if action.timeout is not None else 30.0)
+    try:
+        if action.kind == "select":
+            _patience(page.select_option, _require(action, "selector"),
+                      action.value, timeout=timeout)
+        elif action.kind == "click":
+            _patience(page.click, _require(action, "selector"), timeout=timeout)
+        elif action.kind == "fill":
+            _patience(page.fill, _require(action, "selector"), action.value or "",
+                      timeout=timeout)
+        elif action.kind == "press":
+            _patience(page.press, _require(action, "selector"),
+                      action.value or "Enter", timeout=timeout)
+        elif action.kind == "wait":
+            page.wait_for_timeout(int((action.seconds or 1.0) * 1000))
+        elif action.kind == "wait_for":
+            wait_for(page, action)
+        elif action.kind == "scroll":
+            if action.selector:
+                page.eval_on_selector(
+                    action.selector, "el => el.scrollIntoView({block:'start'})")
+            else:
+                page.evaluate("window.scrollTo(0,0)")
+        elif action.kind == "eval":
+            page.evaluate(action.script or "")
+        elif action.kind == "download":
+            download(page, action)
+        else:  # pragma: no cover - guarded by the spec loader
+            raise ToolError(f"unknown action {action.kind!r}")
+    except ToolError:
+        raise
+    except Exception as exc:  # noqa: BLE001 - the driver's error, not ours
+        what = (action.selector or (action.script or "").splitlines()[0][:60]
+                or "the page")
+        raise ToolError(
+            f"{action.kind} on {what!r} did not get there within {timeout:g}s "
+            f"({_driver_message(exc)})") from exc
     if action.assert_ is not None and action.kind != "download":
         check(page, action.assert_, where=f"after {action.kind}")
 
@@ -541,20 +593,42 @@ def capture_all(ctx: Context) -> list[Result]:
     caps = ctx.spec.captures
     if not caps:
         return []
-    if not _playwright_available():
+
+    # The Playwright gate is *per capture*, not a gate on the whole function. A
+    # capture whose take the caller already promoted needs no browser — the file is
+    # already on disk under the plain name — so refusing it because Playwright is
+    # absent would let a missing browser silently undo the promotion. That is the
+    # same shape of defect the promotion exists to prevent, one layer down. Only the
+    # captures that actually have to *shoot* the page require the browser.
+    have_playwright = _playwright_available()
+    if not have_playwright:
         ctx.warn("playwright not installed — skipping capture; supply pre-recorded "
                  "stills and reference them with `still:` shots")
-        return [Result(c.name, None, False, "playwright not installed") for c in caps]
-
-    chrome = _find_chrome()
-    if chrome is None:
+    chrome = _find_chrome() if have_playwright else None
+    if have_playwright and chrome is None:
         ctx.warn("no Chrome/Chromium found; playwright will try its own downloader")
+
     results: list[Result] = []
     # Producers first: an `artifact:` capture films what a `download` produced, in
     # whatever capture declared it. Everything else keeps the spec's own order.
     order = list(enumerate(caps))
     order.sort(key=lambda pair: (pair[1].artifact is not None, pair[0]))
     for _, cap in order:
+        chosen = ctx.selected_take(cap.name)
+        base = ctx.captures / f"{cap.name}.png"
+        if chosen is not None and base.is_file():
+            # The caller promoted a take, so this moment *is* the capture. Shooting
+            # the page again would silently replace it with a screen the client never
+            # chose, while the record still named the take it did — a report that
+            # disagrees with the film it describes. The promoted file is already on
+            # disk under the plain name, which is the name the pipeline reads.
+            ctx.info(f"capture {cap.name}: keeping selected take {chosen}")
+            results.append(Result(cap.name, base, True,
+                                  f"selected take {chosen}", []))
+            continue
+        if not have_playwright:
+            results.append(Result(cap.name, None, False, "playwright not installed"))
+            continue
         try:
             res = capture_one(ctx, cap, chrome)
             ctx.info(f"captured {cap.name} -> {res.path}")
