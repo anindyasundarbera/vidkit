@@ -10,7 +10,7 @@
 >
 > For what is happening now see [PLAN.md](PLAN.md). For what happened see [HISTORY.md](HISTORY.md).
 
-**Last revised:** 2026-10-07 · **Status:** M0–M6 done · M7 next
+**Last revised:** 2026-10-07 · **Status:** M0–M7 done · M8 next
 
 ---
 
@@ -363,8 +363,9 @@ authentic evidence, and it is cheaper to build than a convincing fake.
 real output, with the command and exit code attested in `verify.json`. A non-zero exit fails
 the build unless the spec explicitly expects it.
 
-**Delivered** (branch `phase/m7-executor-sandbox`, merged by PR). Two new modules and the
-first stage added to the pipeline since M0:
+**Delivered** (branch `phase/m7-executor-sandbox`, PR
+[#7](https://github.com/anindyasundarbera/vidkit/pull/7) → `main` `40cf724`). Two new modules
+and the first stage added to the pipeline since M0:
 
 - **R-E1…R-E3 — `vidkit/exec.py`.** `ExecRequest`/`ExecResult`, the `Executor` surface as
   `stream()` + `run()`, and `resolve_backend()`. `bwrap(1)` is the default: `--unshare-all`,
@@ -419,6 +420,14 @@ pipeline (ffmpeg + rsvg-convert) and `needs_sandbox` for a command that declares
 ffmpeg and no usable bubblewrap runs the PTY tests and skips the confinement ones — and
 neither marker hides a test behind a dependency it does not use. The render side is real, but
 it is only proved on Linux; macOS/Windows support is *stated*, not implied.
+
+**Dated risk (re-check after 2026-10-19).** GitHub announced that `ubuntu-latest` migrates to
+Ubuntu 26 beginning that date. Every fact above is a statement about Ubuntu 24.04 image
+`20260927.320.1` — the missing `bubblewrap`, the AppArmor restriction, and therefore the
+`sudo sysctl` step in `exec-probe`. If the image moves, re-measure before trusting any of it.
+The `exec-probe` sysctl step prints the value *before* and *after* so the log alone says what
+happened. The general rule stands regardless: **a capability gate must demonstrate the
+capability, not observe a precondition of it** (D41).
 
 ---
 

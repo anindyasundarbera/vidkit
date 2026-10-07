@@ -67,7 +67,8 @@ Violating any of these is a bug, regardless of what it makes easier.
 vidkit/
 ├─ AGENTS.md              ← you are here (agent contract)
 ├─ README.md              user-facing overview
-├─ ROADMAP.md             requirements R-A1…R-H9, milestones M0–M6  ← governing document
+├─ ROADMAP.md             requirements R-A1…R-H9, root milestones M0–M6  ← governing document
+│                         (M7+ superseded by docs/plan/FEATURE-ROADMAP.md)
 ├─ CHANGELOG.md           release notes
 ├─ LICENSE                MIT
 ├─ pyproject.toml         packaging, extras, console scripts
@@ -261,14 +262,13 @@ Use exactly these, so they are greppable:
 
 ## 6. Current position (snapshot)
 
-> Snapshot taken 2026-10-08. If this disagrees with [docs/plan/PLAN.md](docs/plan/PLAN.md),
-> trust PLAN.md.
+> Snapshot taken 2026-10-07 (after the M7 merge). If this disagrees with
+> [docs/plan/PLAN.md](docs/plan/PLAN.md), trust PLAN.md.
 
 - **Repo state:** public on GitHub (`anindyasundarbera/vidkit`), default branch `main`,
-  CI green. **M0–M6 are merged.** M7 is code-complete and verified on branch
-  `phase/m7-executor-sandbox`, awaiting its PR and merge.
-- **Tests:** `python3 -m pytest tests -q` → **465 passed in ~385 s** with `ffmpeg` +
-  `rsvg-convert` present, **~430 passed / 35 skipped in ~2.5 s** without them. Run the lean
+  CI green. **M0–M7 are merged**; `main` is `40cf724`. Nothing is in flight.
+- **Tests:** `python3 -m pytest tests -q` → **467 passed in ~377 s** with `ffmpeg` +
+  `rsvg-convert` present, **428 passed / 39 skipped** without them. Run the lean
   form while iterating — it is two orders of magnitude cheaper and it is what CI's `pytest`
   jobs actually do. There are **two** skip markers and they are **independent**:
   `needs_render` (ffmpeg + rsvg-convert) and `needs_sandbox` (a sandbox that really starts).
@@ -276,10 +276,10 @@ Use exactly these, so they are greppable:
   defect G, and it cost a CI run.
 - **Engine:** host-free. **10 stages** (`data, panels, stills, capture, exec, narration,
   clips, concat, render, verify`), **26 modules**, 11 panel kinds, **15 MCP tools**,
-  3 resources, 24 docs across 7 modules.
+  3 resources, 25 docs across 7 modules.
 - **Active phase:** **M8 — Docker & environment lab**
-  ([docs/plan/FEATURE-ROADMAP.md](docs/plan/FEATURE-ROADMAP.md) §11), once M7 merges. If this
-  line disagrees with [docs/plan/PLAN.md](docs/plan/PLAN.md), trust PLAN.md.
+  ([docs/plan/FEATURE-ROADMAP.md](docs/plan/FEATURE-ROADMAP.md) §11). If this line disagrees
+  with [docs/plan/PLAN.md](docs/plan/PLAN.md), trust PLAN.md.
 - **Biggest remaining gap:** there is a **sandboxed terminal** but no **Docker lab**, so a
   recorded command cannot yet run against a declared container image, and there is no
   environment lifecycle to bring one up and tear it down. That is M8. Its capability gate
@@ -287,7 +287,12 @@ Use exactly these, so they are greppable:
 - **The one item needing an owner decision:** the public **`v1.0.0` tag** — the code is at
   `1.0.0` and merged, but the tag itself is a visible release and has not been pushed. The
   M7 work sits under `## [Unreleased]` in the CHANGELOG; whether that becomes `1.1.0` at
-  merge time is a second owner call.
+  release time is a second owner call.
+- **Dated risk:** GitHub announced **`ubuntu-latest` migrates to Ubuntu 26 beginning
+  2026-10-19**. Every runner fact recorded for M7 is a statement about Ubuntu 24.04 — the
+  AppArmor restriction, the missing bubblewrap, and the `sudo sysctl` step in `exec-probe`.
+  Re-verify before trusting them; the `exec-probe` step prints its sysctl value before and
+  after precisely so the log is self-explaining.
 
 ---
 
