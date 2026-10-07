@@ -4,7 +4,7 @@
 > For the phase-wise plan see [FEATURE-ROADMAP.md](FEATURE-ROADMAP.md). For what already
 > happened see [HISTORY.md](HISTORY.md). For why, see [DECISIONS.md](DECISIONS.md).
 >
-> Last updated: **2026-10-07** (M5 complete; M6 next).
+> Last updated: **2026-10-07** (M6 complete; M7 next).
 
 ---
 
@@ -205,14 +205,60 @@ Exit criterion ([FEATURE-ROADMAP.md](FEATURE-ROADMAP.md) §8):
 Branch `phase/m5-agent-surface` → PR → merged to `main`. Design consequences: **D29–D30**.
 
 ---
+## M6 — Hardening & v1.0 — **COMPLETE**
 
-## Next: M6 — Hardening & v1.0  *(P0/P1)*
+Exit criterion ([FEATURE-ROADMAP.md](FEATURE-ROADMAP.md) §9):
 
-See [FEATURE-ROADMAP.md](FEATURE-ROADMAP.md) §9. A provenance manifest (dataset source, spec
-hash, tool versions, build time), a portability pass, `CHANGELOG` release notes, optional
-PyPI.
+> A fresh clone can produce a verified video for a **new story + timeframe** using only the
+> docs, via both CLI and MCP.
 
-**The one item that needs the owner.** The public **`v1.0.0` tag** is a visible release and
-is the only remaining decision in the roadmap that a human owns. It will be raised — with
-the evidence the exit criterion asks for — before it is pushed. Everything else in M6 and
-after is authorised by [FEATURE-ROADMAP.md](FEATURE-ROADMAP.md).
+**Met, and now asserted in CI rather than described.** A provenance record written by every
+build and read by every other surface; a portability pass with the platform support tiered and
+written down; the first-video walkthrough; `1.0.0`.
+
+### Verified evidence
+
+| Claim | How it was checked | Result |
+|---|---|---|
+| A build writes a complete record | `run build`, then read `_build/provenance.json` | `schema 1`, `action build`, 9 stages, 5 tools, digest matches `sha256sum video.yaml` |
+| The record is never invented | `--json run provenance` before any build | `ok: false`, `hint` "run build first" |
+| Four surfaces, one answer | CLI, `--json`, `run_job`, `vidkit_provenance` over one build | identical `spec_sha256` and `built_at` |
+| `verify` reports the build it looked at | read `report.facts.provenance` | `action: "build"`, same digest |
+| Provenance is a fact, not a check | a verify with the record deleted | every check still runs; `provenance: null` |
+| The action list is one list | `tool_actions() == actions_help()` | equal |
+| `stages` is never *unknown* | `stages_for(a)` for all 8 actions | `[]` for the five non-rendering actions, not `null` |
+| Chrome is found off-Linux | read `_find_chrome()`; platforms and layouts enumerated | Linux, `chrome-mac`, `chrome-mac-arm64`, `chrome.exe`, app bundles |
+| The whole chain holds from a shell | the CI JSON-walk step, run locally against `/tmp/cibin` | build/verify/provenance agree on the digest; `schema == 1`; 5 tools each with `present` |
+| Suite green, full toolchain | `python3 -m pytest tests -q` | **359 passed in 371 s** |
+| Suite green with no render tools | the same command with `/tmp/leanbin` on `PATH` | **337 passed, 22 skipped** — the `needs_render` markers hold |
+| hello-world still builds | `python3 -m vidkit build examples/hello-world/video.yaml` | `.mp4` + `.narration.srt` + `verify.json`, every check passing |
+
+Branch `phase/m6-hardening` → PR → merged to `main`. Design consequences: **D31–D32**.
+
+---
+
+## The one thing that still needs the owner
+
+Everything in M6 is **authorised by [FEATURE-ROADMAP.md](FEATURE-ROADMAP.md) and shipped**. One
+act is not, because it is a *visible public release* rather than a repository change:
+
+> **Push the `v1.0.0` tag.**
+
+The version is at `1.0.0` in all three places (`pyproject.toml`, `vidkit/__init__.py`, and the
+`CHANGELOG.md` entry). Pushing a tag is the point at which the release becomes a claim to the
+world rather than a commit in a branch, and it is the owner's to make. Nothing downstream is
+blocked by waiting: M7 reads the *code*, not the tag.
+
+PyPI publication stays **deferred** ([FEATURE-ROADMAP.md](FEATURE-ROADMAP.md) §9) — tagging and
+publishing are different visible acts and only the first was asked for.
+
+---
+
+## Next: M7 — Executor & sandbox  *(P0)*
+
+See [FEATURE-ROADMAP.md](FEATURE-ROADMAP.md) §10. The first phase after the v1.0 line: an
+`Executor` protocol with pluggable backends, so a demo can record **real work in a real
+terminal** inside a declared, bounded, auditable environment — not "shell access".
+
+Then **M8** Docker & environment lab, **M9** movie mode, **M10** studio surface v2 — one
+branch, one PR, one merge each, as M0–M6 were done.

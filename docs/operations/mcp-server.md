@@ -21,7 +21,7 @@ returns JSON.
 
 | Tool | Arguments | Returns |
 |---|---|---|
-| `vidkit_run` | `action`, `story?`, `out?`, `timeframe?`, `as_of?`, `refresh?`, `title?`, `slug?`, `only?`, `from_stage?`, `progress?`, `timeout?` | a **job manifest** — the one call that covers all seven actions |
+| `vidkit_run` | `action`, `story?`, `out?`, `timeframe?`, `as_of?`, `refresh?`, `title?`, `slug?`, `only?`, `from_stage?`, `progress?`, `timeout?` | a **job manifest** — the one call that covers all eight actions |
 | `vidkit_actions` | — | the action vocabulary and the stages each action runs |
 | `vidkit_init` | `story`, `title?`, `slug?`, `timeframe?`, `as_of?` | a scaffolded, runnable story directory |
 | `vidkit_capture_plan` | `spec?` | what the captures will film, in order, without filming it |
@@ -32,6 +32,7 @@ returns JSON.
 | `vidkit_capture` | `spec?`, `out?` | the recorded takes and artifact stills (real UI, real files, with assertions) |
 | `vidkit_verify` | `spec?`, `out?` | re-run the acceptance checks on the last render |
 | `vidkit_verify_report` | `spec?`, `out?` | the persisted `verify.json` (no re-check) |
+| `vidkit_provenance` | `spec?`, `out?` | the persisted `provenance.json`: spec hash, window, provider, tools, when |
 | `vidkit_panel_kinds` | — | the built-in panel kinds a chart may use |
 | `vidkit_docs` | `name?` | the docs **module router**, or a named document's Markdown (module-routed) |
 | `vidkit_docs_index` | — | the machine-readable module route table (`docs/modules.yaml`) |

@@ -35,6 +35,7 @@ from typing import Any, Iterator
 
 from . import __version__
 from .errors import ToolError, VidkitError
+from .provenance import Provenance
 from .reports import doctor_report, plan_report
 
 
@@ -257,6 +258,25 @@ def tool_verify_report(spec: str | None = None, out: str | None = None) -> dict[
     return json.loads(path.read_text(encoding="utf-8"))
 
 
+def tool_provenance(spec: str | None = None, out: str | None = None) -> dict[str, Any]:
+    """Read ``provenance.json`` — what this build is, and what made it.
+
+    ``verify.json`` answers "is this honest?"; this answers "which build am I looking
+    at?" — the spec hash, the window, the provider hash, and the version of every tool
+    that rendered it. It is written by every build, so a missing record means no build
+    has happened in this output directory.
+    """
+    from .assembler import make_context
+
+    spec_path = resolve_spec(spec)
+    ctx = make_context(spec_path, Path(out).expanduser().resolve() if out else None)
+    record = Provenance.read(ctx.build)
+    if record is None:
+        raise ToolError(f"no readable provenance.json at {ctx.build}; "
+                        "run build first (verify only reads what build wrote)")
+    return record
+
+
 def _run_timeout(timeout: float | None) -> float:
     """The wall-clock ceiling for one ``vidkit_run`` call (``0`` = unbounded)."""
     if timeout is not None:
@@ -334,11 +354,11 @@ def _emit(line: str) -> None:
 
 def tool_actions() -> dict[str, Any]:
     """The job actions an agent can ask for, as data."""
-    from .job import ACTIONS, ACTION_HELP, stages_for
+    from .job import actions_help
 
-    return {"actions": [
-        {"action": a, "does": ACTION_HELP[a], "stages": stages_for(a)} for a in ACTIONS
-    ]}
+    # the same list the CLI's `run --help` and a job's own discovery return, so the
+    # two surfaces cannot drift apart
+    return {"actions": actions_help()}
 
 
 def tool_init(story: str, title: str | None = None, slug: str | None = None,
@@ -670,6 +690,17 @@ def _register_tools(server) -> None:
     )
     def vidkit_verify_report(spec: str | None = None, out: str | None = None) -> dict:
         return tool_verify_report(spec, out)
+
+    @server.tool(
+        name="vidkit_provenance",
+        title="Read the build provenance",
+        description="Return the persisted provenance.json: spec hash, window, provider "
+                    "hash, stage list, dataset hashes, and the version of every tool "
+                    "that rendered it. Answers 'which build is this?', where "
+                    "`verify.json` answers 'is it honest?'.",
+    )
+    def vidkit_provenance(spec: str | None = None, out: str | None = None) -> dict:
+        return tool_provenance(spec, out)
 
     @server.tool(
         name="vidkit_panel_kinds",

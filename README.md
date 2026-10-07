@@ -59,7 +59,9 @@ vidkit run plan --story . # one entry point for every job; prints a manifest
 vidkit --json plan SPEC.yaml | jq .plan.est_seconds   # machine-readable, same document
 vidkit plan SPEC.yaml    # preview scenes, timings, and guards — no rendering
 vidkit build SPEC.yaml   # run the whole pipeline
+# → SPEC.mp4, narration.srt, _build/verify.json, _build/provenance.json
 vidkit verify SPEC.yaml  # re-run the acceptance checks on the last render
+vidkit provenance SPEC.yaml  # what made that render, and when
 ```
 
 The `hello-world` worked example (at `examples/hello-world/`) builds a complete video
@@ -198,9 +200,12 @@ vidkit/
   svg.py        SVG primitives + theme
   tts.py        per-scene speech -> WAVs (duration is the master clock)
   ffmpeg.py     ffmpeg/rsvg wrappers (duration without ffprobe; fit, xfade, overlay)
-  assembler.py  the pipeline: data → panels → stills → capture → narration → clips → render
-  verify.py     acceptance checks -> verify.json
-  cli.py        doctor / plan / build / tts / capture / verify
+  assembler.py  the pipeline: data to panels to stills to capture to narration to clips to render
+  verify.py     acceptance checks -> verify.json  ("is this honest?")
+  provenance.py what the build is, and what made it -> provenance.json  ("what is this?")
+  job.py        the {action, story, out} job contract and its manifest (R-G3)
+  cli.py        doctor / plan / build / tts / capture / verify / provenance
+  mcp_server.py the MCP surface: tools, resources, transports
 ```
 
 ## Tests

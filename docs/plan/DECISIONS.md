@@ -758,6 +758,82 @@ rather than a hang.
 
 ---
 
+## D31 — Provenance is written by the build and only read by everything else
+
+**Status:** DECIDED 2026-10-07 (M6).
+
+**Context.** A `.mp4` found on disk a month later is an assertion with no author. R-F8 asks
+for the build's identity — what it was made from and what made it. The obvious shortcut is to
+compute it wherever it is needed: `vidkit verify` already loads the spec, probes the tools,
+and has the output path, so it could assemble the record itself and write it beside
+`verify.json`. That is exactly wrong. A record composed at *read* time describes the tree as it
+is *now* — the spec as edited since, the ffmpeg that happens to be installed today — while
+appearing to describe the build it was handed. It is a fabricated provenance for someone
+else's build, which is D16's failure mode arriving through the back door.
+
+**Decision.** `assembler.run` writes `OUT/_build/provenance.json` for **every** rendering
+action, and `verify` — like `vidkit provenance`, the `provenance` job action, and
+`vidkit_provenance` — **reads** it. Nothing else ever writes it.
+
+- `Provenance.read` returns `None` on a missing file, unparseable JSON, or a `schema` it does
+  not know. It never returns a half-parsed guess, so a caller cannot act on a misread record.
+- A verify copies the identifying fields into `report.facts.provenance` and keeps
+  `action: "build"` — it reports the build it looked at, not itself.
+- Provenance is a **fact, not a check**. Its absence does not fail a build, and a verify on a
+  tree with no record still runs every acceptance check.
+- A tool that is missing is recorded with `present: false` rather than omitted. "We did not
+  check" and "it was not there" are different facts, and only the second one is useful later.
+- Timestamps are UTC and the elapsed time is the measured wall clock, so the record answers
+  "how old is this?" without needing the reader's timezone.
+
+**Alternatives rejected:** fold it into `verify.json` (a re-verify would then rewrite the
+build's identity — the drift this exists to prevent); compute it on demand at read time (the
+fabrication above); write it from the CLI/MCP layer per verb (four writers, four chances to
+disagree, and `--json run build` would differ from `vidkit build`); record only the tools that
+are present (silently converts "not looked for" into "not needed").
+
+**Consequences:** the record is reproducible from the build alone, and the framing is fixed:
+`verify.json` answers **"is this honest?"**, `provenance.json` answers **"what is this?"**.
+The cost is one more file in `_build/` on every render, and a `verify` that can honestly say
+`provenance: null` when there is no build to describe.
+
+---
+
+## D32 — Platform support is stated, not implied
+
+**Status:** DECIDED 2026-10-07 (M6).
+
+**Context.** R-H6 asks for a portability pass. The honest content of one is a *policy*, not a
+promise: the engine is developed and CI-tested on Linux, some tools are Linux-first, and one
+mechanism — the `SIGALRM` run timeout — does not exist on Windows at all. Claiming "cross
+platform" without saying which parts are tested would be the same class of error as an
+unverified `verify.json`.
+
+**Decision.** Support is tiered and written down, in
+[`docs/operations/troubleshooting.md`](../operations/troubleshooting.md):
+
+- **Linux — tested.** Every CI job runs here, including the two render jobs.
+- **macOS — supported, untested by CI.** The code paths are platform-neutral, Chrome discovery
+  covers both `chrome-mac` and `chrome-mac-arm64` and the `/Applications` bundles, and the
+  Playwright cache paths are searched per platform. The default theme's font families do not
+  ship with Windows or macOS; the docs say which and what to set instead.
+- **Windows — best-effort, not tested.** No POSIX-only call is on the build path; `Shell`
+  passes argv lists, never a shell string, so there is no `/bin/sh` dependency to port.
+- The one real degradation is named rather than hidden: `signal.setitimer` does not exist on
+  Windows, so the MCP run timeout is **not installed** there and a job is unbounded. The
+  manifest still reports what the job did, and the docs say so in a table row of its own.
+
+**Alternatives rejected:** claim full cross-platform support (unverifiable, and the timeout
+gap would surface as a hung client rather than a documented limit); drop the timeout on all
+platforms for symmetry (removing a working guard from the tested platform to match an
+untested one is backwards); add a thread-based timeout for Windows (a new concurrency
+mechanism, and one that cannot interrupt the pipeline's subprocess work anyway).
+
+**Consequences:** a user on macOS or Windows knows exactly what is and is not promised, and
+a future portability bug has a documented baseline to be measured against.
+
+---
+
 ## Index
 
 | ID | Title | Status |
@@ -792,3 +868,5 @@ rather than a hang.
 | D28 | A transition is a beat, and it never changes the runtime | DECIDED |
 | D29 | A job answers with a manifest, and never raises for an expected refusal | DECIDED |
 | D30 | Progress is the pipeline's own narration, delivered only through a hook | DECIDED |
+| D31 | Provenance is written by the build and only read by everything else | DECIDED |
+| D32 | Platform support is stated, not implied | DECIDED |

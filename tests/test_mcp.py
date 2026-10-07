@@ -39,6 +39,7 @@ def test_docs_tool_routes_by_module():
     # bare stems resolve regardless of module folder
     assert m.tool_docs("concepts").startswith("# Concepts")
     assert m.tool_docs("mcp-server").startswith("# vidkit as an MCP server")
+    assert m.tool_docs("provenance").startswith("# Provenance")
     # module-qualified names resolve too
     assert m.tool_docs("authoring/spec-reference").startswith("# Spec reference")
 
@@ -134,6 +135,41 @@ def test_verify_report_tool_missing_file(tmp_path):
         m.tool_verify_report(str(spec), str(tmp_path / "out"))
 
 
+@pytest.mark.needs_render
+def test_provenance_tool_reads_what_build_wrote(tmp_path):
+    """The MCP surface answers "which build is this?" from the file, not from a wish."""
+    from vidkit.job import run_job
+
+    built = run_job("build", story=str(EXAMPLE), out=str(tmp_path))
+    got = m.tool_provenance(str(EXAMPLE), str(tmp_path))
+
+    assert got["schema"] == 1
+    assert got["action"] == "build"
+    assert got["spec_sha256"] == built["provenance"]["spec_sha256"]
+    assert {t["name"] for t in got["tools"]} == {"ffmpeg", "ffprobe", "rsvg-convert",
+                                               "pdftoppm", "gs"}
+
+
+def test_provenance_tool_before_a_build_refuses_with_a_reason(tmp_path):
+    spec = tmp_path / "video.yaml"
+    spec.write_text(
+        "project: {title: T, slug: t, output: t.mp4, min_seconds: 1, max_seconds: 10}\n"
+        "narration: {inline: {0: 'hi'}}\n"
+        "scenes: [{n: 0, shots: [{still: s.svg}]}]\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "s.svg").write_text("<svg/>", encoding="utf-8")
+
+    with pytest.raises(ToolError, match="run build first"):
+        m.tool_provenance(str(spec), str(tmp_path / "out"))
+
+
+def test_actions_tool_and_the_job_module_agree():
+    from vidkit.job import actions_help
+
+    assert m.tool_actions()["actions"] == actions_help()
+
+
 def test_default_spec_prefers_example():
     # From the vidkit root, the example spec is the default. Assert the intent
     # (a resolvable spec) rather than a specific slug: the repo may ship more
@@ -204,8 +240,9 @@ def test_build_server_registers_toolset():
     names = anyio.run(go)
     assert {"vidkit_run", "vidkit_actions", "vidkit_init", "vidkit_capture_plan",
             "vidkit_doctor", "vidkit_plan", "vidkit_build", "vidkit_verify",
-            "vidkit_docs", "vidkit_docs_index", "vidkit_panel_kinds"} <= set(names)
-    assert len(names) == 14
+            "vidkit_provenance", "vidkit_docs", "vidkit_docs_index",
+            "vidkit_panel_kinds"} <= set(names)
+    assert len(names) == 15
 
 
 def test_build_server_resources():

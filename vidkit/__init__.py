@@ -18,7 +18,7 @@ library itself contains no product knowledge.
 
 from __future__ import annotations
 
-__version__ = "0.1.0"
+__version__ = "1.0.0"
 
 from .errors import SpecError, ToolError, VidkitError  # noqa: F401
 

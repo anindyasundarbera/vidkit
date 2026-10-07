@@ -5,7 +5,7 @@ All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [1.0.0] - 2026-10-07
 
 ### Added
 
@@ -17,10 +17,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `--json` on every CLI command — the same manifest on stdout; `--progress` streams the
   run's own log to stderr, so stdout stays parseable. Both are accepted before or after the
   verb. `--progress` without `--json` is an error rather than a silent no-op.
-- Four MCP tools: `vidkit_run`, `vidkit_actions`, `vidkit_init`, `vidkit_capture_plan`
-  (14 tools); a `vidkit://actions` resource; `progress=True` on `vidkit_run` and
-  `vidkit_build`. `vidkit_run(timeout=…)` bounds a call (`VIDKIT_RUN_TIMEOUT`), so a long
-  render returns a refusal instead of hanging the client.
+- Five MCP tools: `vidkit_run`, `vidkit_actions`, `vidkit_init`, `vidkit_capture_plan`,
+  `vidkit_provenance` (15 tools); a `vidkit://actions` resource; `progress=True` on
+  `vidkit_run` and `vidkit_build`. `vidkit_run(timeout=…)` bounds a call
+  (`VIDKIT_RUN_TIMEOUT`), so a long render returns a refusal instead of hanging the client.
 - `progress` as data: `{steps: [{name, kind, ok, detail, seconds}], seconds}`, classified
   from the pipeline's own narration rather than a second, parallel account of it.
 - `doctor` reports declared **secrets** as a tool row — present or missing, never the value —
@@ -28,6 +28,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   story at all is now valid, which is what a pre-flight check is for.
 - `docs/operations/job-contract.md` — the manifest keys, the failure vocabulary, the exit
   codes, and the progress contract.
+
+- **Provenance** (`_build/provenance.json`, R-F8) — every build records its own identity:
+  the spec and a hash of its bytes, the resolved window, the provider and a hash of its
+  source, the version and path of each of `ffmpeg`/`ffprobe`/`rsvg-convert`/`pdftoppm`/`gs`,
+  the stages that ran, each dataset's snapshot hash, declared degradations, and the UTC
+  time it finished. A tool that is missing is recorded as `present: false`, never omitted:
+  "we did not check" and "it was not there" are different facts.
+- The `provenance` job action and CLI verb, and `vidkit_provenance` over MCP — all three
+  *read* what the build wrote. A verify reads too, and copies the identifying fields into
+  `report.facts.provenance`, because a record composed at read time would describe today
+  while appearing to describe last week's build.
+- `docs/verification/provenance.md` — what `provenance.json` is, field by field, and how it
+  differs from `verify.json` ("is this honest?" versus "what is this?").
+- `docs/guides/first-video.md` — a fresh clone to a verified `.mp4` using only the docs, by
+  CLI and by MCP, including the platform notes for macOS and Windows.
 
 - `examples/hello-world/` — a self-contained, host-free example that builds with
   nothing but `ffmpeg` and `rsvg-convert`. It doubles as the CI fixture: every
@@ -142,5 +157,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   resources.
 - CLIs: `vidkit doctor`, `plan`, `build`, `tts`, `capture`, `verify`, `docs`.
 
-[Unreleased]: https://github.com/anindyasundarbera/vidkit/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/anindyasundarbera/vidkit/compare/v1.0.0...HEAD
+[1.0.0]: https://github.com/anindyasundarbera/vidkit/releases/tag/v1.0.0
 [0.1.0]: https://github.com/anindyasundarbera/vidkit/releases/tag/v0.1.0

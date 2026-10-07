@@ -300,13 +300,17 @@ def test_the_action_list_is_data_an_agent_can_read():
 
     assert [row["action"] for row in listed] == list(ACTIONS)
     assert all(row["does"] for row in listed)
-    assert len(ACTIONS) == 7
+    assert len(ACTIONS) == 8
+    # `provenance` reads, it does not render; saying so is the point of the list
+    row = next(r for r in listed if r["action"] == "provenance")
+    assert row["stages"] == []
 
 
 def test_stage_selection_is_declared_per_action():
     assert stages_for("build") is None  # the whole pipeline
     assert stages_for("capture") == ["capture"]
     assert stages_for("tts") == ["narration"]
+    assert stages_for("provenance") == []  # nothing is rendered, and that is declared
 
 
 def test_only_and_from_stage_cannot_be_combined():

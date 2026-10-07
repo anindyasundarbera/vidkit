@@ -49,11 +49,12 @@ modules:
 
   - id: verification
     title: Verification
-    summary: The acceptance checks and the verify.json report.
+    summary: The acceptance checks, the verify.json report, and the build's own identity.
     audience: both
     route: docs/verification/<doc>
     docs:
       - {file: verification/verification.md, title: Verification, summary: Every check, pass/fail semantics, what it does not do.}
+      - {file: verification/provenance.md, title: Provenance, summary: provenance.json — what was built, from what, by what, and when.}
 
   - id: operations
     title: Operations
@@ -73,6 +74,7 @@ modules:
     audience: both
     route: docs/guides/<doc>
     docs:
+      - {file: guides/first-video.md, title: Your first video, summary: Fresh clone to a verified mp4, by CLI and by MCP, using only the docs.}
       - {file: guides/recipes.md, title: Recipes, summary: Known-good patterns for common video tasks.}
 
   - id: plan

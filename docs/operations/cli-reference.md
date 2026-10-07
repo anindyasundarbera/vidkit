@@ -18,6 +18,7 @@ Run as `vidkit …` (installed console script) or `python -m vidkit …`.
 | `vidkit capture SPEC [--out DIR]` | (re)capture screen recordings only |
 | `vidkit auth URL [--spec SPEC] [--save PATH] [--wait SECONDS]` | record a signed-in browser session once |
 | `vidkit verify SPEC [--out DIR]` | re-run the acceptance checks |
+| `vidkit provenance SPEC [--out DIR]` | show what made the last build, and when |
 | `vidkit docs [NAME] [--index]` | print the docs router, a named doc, or the route table |
 
 `--version` prints the version.
@@ -153,11 +154,13 @@ vidkit run plan  --story ./my-story
 vidkit run build --story ./my-story --out ./video --timeframe 2026-09-01..2026-09-30
 vidkit run init  --story ./new-story --title "Q4 review" --days 28
 vidkit run verify --story ./my-story --out ./video
+vidkit run provenance --story ./my-story --out ./video
 ```
 
-`ACTION` is one of `plan`, `build`, `capture`, `tts`, `verify`, `doctor`, `init`. `--story`
-takes a story **folder** (its `video.yaml` is found inside) or a spec file. `--only` /
-`--from` / `--refresh` narrow a rendering action exactly as they do for `build`.
+`ACTION` is one of `plan`, `build`, `capture`, `tts`, `verify`, `provenance`, `doctor`,
+`init`. `--story` takes a story **folder** (its `video.yaml` is found inside) or a spec
+file. `--only` / `--from` / `--refresh` narrow a rendering action exactly as they do for
+`build`.
 
 It prints the manifest and exits `0` / `1` / `2` as above. Without `--json` the run's log is
 interleaved on the terminal ahead of the manifest; with `--json` the log moves to stderr.
@@ -204,6 +207,42 @@ Re-evaluates the checks against whatever is currently in `--out`. Exits `2` on f
 ```bash
 vidkit verify SPEC.yaml --out ./video
 ```
+
+## `provenance`
+
+Prints the identity of the last build in `--out`: the spec and its hash, the window, the
+provider and its hash, the tools that rendered it (with versions), the stages that ran, and
+when it finished. Reads `provenance.json`; never writes one, so it cannot describe a build
+that did not happen.
+
+```bash
+vidkit provenance SPEC.yaml --out ./video
+vidkit --json provenance SPEC.yaml          # the same record, as JSON
+```
+
+The output is one line per fact, so a build's identity can be read aloud:
+
+```
+vidkit 1.0.0 built build at 2026-10-07T04:27:31Z  (9.4s)
+  spec      /path/to/video.yaml
+  spec hash 4f6cbbf5f5de36d1
+  window    2026-09-23 to 2026-10-06 (14 days)  [spec]
+  story     my-story
+  provider  provider  0fee03c4aa472eb1
+    data    facts            21d5a46113875eda
+    data    overview         66d29d17fa7aebbd
+  stages    capture, clips, concat, data, narration, panels, render, stills, verify
+  [yes] ffmpeg           n4.3.1
+  [NO ] ffprobe          (not found)
+  runtime   3.14.4 on Linux x86_64
+```
+
+A tool that is not installed prints `[NO ]` with the reason, and a dataset that degraded
+prints a `DEGRADED` line naming it — neither is omitted, because "not found" and "not
+looked for" are different facts. Before any build the command exits `1` and prints the hint
+to stderr rather than inventing a record.
+
+See [provenance.md](../verification/provenance.md).
 
 ## `docs`
 
