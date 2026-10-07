@@ -92,7 +92,7 @@ def test_panel_doc_head_and_foot():
 # --------------------------------------------------------------------------- #
 @pytest.mark.parametrize("kind", ["line_series", "bar_profile", "stat_cards",
                                   "terminal", "endpoints", "strip", "kv_table",
-                                  "text_panel"])
+                                  "text_panel", "progress", "comparison", "quote"])
 def test_every_builtin_panel_renders(kind):
     sample = {
         "line_series": {"series": [{"label": "a", "points": [{"x": "d1", "y": 1},
@@ -105,6 +105,12 @@ def test_every_builtin_panel_renders(kind):
         "strip": {"cells": [True, False, True], "headline": "2/3", "sub": ["a", "b"]},
         "kv_table": [{"k": "key", "v": "value"}],
         "text_panel": {"paragraphs": ["hello world"]},
+        "progress": {"steps": [{"label": "indexed", "done": True},
+                               {"label": "captured", "active": True,
+                                "note": "2 of 5"}]},
+        "comparison": {"left": {"title": "before", "items": ["9 rows"]},
+                       "right": {"title": "after", "items": ["908 rows"]}},
+        "quote": {"text": "Measure, then draw.", "who": "the owner"},
     }[kind]
     d = PanelDoc(1920, 1080).head("T", "k")
     panels.render(kind, sample, {}, d)

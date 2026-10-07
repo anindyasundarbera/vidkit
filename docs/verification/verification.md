@@ -20,6 +20,7 @@ render. The report is written to `OUT/_build/verify.json`.
 | `speech rate plausible` | 1.6–3.6 words/sec | script + duration |
 | `no mock mode referenced` | `mode=mock` absent, or only as a prohibition | narration + captions |
 | `timeframe consistent with spec` | every window the narration states matches the resolved timeframe | script + SRT + spec |
+| `frames are the declared size` | the produced film is `project.size` in pixels | ffmpeg |
 
 The `no mock mode referenced` check exists because a script may legitimately *say* "we never
 open `?mode=mock`"; so it allows the phrase near the word "never".

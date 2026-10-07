@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any
 
 from .errors import SpecError
+from .ffmpeg import TRANSITIONS
 from .timeframe import Timeframe, find_window_claims, parse_timeframe
 
 try:  # optional
@@ -33,6 +34,8 @@ class Project:
     size: tuple[int, int] = (1920, 1080)
     min_seconds: float = 180.0
     max_seconds: float = 300.0
+    transition: str = "cut"               # "cut" | "fade" | "wipe" | "slide"
+    transition_seconds: float = 0.5       # how long a dissolve lasts
 
     @property
     def width(self) -> int:
@@ -64,7 +67,36 @@ class Shot:
     kind: str                             # "still" | "capture" | "chart"
     ref: str                              # path, capture name, or chart name
     effect: str = "hold"                  # "hold" | "zoom"
+    fit: str = "cover"                    # "cover" (crop) | "contain" (letterbox)
     weight: float = 1.0                   # share of the scene's duration
+
+
+@dataclass
+class Overlay:
+    """A graphic composited over a scene's pictures (R-D4).
+
+    Two kinds, and the difference is why the field exists at all:
+
+    * ``banner`` — a strip drawn by the engine from the scene's own words. Costs
+      no asset, cannot go stale, and is the right default for a lower-third.
+    * ``image`` — a PNG or SVG the author supplies. Drawn as itself; a
+      still that is not found is a load-time refusal, not a blank frame.
+
+    An overlay never replaces the shot underneath. It says something *over* the
+    product; it can never stand in for the product.
+    """
+    kind: str = "banner"                  # "banner" | "image"
+    text: str = ""                       # banner subtitle (defaults to the scene title)
+    kicker: str = ""                     # banner eyebrow text
+    src: str | None = None               # image overlays: a path
+    position: str = "bottom"             # "bottom" | "top"
+    height: float = 0.16                 # banner share of the frame height
+    opacity: float = 0.88
+    fade: float = 0.4                    # seconds to fade in and out
+
+
+OVERLAY_KINDS = {"banner", "image"}
+OVERLAY_POSITIONS = {"top", "bottom"}
 
 
 @dataclass
@@ -72,6 +104,7 @@ class Scene:
     n: int
     shots: list[Shot]
     title: str = ""
+    overlay: Overlay | None = None
 
 
 @dataclass
@@ -94,6 +127,9 @@ class Action:
     save_as: str | None = None            # download: artifact name inside _capture/artifacts
     assert_: Assert | None = None         # per-action check, run before the next action
 
+
+# how a still is fitted to the frame (R-D5)
+FITS = {"cover", "contain"}
 
 ACTION_KINDS = frozenset({
     "select", "click", "fill", "press", "wait", "wait_for", "scroll", "eval",
@@ -303,8 +339,14 @@ def _shots(raw: dict[str, Any], where: str) -> Shot:
     if len(present) != 1:
         raise SpecError(f"{where}: a shot needs exactly one of still/capture/chart")
     kind = present[0]
+    fit = str(raw.get("fit", "cover"))
+    if fit not in FITS:
+        raise SpecError(
+            f"{where}: fit must be one of {', '.join(sorted(FITS))}, not {fit!r}"
+        )
     return Shot(kind=kind, ref=str(raw[kind]),
                 effect=str(raw.get("effect", "hold")),
+                fit=fit,
                 weight=float(raw.get("weight", 1.0)))
 
 
@@ -315,6 +357,33 @@ def _assert(raw: dict[str, Any], where: str) -> Assert:
                   contains=None if raw.get("contains") is None else str(raw["contains"]),
                   equals=None if raw.get("equals") is None else str(raw["equals"]),
                   exists=bool(raw.get("exists", False)))
+
+
+def _overlay(raw: Any, where: str) -> Overlay:
+    if not isinstance(raw, dict):
+        raise SpecError(f"{where}: overlay must be a mapping")
+    kind = str(raw.get("kind", "banner"))
+    if kind not in OVERLAY_KINDS:
+        raise SpecError(f"{where}: overlay kind must be one of "
+                        + ", ".join(sorted(OVERLAY_KINDS)) + f" (got {kind!r})")
+    position = str(raw.get("position", "bottom"))
+    if position not in OVERLAY_POSITIONS:
+        raise SpecError(f"{where}: overlay position must be one of "
+                        + ", ".join(sorted(OVERLAY_POSITIONS))
+                        + f" (got {position!r})")
+    src = raw.get("src")
+    if kind == "image" and not src:
+        raise SpecError(f"{where}: an image overlay needs a src")
+    height = float(raw.get("height", 0.16))
+    if not 0.04 <= height <= 0.5:
+        raise SpecError(f"{where}: overlay height must be between 0.04 and 0.5 "
+                        f"of the frame (got {height})")
+    return Overlay(kind=kind, text=str(raw.get("text", "")),
+                   kicker=str(raw.get("kicker", "")),
+                   src=None if src is None else str(src),
+                   position=position, height=height,
+                   opacity=float(raw.get("opacity", 0.88)),
+                   fade=float(raw.get("fade", 0.4)))
 
 
 def _action(raw: dict[str, Any], where: str) -> Action:
@@ -390,11 +459,23 @@ def load_spec(path: Path | str, *,
         if key not in pj:
             raise SpecError(f"project.{key} is required")
     size = pj.get("size", [1920, 1080])
+    transition = str(pj.get("transition", "cut")).lower()
+    if transition not in TRANSITIONS and transition != "cut":
+        raise SpecError(
+            "project.transition must be one of cut, "
+            + ", ".join(sorted(TRANSITIONS)) + f" (got {transition!r})")
+    transition_seconds = float(pj.get("transition_seconds", 0.5))
+    if transition != "cut" and not 0.05 <= transition_seconds <= 2.0:
+        raise SpecError(
+            "project.transition_seconds must be between 0.05 and 2.0 — a "
+            f"transition is a beat between two states, not a shot of its own "
+            f"(got {transition_seconds})")
     project = Project(
         title=str(pj["title"]), slug=str(pj["slug"]), output=str(pj["output"]),
         fps=int(pj.get("fps", 30)), size=(int(size[0]), int(size[1])),
         min_seconds=float(pj.get("min_seconds", 180)),
         max_seconds=float(pj.get("max_seconds", 300)),
+        transition=transition, transition_seconds=transition_seconds,
     )
     if project.min_seconds >= project.max_seconds:
         raise SpecError("project.min_seconds must be < max_seconds")
@@ -440,7 +521,11 @@ def load_spec(path: Path | str, *,
         shots = [_shots(sh, f"scene {s.get('n')}") for sh in (s.get("shots") or [])]
         if not shots:
             raise SpecError(f"scene {s.get('n')} has no shots")
-        scenes.append(Scene(n=int(s["n"]), shots=shots, title=str(s.get("title", ""))))
+        ov = s.get("overlay")
+        scenes.append(Scene(n=int(s["n"]), shots=shots,
+                            title=str(s.get("title", "")),
+                            overlay=_overlay(ov, f"scene {s.get('n')}")
+                            if ov is not None else None))
     if not scenes:
         raise SpecError("spec defines no scenes")
     scenes.sort(key=lambda x: x.n)
@@ -538,6 +623,12 @@ def _validate(spec: Spec) -> None:
                 raise SpecError(f"scene {sc.n}: capture {sh.ref!r} is not defined")
             elif sh.kind == "chart" and sh.ref not in chart_names and not known_provider:
                 raise SpecError(f"scene {sc.n}: chart {sh.ref!r} is not defined")
+        ov = sc.overlay
+        if ov is not None and ov.kind == "image" and ov.src:
+            if not (spec.root / ov.src).exists() and not (spec.root / ".." / ov.src).exists():
+                raise SpecError(
+                    f"scene {sc.n}: overlay image not found: {ov.src} — an overlay "
+                    "is drawn from a file that exists, never invented")
     if spec.narration.source is None and not spec.narration.inline:
         raise SpecError("spec needs narration.source or narration.inline")
 

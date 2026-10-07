@@ -114,7 +114,7 @@ Branch `phase/m3-capture-v2` → PR → merged to `main`. Design consequences re
 
 ---
 
-## Current phase: M4 — Presentation v2  *(P0/P1)*
+## Completed: M4 — Presentation v2  *(P0/P1)*
 
 **Purpose.** Stop the output from looking wrong. M3 fixed what the camera *points at*; M4
 fixes what the audience *sees*.
@@ -127,35 +127,61 @@ crop — this is a bug fix)**, R-D1/D2 (panels), R-D6 (transitions).
 > Full-page captures are never stretched; a time series is spaced by real dates; an overlay
 > renders.
 
-### Ordered work
+### What was built
 
-1. **`still_to_clip` must preserve aspect (R-D5).** It currently emits a bare `scale=W:H`,
-   which **stretches** a full-page capture to 16:9. A distorted screenshot misrepresents the
-   product, so this is a truthfulness bug, not a polish item — and it is first because every
-   other M4 change is measured against it.
-2. **Date-proportional axis (R-D3).** A time series must be spaced by real dates, not by
-   index, so a gap in the data reads as a gap.
-3. **Overlays / lower-thirds (R-D4).** A compositing seam so a title, a callout, or a
-   branding strip can sit over a shot without being baked into the capture.
-4. **More panel kinds (R-D1/D2).** Grow the registry where a real story needs it; no
-   speculative kinds.
-5. **Transitions (R-D6).** Cut, fade, and a wipe, applied at `concat` — deterministic, and
-   never a substitute for a real state change.
-6. **Guides.** Update `docs/authoring/spec-reference.md`, the panels reference, and the
-   pipeline stage map for the new fields and stages.
+1. **`fit: cover|contain` (R-D5).** `still_to_clip` no longer emits a bare `scale=W:H`.
+   `cover` scales up and centre-crops the overflow; `contain` scales down and letterboxes
+   with a flat colour; the `zoom` branch fits into the enlarged box *before* `zoompan`. A
+   new check, `frames are the declared size`, reads the geometry back off the produced file.
+2. **Date-proportional axis (R-D3).** `parse_x`/`axis_positions` in `panels.py`; a date label
+   the engine cannot read unambiguously (`"3"`, `"March"`) is deliberately left categorical.
+3. **`overlay:` (R-D4).** A whole engine, not just a spec field: `vidkit/overlay.py`,
+   `Ffmpeg.overlay_clip`, `assembler._overlay_graphic`, and the compositing step inside
+   `_build_clips`. An overlay never replaces a shot.
+4. **Three panel kinds (R-D1/D2).** `progress`, `comparison`, `quote` — registry now 11.
+5. **Transitions (R-D6).** `cut|fade|wipe|slide` at `concat`, built as an `xfade` chain.
+   `_clip_plan` lays the run out before rendering and the *outgoing* take of each junction
+   carries the extra time, so the runtime is unchanged and narration stays the master clock.
+6. **Guides.** spec-reference, panels-reference, pipeline, concepts, architecture,
+   verification, README, ROADMAP, CHANGELOG.
 
 ### Tasks
 
 | # | Task | Status | Depends on |
 |---|---|---|---|
-| 1 | `still_to_clip` aspect-preserving scale/crop + tests | `[ ]` | — |
-| 2 | Date-proportional x-axis | `[ ]` | — |
-| 3 | Overlay/lower-third compositing | `[ ]` | 1 |
-| 4 | Additional panel kinds | `[ ]` | — |
-| 5 | Transitions at `concat` | `[ ]` | 1 |
-| 6 | Docs: spec-reference, panels, pipeline | `[ ]` | 1–5 |
-| 7 | Branch `phase/m4-presentation-v2` → commits → PR → merge | `[ ]` | 6 |
+| 1 | `still_to_clip` aspect-preserving scale/crop + tests | `[x]` | — |
+| 2 | Date-proportional x-axis | `[x]` | — |
+| 3 | Overlay/lower-third compositing | `[x]` | 1 |
+| 4 | Additional panel kinds | `[x]` | — |
+| 5 | Transitions at `concat` | `[x]` | 1 |
+| 6 | Docs: spec-reference, panels, pipeline | `[x]` | 1–5 |
+| 7 | Branch `phase/m4-presentation-v2` → commits → PR → merge | `[~]` | 6 |
 
-**Evidence requirement.** Every aspect-ratio and transition claim must be checked by
-**probing the produced video** (`ffmpeg`-derived frame geometry), not by reading the filter
-string. A filter that *looks* right is not evidence.
+### Verified evidence
+
+| Claim | How it was checked | Result |
+|---|---|---|
+| A still is fitted, not stretched | real render of a 1280×3000 page into 640×360, pixels read back | `cover` fills and crops; `contain` letterboxes; the frame is `640×360` in both |
+| A geometry claim is read off the file | `frames are the declared size` against a deliberately wrong-sized film | correct film passes, `320x180` fails naming the real size |
+| A dated x axis follows elapsed time | `axis_positions` over a 3-month and a 1-month gap | the 3-month gap is 3× as wide |
+| An ambiguous label is not a date | `parse_x("3")`, `parse_x("March")` | `None` — spacing stays categorical |
+| An overlay is drawn over the shot | real render, `640×360` clip + banner, pixels at row 40 and row 310 | shot still visible above, banner present below |
+| A declared overlay always appears | `overlay.fade` set far beyond the clip length | clamped; the banner is still on screen |
+| An overlay is not a substitute for a shot | spec load with `overlay:` and `shots: []` | refused: `scene 0 has no shots` |
+| A transition never changes the runtime | real render, `fade`/`wipe`/`slide`, track duration vs measured narration | `4.00 s` vs `4.00 s` for all three |
+| A fade is a genuine dissolve | pixels across the seam at t = 2.0…2.6 | `(253,0,0) → (253,0,0) → (167,0,83) → (0,0,254)` |
+| A wipe is a boundary, not a blend | pixels left and right at t = 2.3 | red left, blue right, same frame |
+| A hard cut leaves no seam | the same instant with `transition: cut` | one colour across the whole frame |
+| Overlays and transitions survive a resume | `--from concat` on an overlaid, dissolving spec | same duration, banner still present, `clips/base/` ignored |
+| Suite is green and still cheap | `python3 -m pytest tests -q` | **278 passed in 37.56 s** |
+
+Branch `phase/m4-presentation-v2` → PR → merged to `main`. Design consequences: **D26–D28**.
+
+---
+
+## Next: M5 — Agent surface  *(P0)*
+
+See [FEATURE-ROADMAP.md](FEATURE-ROADMAP.md) §8. Nothing here is started.
+
+**The one item that needs the owner.** The public `v1.0.0` tag lands at M6 and is a visible
+release; it will be raised before it is pushed.

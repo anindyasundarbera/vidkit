@@ -39,8 +39,38 @@ then `ROOT/..`, then the current directory.
 | `fps` | — | int | `30` | frame rate |
 | `min_seconds` | — | number | `180` | lower bound of the runtime window |
 | `max_seconds` | — | number | `300` | upper bound; also the hard mux ceiling |
+| `transition` | — | `"cut"` \| `"fade"` \| `"wipe"` \| `"slide"` | `"cut"` | how one shot becomes the next |
+| `transition_seconds` | — | number | `0.5` | length of that transition, 0.05–2.0 |
 
 **Constraint:** `min_seconds < max_seconds` (else `SpecError`).
+
+`transition` is how the film gets from one shot to the next, and the four values
+say four different things:
+
+| Value | What it claims |
+|---|---|
+| `cut` | the state changed; nothing to linger on |
+| `fade` | these two moments overlap — the old one is still resolving while the new one arrives |
+| `wipe` | the new state *replaces* the old one at a definite instant |
+| `slide` | the new state pushes the old one aside — a movement, not a replacement |
+
+A transition is a **beat between two states, not a shot of its own**, so
+`transition_seconds` is capped at 2.0. It also **cannot change the runtime**: the
+dissolve overlaps two takes, and the engine takes that overlapped time back, so
+the finished film is still exactly as long as the narration. If you find yourself
+reaching for a long transition to cover a change you have no footage of, the fix
+is footage, not a longer dissolve.
+
+### `shots[].fit`
+
+| Value | Default | Meaning |
+|---|---|---|
+| `cover` | ✅ | scale to fill the frame, then centre-crop the overflow — no bars, no distortion, but the extremes of a tall page are off screen |
+| `contain` | | scale to fit and letterbox the remainder — nothing hidden, and the bars admit the source is not 16:9 |
+
+Neither value ever stretches, and nothing invents pixels: `cover` discards the
+overflow and `contain` fills the remainder with a flat colour. Choose
+`contain` when the *whole* document body is the claim — a full CSV or a PDF page.
 
 ```yaml
 project:
@@ -51,6 +81,8 @@ project:
   fps: 30
   min_seconds: 180
   max_seconds: 300
+  transition: fade
+  transition_seconds: 0.6
 ```
 
 ---
@@ -316,6 +348,7 @@ charts:
 | `chart` | | string | — | name of a `charts[]` (or provider) panel |
 | `effect` | — | `"hold"` \| `"zoom"` | `"hold"` | static vs. slow push-in |
 | `weight` | — | number | `1.0` | share of the scene's duration |
+| `fit` | — | `"cover"` \| `"contain"` | `"cover"` | how the still is fitted to the frame |
 
 **Constraint:** exactly one of `still`/`capture`/`chart`.
 
@@ -329,6 +362,36 @@ scenes:
     shots:
       - {capture: context, effect: hold, weight: 0.6}
       - {still: assets/two-streams.svg, effect: zoom, weight: 0.4}
+```
+
+### `overlay`
+
+A graphic drawn **over** a shot for the whole scene. An overlay is decoration on
+evidence — it can never stand in for a shot, and a scene still needs exactly one
+of `still`/`capture`/`chart`.
+
+| Field | Type | Default | Meaning |
+|---|---|---|---|
+| `kind` | `"banner"` \| `"image"` | required | build the graphic from text, or use the file at `src` |
+| `text` | string | — | banner text (required for `kind: banner`) |
+| `kicker` | string | — | small line above the text |
+| `src` | string | — | image/SVG path (required for `kind: image`; **must exist**) |
+| `position` | `"top"` \| `"bottom"` | `"bottom"` | which edge the graphic hugs |
+| `opacity` | number | `0.92` | 0–1 |
+| `fade` | number | `0.4` | seconds to fade in and out, clamped to a third of the scene |
+| `height` | number | `0.16` | banner height as a fraction of the frame |
+
+A banner is drawn inside the frame — never full width — on a translucent panel,
+so the shot underneath stays visible. `fade` is clamped downwards so a declared
+overlay can never render as nothing.
+
+```yaml
+scenes:
+  - n: 3
+    title: The result
+    overlay: {kind: banner, kicker: measured, text: 908 rows indexed}
+    shots:
+      - {capture: result}
 ```
 
 ---

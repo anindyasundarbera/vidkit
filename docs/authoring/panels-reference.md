@@ -47,6 +47,17 @@ One or more series with dashed thresholds and peak annotations.
 ```
 `points` accepts `{x,y}`, `{date,value}`, `{when,value}`, `[x, y]`, or bare `y` values.
 
+**The x axis follows real time when the labels are dates.** If every `x` parses as
+an unambiguous date (ISO, `%Y/%m/%d`, `%d/%m/%Y`, `Jan 2026`, `2026-01`, `2026`),
+the points are placed by elapsed time — a three-month gap draws three times as wide
+as a one-month gap. Anything ambiguous (a bare `"3"`, `"March"`) is *not* treated as
+a date, because doing so would invent a timeline the data never claimed. Dates that
+are all identical, or a single point, also fall back to even spacing.
+
+**Options:** `x0, x1, y0, y1` (plot box), `y_max, y_min`, `label`, `color`,
+`peak_label` (a format string with `{v}` and `{x}`), `x_axis` (`"index"` forces even
+spacing even for dated labels).
+
 **Options:** `x0, x1, y0, y1` (plot box), `y_max, y_min`, `label`, `color`,
 `peak_label` (a format string with `{v}` and `{x}`).
 
@@ -107,6 +118,45 @@ Wrapped prose.
 **Shape:** `{"paragraphs": ["First paragraph.", "Second."]}` or a bare list.
 
 **Options:** `x0, y0`, `width` (chars, default 110), `font_size`.
+
+### `progress`
+Named stages of a process, marked done / active / to-do.
+
+**Shape**
+```json
+{"steps": [{"label": "indexed", "done": true},
+           {"label": "captured", "active": true, "note": "2 of 5"},
+           {"label": "assembled"}]}
+```
+Accepts a bare list. **Options:** `x0, y0`, `width`, `row_height`.
+
+**Notes:** a mark is a *state*, never a measured fraction — there is no `60%` here. If a
+real percentage exists, the data has to say so (`note`), because the renderer cannot
+invent one.
+
+### `comparison`
+Two columns of items, drawn at identical geometry and type.
+
+**Shape**
+```json
+{"left":  {"title": "before", "items": ["9 rows"]},
+ "right": {"title": "after",  "items": ["908 rows"]}}
+```
+**Options:** `x0, y0`, `width`, `gap`, `row_height`.
+
+**Notes:** the two sides are laid out by the same code with the same widths, so the only
+thing that can differ between them is the content. A comparison whose two halves are drawn
+differently is not a comparison.
+
+### `quote`
+A quotation with its attribution drawn as part of the graphic.
+
+**Shape:** `{"text": "Measure, then draw.", "who": "the owner"}` or a bare string.
+
+**Options:** `x0, y0`, `width`, `font_size`, `max_lines`.
+
+**Notes:** `who` is required — an unattributed quotation is not checkable, so the renderer
+will not draw one.
 
 ## Registering a custom kind
 

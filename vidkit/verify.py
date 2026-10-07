@@ -130,6 +130,19 @@ def verify_output(ctx: Context, assets, scenes_text: dict[int, str]) -> Report:
                 f"missing: {absent}, empty: {empty}" if (absent or empty)
                 else f"{len(artifacts)} artifact(s)")
 
+    # the film is the size the spec promised, and nothing in it was stretched
+    # (R-D5). A geometry check reads the produced pixels, so it stays true even
+    # if the filter chain is rewritten later.
+    target = project.size
+    probed = assets.video_track or out
+    if Path(probed).exists():
+        gw, gh = ctx.ffmpeg.clip_geometry(Path(probed))
+        rep.facts["video_size"] = [gw, gh]
+        rep.add("frames are the declared size", (gw, gh) == tuple(target),
+                f"{gw}x{gh} (declared {target[0]}x{target[1]})")
+    else:
+        rep.add("frames are the declared size", False, "no video track to probe")
+
     # live-data guarantee: every dataset came from the source, not a fallback
     degraded = dict(spec.degraded)
     if guard.require_live_data:

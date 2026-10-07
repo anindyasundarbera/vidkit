@@ -28,6 +28,7 @@ from pathlib import Path
 from typing import Iterable
 
 from . import capture as _capture
+from . import overlay as _overlay
 from . import panels as _panels
 from . import provider as _provider
 from . import tts as _tts
@@ -335,25 +336,104 @@ def _resolve_shot_still(ctx: Context, assets: Assets, shot) -> Path:
     return Path(p)
 
 
-def _build_clips(ctx: Context, assets: Assets, scripts) -> None:
+def _overlay_graphic(ctx: Context, assets: Assets, sc, ov) -> tuple[Path, tuple[int, int]]:
+    """The PNG to composite for a scene overlay, and the size to draw it at (R-D4).
+
+    A ``banner`` is drawn by the engine here, from the scene's own words — it
+    costs no asset and cannot go stale. An ``image`` is the author's file, drawn
+    as itself; an SVG is rasterised at its *declared* size so the engine is not
+    resampling a diagram it cannot read.
+    """
+    if ov.kind == "image":
+        src = _resolve_ref(ctx, ov.src or "")
+        if src is None:
+            raise SpecError(f"scene {sc.n}: overlay image not found: {ov.src}")
+        if src.suffix.lower() == ".svg":
+            size = _overlay.svg_size(src)
+            if size is None:
+                raise SpecError(
+                    f"scene {sc.n}: overlay SVG {src.name} does not declare a "
+                    "width and height, so vidkit cannot know how large to draw it")
+            png = ctx.stills / f"overlay-{sc.n:02d}.png"
+            ctx.rsvg.render(src, png, size)
+        else:
+            png, size = src, None
+        return png, size
+
+    size = _overlay.banner_size(ctx.spec.size, ov.height)
+    svg = ctx.stills / f"overlay-{sc.n:02d}.svg"
+    svg.write_text(_overlay.banner_svg(ov.text or sc.title, ov.kicker, size),
+                   encoding="utf-8")
+    png = ctx.stills / f"overlay-{sc.n:02d}.png"
+    ctx.rsvg.render(svg, png, size)
+    return png, size
+
+
+def _clip_plan(ctx: Context, assets: Assets):
+    """Every take this build needs, in screen order: ``(scene, idx, shot, seconds)``.
+
+    Laying the whole run out before rendering any of it is what makes a
+    transition possible at all: the dissolve *overlaps* two takes, so the pair
+    it joins has to share an extra ``transition_seconds`` whose removal is what
+    keeps the finished runtime equal to the sum of the measured narration
+    durations. That matters because narration is the master clock — a video
+    track that quietly lost half a second per dissolve would drift out of sync
+    with the voice, and drift is a lie about timing.
+    """
     spec = ctx.spec
-    spans = _spans(assets.scene_audio)
-    by_n = {n: (a, b) for n, a, b in spans}
+    by_n = {n: (a, b) for n, a, b in _spans(assets.scene_audio)}
+    plan = []
     for sc in spec.scenes:
         if sc.n not in by_n:
             continue
         start, end = by_n[sc.n]
         wsum = sum(s.weight for s in sc.shots) or 1
         for idx, shot in enumerate(sc.shots):
-            png = _resolve_shot_still(ctx, assets, shot)
             seconds = (end - start) * (shot.weight / wsum)
-            if seconds <= 0:
-                continue
-            clip = ctx.clips / f"scene-{sc.n:02d}-{idx}.mp4"
-            ctx.ffmpeg.still_to_clip(png, clip, seconds, size=spec.size,
-                                     fps=spec.project.fps, effect=shot.effect)
-            assets.stills.setdefault(f"_clip_{sc.n}_{idx}", clip)
-    ctx.info("clips built")
+            if seconds > 0:
+                plan.append((sc, idx, shot, seconds))
+    return plan
+
+
+def _build_clips(ctx: Context, assets: Assets, scripts) -> None:
+    spec = ctx.spec
+    plan = _clip_plan(ctx, assets)
+    dissolving = spec.project.transition != "cut" and len(plan) > 1
+    overlaid = 0
+    graphics: dict[int, tuple[Path | None, tuple[int, int] | None]] = {}
+    for i, (sc, idx, shot, seconds) in enumerate(plan):
+        # The *outgoing* take of a dissolve carries the extra time, so that the
+        # incoming picture appears exactly when its own narration starts and the
+        # previous picture lingers, fading, over the first beat of the new one —
+        # which is what a dissolve means.
+        pad = (spec.project.transition_seconds
+               if dissolving and i < len(plan) - 1 else 0.0)
+        png = _resolve_shot_still(ctx, assets, shot)
+        if sc.n not in graphics:
+            graphics[sc.n] = (_overlay_graphic(ctx, assets, sc, sc.overlay)
+                              if sc.overlay is not None else (None, None))
+        graphic, size = graphics[sc.n]
+        clip = ctx.clips / f"scene-{sc.n:02d}-{idx}.mp4"
+        if graphic is None:
+            target = clip
+        else:
+            # the pre-overlay clip goes in a subdirectory so that the
+            # concatenation glob still finds exactly the finished takes —
+            # which is what makes a resumed `--from concat` run correct.
+            target = ctx.clips / "base" / clip.name
+            target.parent.mkdir(parents=True, exist_ok=True)
+        ctx.ffmpeg.still_to_clip(png, target, seconds + pad, size=spec.size,
+                                 fps=spec.project.fps, effect=shot.effect,
+                                 fit=shot.fit)
+        if graphic is not None:
+            ov = sc.overlay
+            ctx.ffmpeg.overlay_clip(target, graphic, clip,
+                                    position=ov.position,
+                                    opacity=ov.opacity, fade=ov.fade,
+                                    graphic_size=size)
+            overlaid += 1
+        assets.stills.setdefault(f"_clip_{sc.n}_{idx}", clip)
+    ctx.info(f"clips built" + (f", {overlaid} with an overlay" if overlaid else ""))
 
 
 def _concat(ctx: Context, assets: Assets) -> None:
@@ -362,7 +442,15 @@ def _concat(ctx: Context, assets: Assets) -> None:
     if not clips:
         raise SpecError("no clips to concatenate")
     assets.video_track = ctx.clips / "video-track.mp4"
-    ctx.ffmpeg.concat(clips, assets.video_track, ctx.clips / "video.txt")
+    spec = ctx.spec
+    if spec.project.transition == "cut" or len(clips) < 2:
+        ctx.ffmpeg.concat(clips, assets.video_track, ctx.clips / "video.txt")
+    else:
+        # junction i is the one *into* clip i; the opening clip has none
+        trans = {i: (spec.project.transition, spec.project.transition_seconds)
+                 for i in range(1, len(clips))}
+        ctx.ffmpeg.concat_with_transitions(clips, assets.video_track, transitions=trans)
+        ctx.info(f"{spec.project.transition} transitions: {len(trans)} junction(s)")
     assets.audio_track = _tts.concat_audio(ctx, assets.scene_audio)
     ctx.info(f"concat: {len(clips)} clips, audio={'yes' if assets.audio_track else 'no'}")
 
