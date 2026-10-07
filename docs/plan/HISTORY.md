@@ -1740,3 +1740,47 @@ locally and failed in the lean run. All nine now carry `@needs_sandbox` or `@nee
   `1.2.0`) is the owner's call.
 - **A moving camera over a live capture is implemented but untested** (carried from M9).
 - **`doctor`'s happy path** still calls the full `docker_available()` probe (D48).
+
+## 2026-10-07 — M10 closeout: cross-major MCP proof and merged state
+
+**PR #13** merged to `main` as [`b23de00`](https://github.com/anindyasundarbera/vidkit/commit/b23de00c973ed6edd6ebd7a287a9d34a1b54f5f8).
+Its CI run [37653636553](https://github.com/anindyasundarbera/vidkit/actions/runs/37653636553)
+passed both Python test-matrix runs and all six end-to-end probes, including `studio-probe`.
+That probe completed all nine checks, selected take 2, and decoded the delivered film's middle
+frame as `(252, 0, 0)`. M0–M10 are now merged; there is no remaining implementation PR for M10.
+
+The implementation/compatibility investigation raised the M10 defect count from 19 to 27:
+
+| # | Additional defect | Resolution |
+|---|---|---|
+| 20 | The PEP 701 compatibility proof depended on Python-version assumptions that did not establish what a pre-3.12 interpreter accepts. | Probe a real compiler and skip only when that independent capability is absent. |
+| 21 | Tests importing AnyIO at collection time failed in the lean install, where the optional MCP extra is absent. | Use the stdlib-only `arun()` helper. |
+| 22 | `anyio.run(fn, *args)` did not forward keyword arguments used by async tool tests. | Keep argument forwarding inside `arun()`'s callable wrapper. |
+| 23 | The standalone studio probe's dependency setup did not include the MCP SDK it imports. | Install the probe's declared MCP extra in the CI environment. |
+| 24 | Tokenizer/static heuristics could claim PEP 701 incompatibility or compatibility without proving it. | Compile known legal and illegal forms using a real pre-3.12 interpreter; add the independent `needs_pre_312_python` marker. |
+| 25 | `_loop.offload` required AnyIO even though offloading is core runtime behavior and AnyIO arrives only through an optional extra. | Use `asyncio.to_thread` and propagate the current context. |
+| 26 | Selected-take promotion was coupled to the Playwright-available path, so a browserless build could skip promotion. | Keep capture promotion independent of whether a browser can be launched. |
+| 27 | The unbounded MCP dependency admitted 2.x despite API renames/removals that broke the server and protocol tests. | Adapt server/context/settings/result APIs across 1.x and 2.x and declare `mcp>=1.20,<3` (D59). |
+
+One separate CI-probe defect surfaced while validating the compatibility fix: the take-3 digest
+was consumed outside the coroutine where it was defined. The probe now returns the digest with
+its other results; this harness issue is not included in the 27 implementation/compatibility
+defects above.
+
+### Closeout evidence
+
+```
+Lean local suite:                 681 passed, 101 skipped
+Focused MCP/studio/hygiene (MCP 1.x): 188 passed
+Focused MCP/studio/hygiene (MCP 2.3.0): 182 passed, 6 skipped before Playwright installation
+MCP 1.x and 2.3.0 protocol exit proofs: passed
+MCP 2.3.0 standalone studio probe: 9 checks passed; delivered frame (252, 0, 0)
+GitHub Actions run 37653636553:   both test-matrix runs and all six probes passed
+Latest local full suite:          781 passed, 1 Chromium screenshot failure
+```
+
+The local screenshot test passed in isolation, but the latest local full-suite run was not
+all-green; the passing CI matrix and studio probe are reported separately rather than masking
+that result. Release bookkeeping remains open: no `v1.0.0` tag has been pushed, the version
+for M7–M10 remains an owner decision (the recorded default is `1.2.0`), and PyPI publication
+is deferred.
