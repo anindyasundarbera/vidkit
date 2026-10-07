@@ -1033,3 +1033,89 @@ examples/terminal-demo/_build/verify.json   → ok: true, 11 checks, all PASS
 
 Decisions taken: **D41**. The diagnostic workflow was deleted before the merge.
 
+
+---
+
+## 2026-10-07 — M7 merged: the first honest capability gate
+
+**PR [#7](https://github.com/anindyasundarbera/vidkit/pull/7)** →
+`main` @ **`40cf724`** (merge commit, parents `6987090` + `dab77b0`).
+
+The branch was pushed, failed CI on three of five jobs, was fixed, was force-pushed
+(`--force-with-lease`) as `dab77b0`, and merged only after the re-run went green. The
+diagnostic workflow that produced the runner facts below was added, used, and deleted —
+its history was rebased away, so the merge commit has no trace of it. **This section is
+the evidence of record.**
+
+### The CI outcome, as observed
+
+| Job | First run (`37578714492`) | After the fix (`37581822650`) |
+|---|---|---|
+| `pytest (3.10)` | **fail** — 26 tests | pass, 17 s |
+| `pytest (3.12)` | **fail** — 26 tests | pass, 17 s |
+| `exec-probe` ("run a real command and film it") | **fail** — 3 commands, all exit 1 | pass, 43 s |
+| `capture-probe` ("film a real page and a real download") | pass | pass, 1 m 26 s |
+| `build-example` ("build hello-world end to end") | pass | pass, 4 m 29 s |
+
+### What the runner actually is
+
+Established on the runner, not inferred:
+
+| Claim | Evidence |
+|---|---|
+| `ubuntu-latest` resolves to `ubuntu-24.04`, image `20260927.320.1` | diagnostic workflow, `lsb_release -a` |
+| Bubblewrap is **not** preinstalled | `which bwrap` → absent; the old `ci.yml` comment saying otherwise was wrong and is corrected |
+| Unprivileged user namespaces are restricted | `/proc/sys/kernel/apparmor_restrict_unprivileged_userns = 1` |
+| Every `bwrap` rung fails, including the minimal one | `bwrap --dev /dev --ro-bind / / /bin/true` → `setting up uid map: Permission denied`; `--unshare-all` → `loopback: Failed RTM_NEWADDR: Operation not permitted` |
+| `--unshare-user-try` and an outer `unshare --user --map-root-user` do **not** help | diagnostic workflow, both attempted |
+| `sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0` **does** help | diagnostic workflow; confirmed in the fixed `exec-probe`, which prints `before: 1` / `after: 0` |
+| A real capability probe costs **~14.1 ms** | measured; a whole-pipeline probe would cost ~2 s, which is why `doctor` probes one harmless command |
+
+### The fixed job, verbatim
+
+```
+before: 1
+kernel.apparmor_restrict_unprivileged_userns = 0
+after:  0
+sandbox OK — {'name': 'bubblewrap', 'available': True,
+              'detail': '/usr/bin/bwrap ran a confined command'}
+  [PASS] commands ran sandboxed — 3 command(s) under bubblewrap
+EXEC OK — 3 commands, all sandboxed, all replayed
+```
+
+### The general rule this produced
+
+> **When a capability gate decides whether an honest build is possible, it must
+> demonstrate the capability, not observe a precondition of it.**
+
+`shutil.which("bwrap")` observes a precondition. Running one confined command demonstrates
+the capability. The same rule will govern M8: Docker must be probed with
+`docker run --rm hello-world`, never `which docker` — a daemon that is installed and not
+answering is the identical bug in a new costume. Recorded as **D41**.
+
+### Local verification at merge time
+
+```
+python3 -m pytest tests -q                                    → 467 passed in 377.47 s
+env -i PATH=/tmp/lean7 … python3 -m pytest tests -q          → 428 passed, 39 skipped
+env -i PATH=<bwrap + python3 only> … pytest tests/test_exec  → 73 passed
+```
+
+The third is the decisive one: it shows the two skip markers are genuinely independent,
+where the old implementation early-returned as soon as render tools were present.
+
+### Still owed to the owner
+
+- **The `v1.0.0` tag has still not been pushed.** The code is `1.0.0` and merged; the tag is
+  a separate visible act and remains the owner's to make.
+- **M7 sits in `CHANGELOG.md` under `## [Unreleased]`.** Whether it becomes `1.1.0` at
+  release is the owner's call; folding it into `1.0.0` would make the tag and the release
+  notes disagree.
+
+### A dated risk, from the run's own annotations
+
+GitHub announced that **`ubuntu-latest` migrates to Ubuntu 26 beginning 2026-10-19**. Every
+runner fact in the table above is a statement about Ubuntu 24.04. When the image moves, the
+AppArmor restriction may change shape and the `sudo sysctl` step may become a no-op — or
+unnecessary. The `exec-probe` step prints the sysctl value *before* and *after* for exactly
+this reason: the log alone should say what happened.
