@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "vidkit"
 version = "1.0.0"
-description = "Declarative toolkit for narrated, captioned screen-recording videos"
+description = "A demo video is a claim about a system. Declarative spec → narrated, captioned screencast, reopened and verified — drivable from a shell or an agent over MCP."
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
