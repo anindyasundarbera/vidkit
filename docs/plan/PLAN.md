@@ -4,7 +4,7 @@
 > For the phase-wise plan see [FEATURE-ROADMAP.md](FEATURE-ROADMAP.md). For what already
 > happened see [HISTORY.md](HISTORY.md). For why, see [DECISIONS.md](DECISIONS.md).
 >
-> Last updated: **2026-10-07** (M10 merged).
+> Last updated: **2026-10-08** (front door rewritten).
 
 ## Where we are
 
@@ -14,10 +14,19 @@ at merge commit [`b23de00`](https://github.com/anindyasundarbera/vidkit/commit/b
 The final CI run passed both test-matrix jobs and all six end-to-end probes. The studio probe
 passed nine checks and decoded the selected take from the delivered film.
 
-The lean local suite reports **681 passed, 101 skipped**. A local full-suite run reported
-**781 passed and one Chromium screenshot failure**; that test passed in isolation. The full
-GitHub Actions test matrix passed, so retain both observations rather than calling the local
-full suite green. Detailed evidence and M10's final defect ledger are in [HISTORY.md](HISTORY.md).
+The lean local suite reports **681 passed, 101 skipped**. A later full local run reported
+**782 passed in 609.57 s** with every toolchain present. (An earlier full run had one Chromium
+screenshot failure that passed in isolation; it has not recurred.) Detailed evidence and M10's
+final defect ledger are in [HISTORY.md](HISTORY.md).
+
+## Recently landed
+
+The **front door** was rewritten (PR #15, `ddfac1c`): the README now leads with the problem
+it solves rather than the artifact it emits, the GitHub About says the same thing in one
+line, and the repository carries ten discoverable topics. Writing it from the code corrected
+four false claims the docs would otherwise have repeated (tool names, the `score.src` key, a
+`session_browser` tool that does not exist, and the probe count). Recorded in
+[HISTORY.md](HISTORY.md).
 
 ## Next
 
