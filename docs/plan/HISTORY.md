@@ -1784,3 +1784,57 @@ all-green; the passing CI matrix and studio probe are reported separately rather
 that result. Release bookkeeping remains open: no `v1.0.0` tag has been pushed, the version
 for M7–M10 remains an owner decision (the recorded default is `1.2.0`), and PyPI publication
 is deferred.
+
+## 2026-10-08 — The front door: a README that says why, and an About that says what
+
+**Branch** `docs/readme-story` (PR #15), off `main` = `5cb49b4`. Merged as `ddfac1c`.
+
+The repo could say what vidkit *is* but not what problem it solves. The About read
+"Compile a declarative YAML spec + provider module into a narrated, captioned, verified
+screencast video" — a precise description of the artifact and no reason to want one. The
+README opened on the artifact too, so a reader's first hundred words were spent on the
+shape of a file rather than the failure the tool exists to prevent.
+
+### What changed
+
+| Surface | Before | After |
+|---|---|---|
+| GitHub About | A description of the output. | The problem, then the output, then the two ways to drive it. |
+| Repository topics | none | 10 — `video-generation`, `screen-recording`, `mcp`, `mcp-server`, `playwright`, `demo-video`, `agent-tools`, `ffmpeg`, `python`, `yaml` |
+| `README.md` | 219 lines: what it is, install, spec, captures, charts, provider, extending, layout, tests. | 375 lines, in story order: **the problem → the idea → what it does → see it run →** the reference material. |
+| `pyproject.toml` | `Declarative toolkit for narrated, captioned screen-recording videos` | the same one-liner the About uses. |
+
+The new README's argument: a demo video is a **claim about a system**, made by hand and
+almost never checked; the failure modes are boring and predictable (mock mode, unreadable
+captions, remembered numbers, drift, overrun, forbidden claims); an LLM agent hits all of
+them faster because it cannot see the screen. vidkit's answer is that nothing is fabricated
+and the engine **reopens the render** to prove the promises held — plus the rule that keeps
+the proof honest, *a declaration is not a measurement*.
+
+### Accuracy defects fixed while writing it
+
+Writing the story from the code found four false statements the old README would have made
+had it listed them:
+
+| # | Claim | Truth |
+|---|---|---|
+| 1 | Authoring/inspect MCP tools are bare verbs (`build`, `plan`, `panels`). | They are `vidkit_*`: `vidkit_build`, `vidkit_plan`, `vidkit_panel_kinds`, … |
+| 2 | The score block is `score: {source: …}`. | The key is **`src`** (`score.src`), with `volume`/`duck_db`/`ramp`/`fade_in`/`fade_out`. |
+| 3 | A `session_browser` tool exists. | It does not. The flow is `browser_open` + `browser_act` + `browser_shot`. |
+| 4 | Five CI end-to-end probes. | **Seven** (`build-example`, `capture-probe`, `exec-probe`, `docker-probe`, `movie-probe`, `studio-probe` + the `test` matrix). |
+
+The verify section now lists the check names the code actually emits, rather than paraphrases.
+
+### Evidence
+
+```
+python3 -m pytest tests -q                    -> 782 passed in 609.57s
+python3 -m pytest tests/test_hygiene.py -q   -> 63 passed
+python3 -m vidkit docs --index               -> passed
+relative README links                        -> all resolve; fences balanced
+git diff --check                             -> clean
+PR #15 CI run 37791045500                    -> 8/8 checks passed
+```
+
+Counts re-derived from the code, not recalled: 34 MCP tools, 7 resources, 24 doc routes,
+14 legal top-level spec keys, 10 stages, 11 built-in panel kinds, 29 engine modules.
