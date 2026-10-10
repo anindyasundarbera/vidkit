@@ -16,6 +16,22 @@ Requires the extra: `pip install "vidkit[mcp]"` (i.e. `mcp>=1.20,<3`). vidkit su
 the MCP SDK's 1.x and 2.x app APIs; a future major version is excluded until it is
 explicitly tested and adapted.
 
+### Binding and trust
+
+The HTTP transports bind `127.0.0.1` by default. That matters: the agent surface can
+drive a browser, execute sandboxed commands, and render media, and it is **not
+authenticated**, so binding a non-loopback address would publish it to the network.
+By default `vidkit-mcp` **refuses** a non-loopback `--host` over an HTTP transport.
+If you genuinely need to listen on another interface, pass `--expose` — and then
+you are responsible for putting the server behind your own authentication and TLS,
+because vidkit does not add any:
+
+```bash
+vidkit-mcp --transport streamable-http --host 0.0.0.0 --expose   # deliberate, unauth
+```
+
+`--host`/`--port` have no effect on the stdio transport (it binds no socket).
+
 ## Tools
 
 Every tool takes an optional `spec` (path to a `.yaml`/`.json` spec; omit for the default) and

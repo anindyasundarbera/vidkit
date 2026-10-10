@@ -121,6 +121,32 @@ def test_no_test_module_imports_a_package_the_lean_job_lacks():
         + "; ".join(offenders))
 
 
+def test_version_is_single_sourced():
+    """``__version__`` lives in exactly one module.
+
+    The distribution reads ``vidkit._version.__version__`` for its metadata, and
+    ``vidkit.__version__`` re-exports it. A second literal somewhere in the package
+    would drift from the one the distribution actually ships.
+    """
+    import vidkit
+    import vidkit._version as v
+
+    assert vidkit.__version__ == v.__version__
+
+    import ast
+    from pathlib import Path
+
+    # The only assignment to a ``__version__`` string literal is the source module.
+    literal_sites = []
+    for py in sorted((REPO / "vidkit").glob("*.py")):
+        for node in ast.walk(ast.parse(py.read_text(encoding="utf-8"))):
+            if (isinstance(node, ast.Assign)
+                    and any(t.id == "__version__" for t in node.targets
+                            if isinstance(t, ast.Name))):
+                literal_sites.append(str(py))
+    assert literal_sites == [str(REPO / "vidkit" / "_version.py")], literal_sites
+
+
 # --------------------------------------------------------------------------- #
 # no syntax the oldest supported interpreter cannot read
 # --------------------------------------------------------------------------- #

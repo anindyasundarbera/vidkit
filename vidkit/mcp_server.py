@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import contextlib
 import io
+import ipaddress
 import json
 import os
 import signal
@@ -1190,6 +1191,43 @@ def tool_docs_index() -> dict[str, Any]:
 # --------------------------------------------------------------------------- #
 # Server construction
 # --------------------------------------------------------------------------- #
+def _is_loopback(host: str) -> bool:
+    """Whether ``host`` resolves to a loopback address.
+
+    The HTTP transports expose an agent surface that can drive a browser, execute
+    sandboxed commands, and render media. That is a trust boundary: binding a
+    non-loopback address with no authentication publishes the surface to the
+    network. The stdio transport is unaffected because it never binds a socket.
+    """
+    if host.lower() in ("localhost", "::1"):
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        pass
+    # A name, not a literal address. Every resolved address must be loopback for
+    # the bind to be safe; an unresolvable name resolves to nothing, which must
+    # fail closed rather than look loopback.
+    try:
+        resolved = _resolve_host(host)
+    except OSError:
+        return False
+    return bool(resolved) and all(
+        ipaddress.ip_address(a).is_loopback for a in resolved)
+
+
+def _resolve_host(host: str) -> list[str]:
+    """The addresses ``host`` resolves to, for a loopback check (best effort)."""
+    try:
+        import socket
+    except ImportError:  # pragma: no cover - the stdlib always has it
+        return []
+    try:
+        return sorted({i[4][0] for i in socket.getaddrinfo(host, None)})
+    except OSError:
+        return []
+
+
 def build_server(*, host: str = "127.0.0.1", port: int = 8765,
                  streamable_http_path: str = "/mcp"):
     """Create and configure the MCP server (requires the ``mcp`` extra).
@@ -1693,11 +1731,25 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8765)
     parser.add_argument("--path", default="/mcp", help="HTTP path for streamable-http")
+    parser.add_argument("--expose", action="store_true",
+                        help="permit binding --host to a non-loopback address over an "
+                             "HTTP transport; without this, a non-loopback --host is "
+                             "refused because the surface is unauthenticated")
     parser.add_argument("--project", default=None,
                         help="the folder whose studio sessions this server serves; "
                              "defaults to the directory of the default spec, so "
                              "resources and tools resolve the same project")
     args = parser.parse_args(argv)
+
+    if args.transport != "stdio" and not args.expose and not _is_loopback(args.host):
+        print(
+            f"refusing to bind an unauthenticated MCP HTTP transport to "
+            f"{args.host!r}: the agent surface can drive a browser and execute "
+            f"commands, so non-loopback binding is disabled by default. Re-run with "
+            f"--host 127.0.0.1, or pass --expose if this exposure is deliberate.",
+            file=sys.stderr,
+        )
+        return 2
 
     set_project(args.project)
     server = build_server(host=args.host, port=args.port,

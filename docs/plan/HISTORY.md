@@ -1838,3 +1838,52 @@ PR #15 CI run 37791045500                    -> 8/8 checks passed
 
 Counts re-derived from the code, not recalled: 34 MCP tools, 7 resources, 24 doc routes,
 14 legal top-level spec keys, 10 stages, 11 built-in panel kinds, 29 engine modules.
+
+---
+
+## 2026-10-10 — Production-readiness P0: version, dependencies, and the MCP trust boundary
+
+A production-readiness review of the repo concluded the *engine* is production-grade but the
+*release perimeter* is not. This entry records the P0 items closed and the evidence.
+
+### Single-sourced the package version
+
+`__version__` now lives in exactly one module, [`vidkit/_version.py`](../../vidkit/_version.py).
+`vidkit/__init__.py` re-exports it, and `pyproject.toml` reads it dynamically
+(`dynamic = ["version"]` + `tool.setuptools.dynamic.version = {attr = "vidkit._version.__version__"}`),
+so the distribution metadata and every in-package consumer (`cli --version`, `provenance`,
+`job`, `reports`, `mcp_server`) can no longer drift apart. Pinned by a new hygiene test that
+asserts the only `__version__` literal assignment in the package is `_version.py`.
+
+### Pinned dependency ranges and added dependabot
+
+Every declared dependency now carries an upper bound (`PyYAML>=6,<7`, `playwright>=1.40,<2`,
+`piper-tts>=1.2,<2`, `mcp>=1.20,<3`, `pytest>=7,<10`) so a future major cannot silently break
+a range vidkit never tested. [`.github/dependabot.yml`](../../.github/dependabot.yml) surfaces
+drift in those ranges weekly (pip) and monthly (github-actions). A full lockfile was
+deliberately **not** added: vidkit must keep its optional extras optional and run on
+3.10–3.14, so exact pinning would force a resolution vidkit cannot own (decision D63).
+
+### Guarded the unauthenticated HTTP MCP transport
+
+`vidkit-mcp --transport streamable-http|sse` now **refuses** a non-loopback `--host` by
+default (exit code 2), because the agent surface can drive a browser, execute sandboxed
+commands, and render media with no authentication. A new `--expose` flag opts into the
+deliberate exposure, documented as "you own TLS and auth from here". The stdio transport is
+unaffected (it binds no socket). Classified via `ipaddress` (loopback, not a hard-coded
+list) and pinned by three new tests in `tests/test_mcp.py`.
+
+### Added contributor-facing documents
+
+`SECURITY.md` (disclosure policy, supported-version table, vulnerability scope) and
+`CONTRIBUTING.md` (the invariant contract, evidence rule, test-suite discipline, PR process).
+Both were absent, which read as "unmaintained" regardless of the code.
+
+### Evidence
+
+```
+python3 -m pytest tests/test_mcp.py tests/test_cli.py tests/test_core.py -q  -> 88 passed
+python3 -m pytest tests/test_hygiene.py -q                                   -> 66 passed
+python3 -c "import vidkit; vidkit.__version__"                               -> 1.0.0 (from _version.py)
+python3 -m vidkit.mcp_server --transport streamable-http --host 0.0.0.0     -> refuses, exit 2
+```
