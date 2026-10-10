@@ -1841,3 +1841,26 @@ dependency majors cannot silently arrive; and an unauthenticated agent surface i
 loopback-bound unless an operator says otherwise in writing. A lockfile and HTTP auth remain
 open, deliberate follow-ons.
 
+
+---
+
+## D64 — License: MIT → Apache-2.0
+
+**2026-10-10.** Context: owner decision.
+
+vidkit was published as MIT. The owner chose to relicense to Apache-2.0.
+
+**Decision.** Relicense under Apache-2.0. `LICENSE` carries the full Apache 2.0 text,
+`pyproject.toml` declares `license = "Apache-2.0"` (the SPDX short form, replacing the
+`license = { text = "MIT" }` table), and the living documents that state the license as a
+present fact (`README.md`, `AGENTS.md`, `ROADMAP.md`, `CHANGELOG.md`) now say Apache-2.0.
+Historical records that describe the state *at the time* (MIT) are left as-is: they are
+append-only or frozen by rule and accurately report the past.
+
+**Alternatives.** *Stay MIT* (simplest, no churn); *GPL family* (rejected — vidkit is a tool
+meant to be reused and embedded, and a copyleft licence would discourage that).
+
+**Consequences.** Apache-2.0 adds an explicit patent grant and requires redistribution of
+the licence text and a NOTICE file when one is included (vidkit ships none). Existing
+consumers of the MIT-licensed source retain their MIT grant for the code they already
+received; the project as it moves forward is Apache-2.0.

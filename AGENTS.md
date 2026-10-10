@@ -3,7 +3,7 @@
 > **Read this file first, every session.** It is the durable operating contract for
 > `vidkit`. It survives context compaction; the conversation does not.
 >
-> **Repo:** <https://github.com/anindyasundarbera/vidkit> (public, MIT) · default branch `main`
+> **Repo:** <https://github.com/anindyasundarbera/vidkit> (public, Apache-2.0) · default branch `main`
 > · first commit `87b7435`. CI (`.github/workflows/ci.yml`) runs **seven job keys / eight
 > job runs**: the lean unit suite on Python 3.10/3.12 — the `test` matrix is **two** jobs —
 > and six end-to-end probes (`build-example`, `capture-probe`, `exec-probe`, `docker-probe`, `movie-probe`,
@@ -75,7 +75,7 @@ vidkit/
 ├─ ROADMAP.md             requirements R-A1…R-H9, root milestones M0–M6  ← governing document
 │                         (M7+ superseded by docs/plan/FEATURE-ROADMAP.md)
 ├─ CHANGELOG.md           release notes
-├─ LICENSE                MIT
+├─ LICENSE                Apache-2.0
 ├─ pyproject.toml         packaging, extras, console scripts
 ├─ vidkit/                the engine (29 modules)
 │    assembler.py         the 10-stage pipeline + Context/Assets wiring

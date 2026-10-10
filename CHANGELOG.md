@@ -63,6 +63,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **License changed from MIT to Apache-2.0.** The `LICENSE` file now carries the full Apache
+  2.0 text and `pyproject.toml` declares `license = "Apache-2.0"` (SPDX, replacing the
+  `license = { text = "MIT" }` form). `README.md`, `AGENTS.md`, and `ROADMAP.md` were updated
+  to match.
 - **Tests that call an `async` tool must await it.** A bare call returns a coroutine, so
   `pytest.raises` sees no exception and `result == {...}` compares a dict to a coroutine —
   green, and meaningless. `tests/test_mcp.py` now scans every `tests/test_*.py` for the

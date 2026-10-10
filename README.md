@@ -367,7 +367,7 @@ examples end to end.
 
 ## Status
 
-`1.0.0`, MIT, and honest about where it is: the engine, the studio surface, capture,
+`1.0.0`, Apache-2.0, and honest about where it is: the engine, the studio surface, capture,
 sandboxed exec, Docker environments, and movie mode are merged and verified, and CI builds
 the examples end to end on a clean runner. The MCP server supports SDK 1.x and 2.x
 (`mcp>=1.20,<3`). What remains is release bookkeeping — the `v1.0.0` tag and the version for
