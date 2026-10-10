@@ -17,7 +17,7 @@ dependencies = [
 capture = ["playwright>=1.63.0,<2"]
 tts = ["piper-tts>=1.8.0,<2"]
 mcp = ["mcp>=1.20,<3"]
-dev = ["pytest>=7,<10", "pytest-cov>=4,<7", "ruff>=0.5,<1"]
+dev = ["pytest>=7,<10", "pytest-cov>=7.1.0,<8", "ruff>=0.5,<1"]
 
 [project.scripts]
 vidkit = "vidkit.cli:main"
