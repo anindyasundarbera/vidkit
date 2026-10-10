@@ -87,7 +87,12 @@ def test_mcp_extra_declares_only_supported_sdk_majors():
         and "mcp" in _extras_of(r)
     ]
     assert len(requirements) == 1, requirements
-    assert ">=1.20" in requirements[0], requirements
+    # The M10 contract is "support the SDK across the 1.x and 2.x majors", not
+    # "the floor is exactly 1.20". A floor that stays within 1.x keeps 1.x in
+    # range; only a floor that jumps to 2.x would drop it. So assert the real
+    # promise — the floor is still a 1.x release and the ceiling is <3 — rather
+    # than a literal `>=1.20` that any floor bump (e.g. 1.20 -> 1.30) would trip.
+    assert ">=1." in requirements[0], requirements
     assert "<3" in requirements[0], requirements
 
 
