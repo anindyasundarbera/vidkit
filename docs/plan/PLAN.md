@@ -35,7 +35,13 @@ masks, and text over live motion) remains unowned; do not begin it without an ex
 exit criterion. The standalone MCP server now supports SDK 1.x and 2.x, with 3.x intentionally
 outside the declared `mcp>=1.20,<3` range.
 
-Release bookkeeping is separate from phase completion:
+The production-readiness **P0** items are landed (2026-10-10): the version is single-sourced
+(`vidkit/_version.py`), every dependency carries an upper bound with dependabot watching the
+ranges, the HTTP MCP transport refuses a non-loopback bind without `--expose`, and
+`SECURITY.md`/`CONTRIBUTING.md` exist. Recorded in [HISTORY.md](HISTORY.md) and
+[DECISIONS.md](DECISIONS.md) D63.
+
+Release bookkeeping is separate from phase completion and remains owner-owned:
 
 - The `v1.0.0` tag has not been pushed.
 - M7–M10 remain in `## [Unreleased]`; the recorded default for their release version is

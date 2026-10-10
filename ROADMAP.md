@@ -155,7 +155,7 @@ Priorities: **P0** = required for v1.0, **P1** = strongly expected, **P2** = lat
 | R-H4 | CI: lint + unit tests + a hello-world build (headless-safe). | P0 |
 | R-H5 | Docs set: concepts, spec reference, provider guide, panels reference, capture guide, verification, CLI, troubleshooting, recipes. | P0 |
 | R-H6 | Portability: Linux/macOS first-class; Windows documented (best-effort). | P1 |
-| R-H7 | LICENSE present (MIT). | P0 |
+| R-H7 | LICENSE present (Apache-2.0). | P0 |
 | R-H8 | Versioning + changelog + release tags. | P1 |
 | R-H9 | Optional PyPI publish. | P2 |
 
@@ -179,7 +179,7 @@ authoritative "what is done now" record is
 | Examples | `examples/hello-world/` (host-free, offline) and `examples/capture-kit/` (a local server, a real CSV and PDF; needs Chromium) |
 | `docs/` | **21 docs in 7 modules** under `docs/`, routed by `docs/README.md` + `docs/modules.yaml` |
 | MCP server | **present** — `vidkit/mcp_server.py`; 10 tools + 3 resources |
-| `LICENSE` | **present** (MIT) |
+| `LICENSE` | **present** (Apache-2.0) |
 | `CHANGELOG.md` | **present** (Keep a Changelog) |
 | `py.typed` | **present**, and ships in the built wheel |
 | CI | **present** — `.github/workflows/ci.yml` (`test` + `build-example` + `capture-probe`) |
@@ -287,7 +287,7 @@ MCP consumer.
 **In the new vidkit repo**
 
 - [x] Create the repo. *(Done: `gh repo create anindyasundarbera/vidkit --public`.)*
-- [x] Add `LICENSE` (MIT), `CHANGELOG.md`, `.github/workflows/ci.yml`, `py.typed`.
+- [x] Add `LICENSE` (Apache-2.0), `CHANGELOG.md`, `.github/workflows/ci.yml`, `py.typed`.
 - [x] Add `examples/hello-world/` (engine `none`; only `ffmpeg` + `rsvg-convert`) and wire it as the CI fixture.
 - [x] Make `verify` and `doctor` pass on hello-world with no browser/voice installed.
 - [x] Remove host references from comments/docstrings — `grep` now returns **0** across `vidkit/`, `tests/`, and `examples/`.
@@ -427,7 +427,7 @@ vidkit/.gitignore
 
 **Build fresh in the new repo**
 
-- `LICENSE` (MIT), `CHANGELOG.md`, `pyproject` metadata (`authors`, `urls`, `classifiers`).
+- `LICENSE` (Apache-2.0), `CHANGELOG.md`, `pyproject` metadata (`authors`, `urls`, `classifiers`).
 - `examples/hello-world/` — the offline CI fixture.
 - `docs/` — the set listed under R-H5.
 - `.github/workflows/ci.yml` — lint (`ruff`) + `pytest` + hello-world build.

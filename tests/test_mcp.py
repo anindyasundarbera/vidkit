@@ -693,3 +693,49 @@ def test_no_test_calls_an_async_tool_without_awaiting_it():
     assert not offenders, (
         "an async tool was called without being awaited, so the assertion that follows "
         "compares against a coroutine and cannot fail: " + "; ".join(offenders))
+
+
+# --------------------------------------------------------------------------- #
+# HTTP transport binding guard
+# --------------------------------------------------------------------------- #
+def test_loopback_classifier():
+    """The trust boundary is the loopback address, not a hard-coded list."""
+    assert m._is_loopback("127.0.0.1")
+    assert m._is_loopback("127.1.2.3")        # the whole 127/8 block is loopback
+    assert m._is_loopback("::1")
+    assert m._is_loopback("localhost")
+    assert not m._is_loopback("0.0.0.0")      # "all interfaces" is not loopback
+    assert not m._is_loopback("192.168.1.5")
+    assert not m._is_loopback("10.0.0.1")
+    # a name that does not resolve must fail closed, not look loopback
+    assert not m._is_loopback("does-not-exist.invalid")
+
+
+def test_http_transport_refuses_a_non_loopback_bind_without_expose(capsys, monkeypatch):
+    """An unauthenticated HTTP MCP surface must not silently bind a public address."""
+    monkeypatch.setattr(m, "set_project", lambda _p: None)
+
+    rc = m.main(["--transport", "streamable-http", "--host", "0.0.0.0"])
+    assert rc == 2
+    err = capsys.readouterr().err
+    assert "refusing" in err and "0.0.0.0" in err
+
+
+def test_http_transport_loopback_bind_is_not_refused_by_the_guard(monkeypatch):
+    """The default loopback bind is the safe path and must sail through the guard."""
+    monkeypatch.setattr(m, "set_project", lambda _p: None)
+
+    # loopback is allowed; main() proceeds past the guard to build_server and then
+    # server.run. Stub both so we can assert we reached them rather than returning
+    # the refusal code 2 — and without starting a real server.
+    seen = {}
+
+    class _Fake:
+        def run(self, *a, **kw):
+            seen["ran"] = True
+
+    monkeypatch.setattr(m, "build_server", lambda **kw: _Fake())
+
+    rc = m.main(["--transport", "sse", "--host", "127.0.0.1"])
+    assert rc == 0
+    assert seen.get("ran") is True

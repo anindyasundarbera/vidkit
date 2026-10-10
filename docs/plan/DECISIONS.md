@@ -1804,3 +1804,63 @@ capability gates new browser work, not consuming a previously selected capture.
 
 **Consequences.** A selected take remains the build input across browser-equipped and
 browserless environments, preserving deterministic replay.
+
+---
+
+## D63 — Production readiness: range-bounded deps, no lockfile, and a loopback-by-default MCP transport
+
+**2026-10-10.** Context: production-readiness review.
+
+The review found the engine production-grade but the release perimeter under-hardened:
+bare lower-bound dependencies, no version single-sourcing, and an HTTP MCP transport that
+would bind any `--host` with no authentication.
+
+**Decision.** Three changes, each with a deliberate bound:
+
+1. **Upper-bound every dependency, do not add a lockfile.** vidkit must run on 3.10–3.14 and
+   keep its optional extras (`capture`, `tts`, `mcp`) optional, so an exact lockfile would
+   force a single resolution vidkit cannot own. Upper bounds bound the risk (a future major
+   is a declared unknown) while dependabot surfaces drift in the ranges.
+2. **Single-source the version** in `vidkit/_version.py`, read by `pyproject.toml`
+   dynamically and re-exported by `__init__`.
+3. **Refuse a non-loopback HTTP MCP bind by default.** The surface is unauthenticated and
+   can drive a browser and execute commands; a bare `--host 0.0.0.0` is a footgun, not a
+   feature. `--expose` is the explicit opt-in.
+
+**Alternatives.**
+
+- *Add a full OAuth bearer-token layer to the MCP server* — rejected for now. The SDK's
+  `auth` path is full OAuth (`issuer_url` + `resource_server_url` + `TokenVerifier`), not a
+  shared secret, and is version-fragile across the 1.x/2.x split vidkit already straddles.
+  The loopback default + `--expose` is the correct first line; real auth is a later, separate
+  scope.
+- *Pin exact versions (a lockfile)* — rejected, per (1).
+
+**Consequences.** Distribution metadata can no longer drift from the reported version;
+dependency majors cannot silently arrive; and an unauthenticated agent surface is
+loopback-bound unless an operator says otherwise in writing. A lockfile and HTTP auth remain
+open, deliberate follow-ons.
+
+
+---
+
+## D64 — License: MIT → Apache-2.0
+
+**2026-10-10.** Context: owner decision.
+
+vidkit was published as MIT. The owner chose to relicense to Apache-2.0.
+
+**Decision.** Relicense under Apache-2.0. `LICENSE` carries the full Apache 2.0 text,
+`pyproject.toml` declares `license = "Apache-2.0"` (the SPDX short form, replacing the
+`license = { text = "MIT" }` table), and the living documents that state the license as a
+present fact (`README.md`, `AGENTS.md`, `ROADMAP.md`, `CHANGELOG.md`) now say Apache-2.0.
+Historical records that describe the state *at the time* (MIT) are left as-is: they are
+append-only or frozen by rule and accurately report the past.
+
+**Alternatives.** *Stay MIT* (simplest, no churn); *GPL family* (rejected — vidkit is a tool
+meant to be reused and embedded, and a copyleft licence would discourage that).
+
+**Consequences.** Apache-2.0 adds an explicit patent grant and requires redistribution of
+the licence text and a NOTICE file when one is included (vidkit ships none). Existing
+consumers of the MIT-licensed source retain their MIT grant for the code they already
+received; the project as it moves forward is Apache-2.0.
