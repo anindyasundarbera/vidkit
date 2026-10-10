@@ -31,7 +31,6 @@ import hashlib
 import re
 import shutil
 import subprocess
-import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 

@@ -35,7 +35,9 @@ from pathlib import Path
 import pytest
 import yaml
 
-from vidkit import card, spec as sp, verify as vf
+from vidkit import card
+from vidkit import spec as sp
+from vidkit import verify as vf
 from vidkit.assembler import _plan_scripts, _spans, plan_audio, plan_shots
 from vidkit.errors import SpecError
 from vidkit.ffmpeg import Ffmpeg, Shell, _duck_expr, _move, _move_filters

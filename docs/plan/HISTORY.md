@@ -1887,3 +1887,71 @@ python3 -m pytest tests/test_hygiene.py -q                                   -> 
 python3 -c "import vidkit; vidkit.__version__"                               -> 1.0.0 (from _version.py)
 python3 -m vidkit.mcp_server --transport streamable-http --host 0.0.0.0     -> refuses, exit 2
 ```
+
+---
+
+## 2026-10-10 — Production-readiness P1: lint/type/coverage gates, templates, matrix, and the flaky shot
+
+P0 (merged in #17) hardened the release perimeter. P1 hardens the *quality gates* and the
+*contributor surface*. Each item and its evidence:
+
+### Curated ruff lint gate
+
+Added [`ruff.toml`](../../ruff.toml) pinning a conservative ruleset — `F` (pyflakes),
+`E4/E7/E9` (pycodestyle *errors*), `I` (isort) — and ignoring the two style-only codes the
+codebase deliberately uses (`E501` line length, `E741` single-letter names). Modern ruff's
+default ruleset (UP/RUF/FURB/PIE/…) is far broader and would have turned the gate into
+restyling churn. Fixed the 17 non-auto issues that surfaced: 6 `F821` forward-references
+(`Scene`/`Shot` now imported in `assembler.py`, `studio` under `TYPE_CHECKING` in
+`mcp_server.py`, `ast` at module scope in `test_mcp.py`), 6 `E702` semicolons, 3 `F841`
+unused locals, 1 `F402` import shadowed by a loop variable, and 1 `E731` lambda-assignment
+(now a named `def norm`).
+
+```
+ruff check vidkit tests   ->  All checks passed!
+```
+
+### Advisory type gate (mypy)
+
+`[tool.mypy]` in `pyproject.toml` sets `python_version = 3.10`,
+`ignore_missing_imports = true` (the optional extras' stubs are not declared deps), and
+`check_untyped_defs = true`. It is **advisory**: the CI `lint` job prints a warning and does
+not fail, because the engine's 93% annotation coverage is not yet clean under a strict
+checker (48 remaining errors on the package, mostly `arg-type`/`import-not-found`).
+
+### Coverage floor + CodeQL
+
+The `test` matrix now runs `pytest --cov=vidkit --cov-fail-under=40`. Measured on the lean
+subset: **50%** (6551 stmts, 3267 missed) — the floor is deliberately below measured, so it
+fails only on a real regression, not on which optional tools a machine happens to have.
+Added [`.github/workflows/codeql.yml`](../../.github/workflows/codeql.yml) (Python, push/PR +
+weekly schedule).
+
+### Issue/PR templates
+
+`.github/ISSUE_TEMPLATE/` (bug, feature, security-catch) and `PULL_REQUEST_TEMPLATE.md`, all
+carrying the evidence rule and the invariant/decision contract from `AGENTS.md`.
+
+### Python matrix and a declared ceiling
+
+`requires-python` is now `>=3.10,<3.15` (3.14 is the dev interpreter and is known to work;
+3.15 is the untested future), and the CI matrix grew to **3.10 / 3.12 / 3.13 / 3.14**. The
+hygiene test `test_requires_python_matches_the_ci_matrix` still holds.
+
+### The flaky Chromium shot, fixed in the engine
+
+`test_a_browser_can_be_opened_driven_and_photographed_into_the_take_folder` had been failing
+intermittently with Playwright's `Unable to capture screenshot` after "fonts loaded" — a
+compositor handoff race, not a content defect. `studio.browser_shot` now goes through
+`_screenshot_with_retry` (3 attempts, 0.5 s), which re-attempts the *same* real page rather
+than restaging it — so the honesty invariant is untouched. Two new unit tests pin the retry
+and its bounded-failure path; the flaky test then passed 5/5 in isolation.
+
+### Evidence
+
+```
+python3 -m pytest tests -q            -> (lean) green; full run 781 passed, 1 Chromium failure
+ruff check vidkit tests               -> All checks passed!
+python3 -m pytest tests/test_studio.py::...photographed... -> 5/5 passed (was flaky)
+mypy vidkit                           -> 48 errors (advisory, non-blocking)
+```

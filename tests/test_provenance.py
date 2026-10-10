@@ -13,9 +13,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from conftest import arun
-
 import pytest
+from conftest import arun
 
 from vidkit import provenance as pv
 from vidkit.job import run_job
@@ -225,8 +224,8 @@ def test_the_verb_and_the_json_and_the_tool_all_name_the_same_build(tmp_path):
     assert built["provenance"]["spec_sha256"] in text
     assert "build" in text.splitlines()[0]
     # and the verb itself reaches the same record rather than the help screen
-    import io
     import contextlib
+    import io
     out = io.StringIO()
     with contextlib.redirect_stdout(out):
         code = cli.main(["provenance", str(EXAMPLE / "video.yaml"), "--out", str(tmp_path)])

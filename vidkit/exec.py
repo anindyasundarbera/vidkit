@@ -66,7 +66,6 @@ import posixpath
 import pty
 import re
 import select
-import shlex
 import shutil
 import signal
 import struct
@@ -74,7 +73,7 @@ import subprocess
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable, Iterable, Iterator, Sequence
+from typing import Callable, Iterator, Sequence
 
 from .errors import SpecError, ToolError
 

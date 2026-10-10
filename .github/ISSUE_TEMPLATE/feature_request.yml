@@ -1,0 +1,32 @@
+---
+name: Feature request
+about: A capability vidkit should grow, or a spec surface it should accept
+title: "[feature] "
+labels: enhancement
+assignees: []
+---
+
+## The problem
+
+What can't you express or do today, and why it matters.
+
+## The proposal
+
+What the new capability or spec surface would look like. Prefer a concrete
+`video.yaml` sketch over prose — a spec is plain data, and a sketch is worth
+a paragraph.
+
+```yaml
+# what you want to be able to write
+```
+
+## Constraints
+
+Anything the design must preserve. In particular, note the invariants in
+`AGENTS.md` — a proposal that fabricates, breaks caption fidelity, or
+executes arbitrary code is a non-starter and should be called out rather
+than hidden.
+
+## Why not today
+
+The shortest explanation of what the current design does instead, if known.

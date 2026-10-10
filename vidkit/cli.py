@@ -34,7 +34,6 @@ from .errors import VidkitError
 from .job import ACTION_HELP, ACTIONS, run_job
 from .timeframe import Timeframe, parse_timeframe
 
-
 _JSON_HELP = ("print one JSON manifest on stdout instead of prose (the same document "
               "`vidkit run` returns)")
 _PROGRESS_HELP = "let the run's own log through to stderr as it happens (needs --json)"

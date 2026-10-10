@@ -36,3 +36,4 @@ build/
 
 # pytest scratch base temp (config.option.basetemp)
 .pytest-tmp/
+.coverage
