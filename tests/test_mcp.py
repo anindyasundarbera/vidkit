@@ -7,17 +7,17 @@ when ``mcp`` is absent.
 
 from __future__ import annotations
 
+import ast
 import inspect
 import json
 import time
 from pathlib import Path
 
 import pytest
-
 from conftest import arun, mcp_resource_template_uri, mcp_resource_text, mcp_tool_text
 
-from vidkit.errors import ToolError
 from vidkit import mcp_server as m
+from vidkit.errors import ToolError
 
 EXAMPLE = Path(__file__).resolve().parents[1] / "examples" / "hello-world" / "video.yaml"
 
@@ -520,7 +520,6 @@ def test_run_tool_is_callable_over_the_server():
 # --------------------------------------------------------------------------- #
 def _tool_closures() -> list[tuple[str, "ast.AST", list[str], bool]]:
     """Every function in the module that wraps a `tool_*`: name, node, calls, is_async."""
-    import ast
 
     tree = ast.parse(Path(m.__file__).read_text(encoding="utf-8"))
     wrappers = []
@@ -546,7 +545,6 @@ def _is_awaited(owner, call) -> bool:
     `ast` has no parent links, so this asks the question the other way round: walk the
     owner's own `Await` nodes and see whether this call is one of them.
     """
-    import ast
 
     for node in ast.walk(owner):
         if isinstance(node, ast.Await):
@@ -565,7 +563,6 @@ def test_every_registration_closure_awaits_exactly_what_it_wraps():
     answered `'dict' object can't be awaited`. Neither is visible to a normal test: the
     client gets a `str` either way. So the invariant is checked against the source.
     """
-    import ast
 
     tree = ast.parse(Path(m.__file__).read_text(encoding="utf-8"))
     coroutine = {n.name for n in ast.walk(tree)
@@ -594,7 +591,6 @@ def test_the_async_tools_are_the_ones_that_leave_the_loop():
     `async` tool whose body never leaves the loop makes every caller await a hop it did
     not need. So: the async set is pinned by name, and each one is shown to hop.
     """
-    import ast
     import inspect
 
     pinned = {
@@ -664,7 +660,6 @@ def test_no_test_calls_an_async_tool_without_awaiting_it():
     A coroutine that is never awaited cannot fail a test, so the suite is scanned for
     the two shapes that discard one: a bare expression statement, and an assignment.
     """
-    import ast
     import inspect
 
     async_tools = {name for name in dir(m)

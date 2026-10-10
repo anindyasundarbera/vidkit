@@ -41,6 +41,13 @@ ranges, the HTTP MCP transport refuses a non-loopback bind without `--expose`, a
 `SECURITY.md`/`CONTRIBUTING.md` exist. Recorded in [HISTORY.md](HISTORY.md) and
 [DECISIONS.md](DECISIONS.md) D63.
 
+The production-readiness **P1** items are also landed (2026-10-10): a curated `ruff` lint
+gate, an advisory `mypy` type gate, a 40% coverage floor, a CodeQL workflow, issue/PR
+templates, and a widened Python matrix (3.10–3.14, `requires-python = ">=3.10,<3.15"`).
+Recorded in [HISTORY.md](HISTORY.md) and [DECISIONS.md](DECISIONS.md) D65. Two deliberate
+follow-ons remain: tightening mypy to *blocking* once the optional-extra stubs are declared,
+and (a separate, unowned scope) the compositor.
+
 Release bookkeeping is separate from phase completion and remains owner-owned:
 
 - The `v1.0.0` tag has not been pushed.

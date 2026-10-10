@@ -76,7 +76,8 @@ def _split_long(p: str, limit: int = CLAUSE_CAP) -> list[str]:
         elif len(cur) + 1 + len(s) <= limit:
             cur += " " + s
         else:
-            out.append(cur); cur = s
+            out.append(cur)
+            cur = s
     if cur:
         out.append(cur)
     final: list[str] = []
@@ -91,7 +92,8 @@ def _split_long(p: str, limit: int = CLAUSE_CAP) -> list[str]:
             elif len(cur) + 1 + len(w) <= limit:
                 cur += " " + w
             else:
-                final.append(cur); cur = w
+                final.append(cur)
+                cur = w
         if cur:
             final.append(cur)
     return final
@@ -121,7 +123,8 @@ def wrap_caption(s: str, width: int = WIDTH) -> list[str]:
         if len(cur) + (1 if cur else 0) + len(w) <= width:
             cur = (cur + " " + w).strip()
         else:
-            lines.append(cur); cur = w
+            lines.append(cur)
+            cur = w
     if cur:
         lines.append(cur)
     return lines[:2] if len(lines) <= 2 else lines
@@ -149,10 +152,12 @@ def build_srt(scene_texts: dict[int, str], scene_spans: list[tuple[int, float, f
         t = start
         for c in cl:
             d = (end - start) * (len(c) / total)
-            cues.append((t, t + d, c)); t += d
+            cues.append((t, t + d, c))
+            t += d
 
     if strict:
-        norm = lambda s: re.findall(r"[a-z0-9']+", re.sub(r"\s+", " ", s).lower())
+        def norm(s: str) -> list[str]:
+            return re.findall(r"[a-z0-9']+", re.sub(r"\s+", " ", s).lower())
         got = norm(" ".join(c[2] for c in cues))
         want = norm(" ".join(scene_texts.get(n, "") for n, _, _ in scene_spans))
         if got != want:

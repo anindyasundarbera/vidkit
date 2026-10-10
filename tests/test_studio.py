@@ -33,12 +33,10 @@ import time
 from pathlib import Path
 
 import pytest
+from conftest import arun
 
 from vidkit import studio as st
 from vidkit.errors import SpecError, ToolError
-
-from conftest import _HAVE_DOCKER, arun
-
 
 needs_sandbox = pytest.mark.needs_sandbox
 needs_docker = pytest.mark.needs_docker
@@ -239,7 +237,7 @@ def test_a_session_loaded_from_disk_knows_where_its_record_came_from(tmp_path):
     A client that kept only the session id needs the first one to find it again.
     Pointing both at the project root would tell it nothing it did not already have.
     """
-    sess = st.open_session(tmp_path, session_id="s1")
+    st.open_session(tmp_path, session_id="s1")
     back = st.Registry(tmp_path).load("s1")
     assert back._record_dir == str(st.Registry(tmp_path).dir)
     assert back._record_dir != back.out_dir
@@ -952,7 +950,7 @@ def test_a_container_that_died_is_distinguishable_from_one_that_never_started(tm
     spec = load_spec(spec_path)
     sess = st.open_session(tmp_path, spec=str(spec_path), session_id="s1")
     try:
-        ref = st.start_environment(sess, spec, "db")
+        st.start_environment(sess, spec, "db")
         row = st.environment_status(sess)["held"]
         assert row and row[0]["alive"] is True
         st.stop_environment(sess)          # the service goes away
@@ -1191,6 +1189,7 @@ def test_an_mcp_client_can_take_a_sitting_end_to_end(tmp_path):
     in Python, this is where it shows.
     """
     from conftest import mcp_is_error, mcp_session
+
     from vidkit import mcp_server as m
 
     spec_path = _spec(tmp_path, extra="""
@@ -1333,6 +1332,7 @@ def test_a_second_tool_call_finds_the_page_the_first_one_opened(tmp_path):
     photograph. Both facts are asserted here, because either one alone can pass by luck.
     """
     from conftest import mcp_is_error, mcp_session
+
     from vidkit import mcp_server as m
 
     spec_path = _spec(tmp_path, extra="""
@@ -1536,7 +1536,7 @@ def test_a_worker_propagates_a_jobs_exception_to_its_caller():
 # never fire, and a page opened by one call would be invisible to the next.
 # A sitting is a *running thing*; the record on disk cannot hold it.
 def test_an_open_session_is_held_by_this_process(tmp_path):
-    from vidkit import _loop, studio
+    from vidkit import _loop
 
     sess = st.open_session(tmp_path, session_id="held")
     try:
@@ -1587,3 +1587,38 @@ def test_forgetting_a_session_is_idempotent(tmp_path):
     st.forget(sess)
     st.forget(st.Registry(tmp_path).load("forgetme"))
     assert st.held("forgetme", tmp_path) is None
+
+
+def test_screenshot_retries_a_transient_compositor_failure(tmp_path, monkeypatch):
+    """A compositor race must not fail a shot whose content is fine.
+
+    Chromium can fail one screenshot with ``Unable to capture screenshot`` while
+    its font loader hands off; re-attempting captures the same real page, so the
+    shot survives and the failure is raised only if every attempt fails.
+    """
+    dest = tmp_path / "shot.png"
+    calls = {"n": 0}
+
+    class _Page:
+        def screenshot(self, *, path, full_page):
+            calls["n"] += 1
+            if calls["n"] < 3:
+                raise RuntimeError("Page.captureScreenshot: Unable to capture screenshot")
+            dest.write_text("png")
+
+    st._screenshot_with_retry(_Page(), dest, full_page=False)
+    assert calls["n"] == 3
+    assert dest.read_text() == "png"
+
+
+def test_screenshot_raises_when_every_attempt_fails(tmp_path):
+    """The retry is bounded: a page that never becomes compositable still fails."""
+    dest = tmp_path / "shot.png"
+
+    class _Page:
+        def screenshot(self, *, path, full_page):
+            raise RuntimeError("Unable to capture screenshot")
+
+    with pytest.raises(RuntimeError):
+        st._screenshot_with_retry(_Page(), dest, full_page=False, attempts=2, pause=0.0)
+    assert not dest.exists()

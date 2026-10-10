@@ -34,21 +34,17 @@ shutting down``. See :data:`vidkit.exec.READY_HOLD`.
 
 from __future__ import annotations
 
-import os
 import subprocess
 import textwrap
-import time
 from pathlib import Path
 
 import pytest
+from conftest import _HAVE_DOCKER
 
 from vidkit import exec as ex
 from vidkit import spec as sp
 from vidkit.assembler import Assets, _start_environments, _stop_environments
-from vidkit.errors import SpecError, ToolError
-
-from conftest import _HAVE_DOCKER
-
+from vidkit.errors import SpecError
 
 needs_docker = pytest.mark.needs_docker
 

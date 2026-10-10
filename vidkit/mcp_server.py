@@ -32,9 +32,11 @@ import os
 import signal
 import sys
 from pathlib import Path
-from typing import Any, Iterator
+from typing import TYPE_CHECKING, Any, Iterator
 
-from . import __version__
+if TYPE_CHECKING:
+    from . import studio
+
 from .errors import ToolError, VidkitError
 from .provenance import Provenance
 from .reports import doctor_report, plan_report
@@ -728,7 +730,7 @@ async def tool_browser_status(session: str, out: str | None = None) -> dict[str,
     be written to JSON and read back, so anything else would be a guess dressed as
     state.
     """
-    from . import _loop, studio
+    from . import _loop
 
     sess = _session(session, out)
     page = await _offloop(_loop.session, sess, lambda: sess._live.get("page"))

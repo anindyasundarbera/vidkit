@@ -32,7 +32,6 @@ from importlib.metadata import PackageNotFoundError, metadata
 from pathlib import Path
 
 import pytest
-
 from conftest import _PEP701_ILLEGAL, _PEP701_LEGAL, _compiles_with
 
 REPO = Path(__file__).resolve().parents[1]
@@ -134,7 +133,6 @@ def test_version_is_single_sourced():
     assert vidkit.__version__ == v.__version__
 
     import ast
-    from pathlib import Path
 
     # The only assignment to a ``__version__`` string literal is the source module.
     literal_sites = []

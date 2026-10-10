@@ -1864,3 +1864,40 @@ meant to be reused and embedded, and a copyleft licence would discourage that).
 the licence text and a NOTICE file when one is included (vidkit ships none). Existing
 consumers of the MIT-licensed source retain their MIT grant for the code they already
 received; the project as it moves forward is Apache-2.0.
+
+---
+
+## D65 — Static gates: curated ruff, advisory mypy, and a measured coverage floor
+
+**2026-10-10.** Context: production-readiness P1.
+
+The codebase had no lint, type, or coverage gate, and adding one naively would have produced
+either a churn bomb (modern ruff's broad default ruleset) or a gate that fails for reasons
+unrelated to the code (a type checker on optional extras whose stubs are absent, a coverage
+floor that depends on which tools a machine has).
+
+**Decision.** Three deliberate bounds:
+
+1. **Ruff is the gate, with a curated ruleset** (`ruff.toml`: `F` + `E4/E7/E9` + `I`, ignoring
+   `E501`/`E741`). `ruff check` must be clean in CI. `ruff format` is **not** gated — the
+   codebase's hand-formatted call sites would reformat en masse, which is restyling churn
+   with no correctness payoff.
+2. **mypy is advisory**, not blocking. `ignore_missing_imports` and `check_untyped_defs` are
+   set; the CI `lint` job reports the result as a warning. The engine's annotations are 93%
+   complete but not clean under a strict checker, and a blocking type gate would either be
+   ignored or deleted the first time it cried wolf.
+3. **Coverage floor at 40%**, below the measured 50% on the lean subset, so the floor fails
+   only on a real regression — never because a machine lacks `docker`/`playwright`/`mcp`.
+
+**Alternatives.**
+
+- *Adopt ruff's full default ruleset and fix everything* — rejected: 118+ errors, most of them
+  stylistic (UP/FURB/PIE) rather than correctness, would have dominated the change.
+- *Make mypy blocking* — rejected for now; the optional-extra stubs are the blocker, and a
+  gate that needs `pip install playwright mcp` to even run is not a lean-job gate.
+- *No coverage floor* — rejected: a floor that is set to the measured value is the honest
+  "fail on regression" contract, and 40% is deliberately conservative.
+
+**Consequences.** CI now runs `ruff check` (blocking), `mypy` (advisory), and
+`pytest --cov-fail-under=40` (blocking). Tightening any of these is a future, separate scope
+(see the roadmap), not a silent bump of a default.

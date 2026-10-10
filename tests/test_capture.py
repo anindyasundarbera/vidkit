@@ -17,7 +17,7 @@ import pytest
 from vidkit import capture as _capture
 from vidkit.context import Context
 from vidkit.errors import SpecError, ToolError
-from vidkit.spec import Capture, load_spec
+from vidkit.spec import load_spec
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 

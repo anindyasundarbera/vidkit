@@ -42,11 +42,18 @@ from .context import Context
 from .errors import SpecError
 from .narration import build_srt, parse_scene_script, word_count
 from .provenance import Provenance, probe_tools, spec_digest
-from .snapshot import (SNAPSHOT_FILE, Snapshot, digest_text, file_digest,
-                       load_datasets, request_key, verify_fresh)
-from .spec import Artifact, Spec, load_spec
+from .snapshot import (
+    SNAPSHOT_FILE,
+    Snapshot,
+    digest_text,
+    file_digest,
+    load_datasets,
+    request_key,
+    verify_fresh,
+)
+from .spec import Artifact, Scene, Shot, Spec, load_spec
+from .svg import PanelDoc
 from .timeframe import Timeframe, parse_timeframe
-from .svg import PanelDoc, document
 from .verify import Report, verify_output
 
 STAGES = ["data", "panels", "stills", "capture", "exec", "narration", "clips",
@@ -723,7 +730,8 @@ def _load_or_estimate(ctx: Context, scripts):
 def _spans(audio: list[_tts.SceneAudio]) -> list[tuple[int, float, float]]:
     spans, t = [], 0.0
     for a in audio:
-        spans.append((a.n, t, t + a.seconds)); t += a.seconds
+        spans.append((a.n, t, t + a.seconds))
+        t += a.seconds
     return spans
 
 
@@ -1098,7 +1106,7 @@ def _build_clips(ctx: Context, assets: Assets, scripts) -> None:
                                     graphic_size=size)
             overlaid += 1
         assets.stills.setdefault(f"_clip_{sc.n}_{idx}", clip)
-    ctx.info(f"clips built" + (f", {overlaid} with an overlay" if overlaid else ""))
+    ctx.info("clips built" + (f", {overlaid} with an overlay" if overlaid else ""))
 
 
 def _concat(ctx: Context, assets: Assets) -> None:

@@ -352,7 +352,6 @@ def render_svg(screen: Screen, size: tuple[int, int], *, title: str = "",
     bar = 44 if chrome else 0
     pad = 40
     rows = min(screen.rows, max(1, int((height - bar - pad * 2) // cell_h)))
-    lines = screen.lines()[:rows]
     font = "DejaVu Sans Mono, Liberation Mono, monospace"
 
     parts: list[str] = []

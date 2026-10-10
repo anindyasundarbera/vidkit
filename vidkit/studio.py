@@ -1050,6 +1050,29 @@ def browser_act(session: Session, actions: list[dict], *, spec=None) -> dict:
     return {"ok": True, "steps": steps}
 
 
+def _screenshot_with_retry(page, dest: Path, *, full_page: bool,
+                           attempts: int = 3, pause: float = 0.5) -> None:
+    """Photograph ``page`` to ``dest``, retrying a transient compositor failure.
+
+    Chromium can intermittently fail a screenshot with ``Unable to capture
+    screenshot`` while its font loader is handing off to the compositor — the
+    page has loaded and the fonts are loaded, but the frame is not yet
+    compositable. A single attempt turns that into a hard failure for a shot
+    whose *content* is fine. Re-attempting captures the same real page, so it is
+    a retry of the measurement, not a restaging; the last attempt's error is
+    raised if it never succeeds.
+    """
+    last: Exception | None = None
+    for _ in range(attempts):
+        try:
+            page.screenshot(path=str(dest), full_page=full_page)
+            return
+        except Exception as exc:  # pragma: no cover - only under the transient race
+            last = exc
+            time.sleep(pause)
+    raise last  # type: ignore[misc]
+
+
 def browser_shot(session: Session, name: str, *, take: int = 1,
                  full_page: bool = False, note: str = "") -> dict:
     """Photograph the open page into ``_capture/`` — and record what was shot.
@@ -1064,7 +1087,7 @@ def browser_shot(session: Session, name: str, *, take: int = 1,
     out_dir = Path(session.out_dir)
     dest = take_path(out_dir, name, take)
     dest.parent.mkdir(parents=True, exist_ok=True)
-    session._live["page"].screenshot(path=str(dest), full_page=full_page)
+    _screenshot_with_retry(session._live["page"], dest, full_page=full_page)
     row = record_take(session, name, take, note=note or "session_browser_shot")
     # Deliberately *not* promoted. `capture_one` promotes because a spec's `take:`
     # is a declared intent; ad-hoc shooting has no such declaration, and the whole

@@ -1,0 +1,17 @@
+---
+name: Security report
+about: A vulnerability in vidkit (do NOT use the public issue tracker — see SECURITY.md)
+title: "[security] "
+labels: security
+assignees: []
+---
+
+> **Do not open a public issue for a vulnerability.**
+>
+> Report it privately as described in [SECURITY.md](../../SECURITY.md) — a fix
+> must land before the details are public. This template exists to catch the
+> accidental disclosure, not to receive reports.
+
+If you are filing *this* template by mistake, please close it and follow
+`SECURITY.md`'s reporting path instead. Do not include the reproduction
+here.

@@ -29,7 +29,7 @@ from datetime import date, datetime
 from typing import Any, Callable
 
 from .errors import SpecError
-from .svg import PanelDoc, circle, esc, line, polyline, rect, text, text_block, THEME
+from .svg import THEME, PanelDoc, circle, line, polyline, rect, text, text_block
 
 
 # --------------------------------------------------------------------------- #
@@ -358,9 +358,9 @@ def render_comparison(data: Any, options: dict, doc: PanelDoc) -> None:
         doc.add(rect(cx, y0 - 96, cw, 70, rx=10, fill=tone),
                 text(cx + 24, y0 - 46, title.upper(), size=24, weight=800,
                      fill=t.darktext if side is right else t.panel, letter=1))
-        for i, line in enumerate(list(side.get("items") or [])[:rows]):
+        for i, item in enumerate(list(side.get("items") or [])[:rows]):
             doc.add(text(cx + 24, y0 + i * 48, "·", size=26, fill=tone),
-                    text(cx + 56, y0 + i * 48, line, size=25, fill=t.ink))
+                    text(cx + 56, y0 + i * 48, item, size=25, fill=t.ink))
 
 
 def render_quote(data: Any, options: dict, doc: PanelDoc) -> None:

@@ -28,6 +28,7 @@ from vidkit.panels import axis_positions, parse_x
 from vidkit.reports import format_plan
 from vidkit.spec import load_spec
 
+
 # --------------------------------------------------------------------------- #
 # the time axis (R-D3)
 # --------------------------------------------------------------------------- #
@@ -85,8 +86,8 @@ def test_axis_positions_shrugs_at_a_single_day():
 
 
 def test_line_series_draws_the_gap():
-    from vidkit.svg import PanelDoc
     from vidkit import panels
+    from vidkit.svg import PanelDoc
 
     doc = PanelDoc(1920, 1080)
     panels.render("line_series", {"series": [
@@ -103,8 +104,8 @@ def test_line_series_draws_the_gap():
 
 
 def test_x_axis_index_opts_out_of_the_time_axis():
-    from vidkit.svg import PanelDoc
     from vidkit import panels
+    from vidkit.svg import PanelDoc
 
     doc = PanelDoc(1920, 1080)
     panels.render("line_series", {"series": [

@@ -108,7 +108,8 @@ def text_block(x: float, y: float, s: object, *, size: int = 22, fill: str = THE
         if len(cur) + 1 + len(w) <= width:
             cur = (cur + " " + w).strip()
         else:
-            lines.append(cur); cur = w
+            lines.append(cur)
+            cur = w
     if cur:
         lines.append(cur)
     if max_lines:

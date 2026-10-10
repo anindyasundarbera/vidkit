@@ -7,12 +7,11 @@ from pathlib import Path
 
 import pytest
 
-from vidkit.errors import SpecError
-from vidkit.narration import build_srt, parse_scene_script, wrap_caption, word_count
-from vidkit.svg import PanelDoc, document, esc, text
 from vidkit import panels
+from vidkit.errors import SpecError
+from vidkit.narration import build_srt, parse_scene_script, word_count, wrap_caption
 from vidkit.spec import load_spec
-
+from vidkit.svg import PanelDoc, document, esc, text
 
 # --------------------------------------------------------------------------- #
 NARRATION = """\

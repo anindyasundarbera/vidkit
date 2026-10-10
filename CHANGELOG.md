@@ -36,6 +36,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   session, films three distinctly-coloured takes of the same page, **keeps take 2**, renders,
   and proves the kept take is what reached the film by decoding the delivered `.mp4`'s middle
   frame.
+- **Production-readiness P0 (P1 partially)** — the version is single-sourced in
+  `vidkit/_version.py` (read dynamically by `pyproject.toml`); every dependency is
+  upper-bounded and watched by `.github/dependabot.yml`; the HTTP MCP transport refuses a
+  non-loopback bind without `--expose`; and `SECURITY.md`/`CONTRIBUTING.md` exist.
+- **Production-readiness P1** — a curated `ruff` lint gate (`ruff.toml`), an advisory `mypy`
+  type gate, a `--cov-fail-under=40` coverage floor, a CodeQL workflow, issue/PR templates,
+  and a widened Python matrix (3.10–3.14) with `requires-python = ">=3.10,<3.15"`.
 
 ### Fixed
 
@@ -63,6 +70,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **`browser_shot` retries a transient compositor failure.** Chromium intermittently fails a
+  screenshot with `Unable to capture screenshot` after "fonts loaded" — a handoff race, not a
+  content defect. `_screenshot_with_retry` re-attempts the same real page (3 attempts, 0.5 s)
+  so the honesty invariant is untouched, and the formerly flaky studio browser test now
+  passes reliably.
 - **License changed from MIT to Apache-2.0.** The `LICENSE` file now carries the full Apache
   2.0 text and `pyproject.toml` declares `license = "Apache-2.0"` (SPDX, replacing the
   `license = { text = "MIT" }` form). `README.md`, `AGENTS.md`, and `ROADMAP.md` were updated

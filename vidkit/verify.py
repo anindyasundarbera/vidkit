@@ -8,13 +8,12 @@ guarantee actually held.
 
 from __future__ import annotations
 
-import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from .context import Context
 from . import exec as exec_mod
+from .context import Context
 from .timeframe import find_window_claims, timeframe_matches
 
 

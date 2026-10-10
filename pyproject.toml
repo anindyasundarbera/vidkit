@@ -7,7 +7,7 @@ name = "vidkit"
 dynamic = ["version"]
 description = "A demo video is a claim about a system. Declarative spec → narrated, captioned screencast, reopened and verified — drivable from a shell or an agent over MCP."
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.10,<3.15"
 license = "Apache-2.0"
 dependencies = [
   "PyYAML>=6,<7",       # YAML specs (JSON specs work without it)
@@ -17,7 +17,7 @@ dependencies = [
 capture = ["playwright>=1.40,<2"]
 tts = ["piper-tts>=1.2,<2"]
 mcp = ["mcp>=1.20,<3"]
-dev = ["pytest>=7,<10"]
+dev = ["pytest>=7,<10", "pytest-cov>=4,<7", "ruff>=0.5,<1"]
 
 [project.scripts]
 vidkit = "vidkit.cli:main"
@@ -37,3 +37,16 @@ vidkit = ["py.typed"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+[tool.mypy]
+python_version = "3.10"
+# Optional extras (playwright, mcp) and PyYAML are not installed in the lean
+# environment that runs the type check, and their stubs are not declared as
+# dependencies. The type gate is advisory (non-blocking) to start — it surfaces
+# drift without failing a build whose real contract is the test suite.
+ignore_missing_imports = true
+# The engine is typed deliberately but not exhaustively; these are the two
+# highest-signal categories to surface first. Expand this set (see DECISIONS.md)
+# as the codebase tightens, not by bumping mypy's defaults.
+check_untyped_defs = true
+warn_unused_ignores = false

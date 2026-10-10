@@ -11,6 +11,7 @@ from datetime import date
 from pathlib import Path
 
 import pytest
+from conftest import arun
 
 from vidkit import provider as _provider
 from vidkit.context import Context
@@ -30,7 +31,6 @@ from vidkit.snapshot import (
 from vidkit.spec import load_spec
 from vidkit.timeframe import from_relative
 
-from conftest import arun
 
 # --------------------------------------------------------------------------- #
 # Building a minimal spec + provider on disk
@@ -413,7 +413,8 @@ def test_the_mcp_build_tool_refuses_only_together_with_from():
 
 
 def test_the_mcp_build_tool_passes_the_stage_contract_through(monkeypatch, tmp_path):
-    from vidkit import assembler, mcp_server as m
+    from vidkit import assembler
+    from vidkit import mcp_server as m
 
     spec = _spec(tmp_path)
     seen: dict = {}
